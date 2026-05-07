@@ -437,7 +437,7 @@ async function fetchRedditListing(url: string): Promise<RedditPost[]> {
     }));
 }
 
-async function fetchTenantSourcePosts(source: UserSourceRow): Promise<RedditPost[]> {
+async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jobId?: string): Promise<RedditPost[]> {
   const value = source.value.trim();
   if (!value) return [];
 
@@ -458,15 +458,30 @@ async function fetchTenantSourcePosts(source: UserSourceRow): Promise<RedditPost
       const listings: RedditPost[][] = [];
       for (const sub of subs) {
         try {
-          listings.push(
-            await fetchRedditListing(`https://www.reddit.com/r/${encodeURIComponent(sub)}/new.json?limit=50&raw_json=1`)
-          );
-        } catch {
+          const posts = await fetchRedditListing(`https://www.reddit.com/r/${encodeURIComponent(sub)}/new.json?limit=50&raw_json=1`);
+          listings.push(posts);
+          if (userId && jobId) {
+            await writeWorkerLog(userId, 'info', 'reddit_subreddit_fetched', {
+              jobId,
+              sourceId: source.id,
+              subreddit: sub,
+              posts: posts.length,
+            });
+          }
+        } catch (error) {
           listings.push([]);
+          if (userId && jobId) {
+            await writeWorkerLog(userId, 'warn', 'reddit_subreddit_fetch_failed', {
+              jobId,
+              sourceId: source.id,
+              subreddit: sub,
+              error: publicError(error),
+            });
+          }
         }
       }
       const seen = new Set<string>();
-      return listings
+      const filtered = listings
         .flat()
         .filter(post => post.author.toLowerCase() === user)
         .sort((a, b) => b.created - a.created)
@@ -475,6 +490,16 @@ async function fetchTenantSourcePosts(source: UserSourceRow): Promise<RedditPost
           seen.add(post.id);
           return true;
         });
+      if (userId && jobId) {
+        await writeWorkerLog(userId, 'info', 'reddit_author_filter_applied', {
+          jobId,
+          sourceId: source.id,
+          author: user,
+          subreddits: subs,
+          matches: filtered.length,
+        });
+      }
+      return filtered;
     }
 
     return fetchRedditListing(`https://www.reddit.com/user/${encodeURIComponent(user)}/submitted.json?limit=20&raw_json=1`);
@@ -612,7 +637,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     if (firstOpenSlot(occupiedSlots) === undefined) break;
 
     try {
-      const posts = await fetchTenantSourcePosts(source);
+      const posts = await fetchTenantSourcePosts(source, job.user_id, job.id);
       fetched += posts.length;
 
       for (const post of posts) {
