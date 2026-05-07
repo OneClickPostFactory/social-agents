@@ -9,4 +9,4 @@ crons = ["*/1 * * * *"]
 [vars]
 NODE_ENV = "production"
 SUPABASE_WORKER_BATCH_SIZE = "5"
-HTTP_TIMEOUT_MS = "15000"
+HTTP_TIMEOUT_MS = "45000"
