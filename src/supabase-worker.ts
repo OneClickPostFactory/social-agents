@@ -629,10 +629,27 @@ function firstOpenSlot(occupied: Set<number>): number | undefined {
 async function loadExistingSourceUrls(userId: string): Promise<Set<string>> {
   const rows = await supabaseSelect<{ url: string }>('source_records', {
     select: 'url',
-    filters: [{ column: 'user_id', operator: 'eq', value: userId }],
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'status', operator: 'neq', value: 'rejected' },
+    ],
     limit: 1000,
   });
   return new Set(rows.map(row => row.url));
+}
+
+async function loadExistingSourceRecord(
+  userId: string,
+  url: string
+): Promise<{ id: string; status?: string | null } | undefined> {
+  return (await supabaseSelect<{ id: string; status?: string | null }>('source_records', {
+    select: 'id,status',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'url', operator: 'eq', value: url },
+    ],
+    limit: 1,
+  }))[0];
 }
 
 async function hasActiveBankedAngles(userId: string): Promise<boolean> {
@@ -714,7 +731,17 @@ function toAngleCandidateFromRecord(row: AngleRecordRow): AngleCandidate {
 function anglePlatform(row: AngleRecordRow, tenant: TenantContext): PlatformKey | undefined {
   return row.intended_platform && tenant.activePlatforms.includes(row.intended_platform)
     ? row.intended_platform
-    : tenant.activePlatforms[0];
+    : undefined;
+}
+
+function isDraftableAngle(row: AngleRecordRow): boolean {
+  return Boolean(
+    row.source_reddit_post_id
+    && row.source_url
+    && row.subreddit
+    && row.reddit_author
+    && row.intended_platform
+  );
 }
 
 async function queueFromBankedAngles(
@@ -737,7 +764,22 @@ async function queueFromBankedAngles(
 
   for (const angleRow of angles) {
     const platform = anglePlatform(angleRow, tenant);
-    if (!platform) continue;
+    if (!platform || !isDraftableAngle(angleRow)) {
+      await supabaseUpdate('angle_records', {
+        status: 'rejected',
+      }, {
+        filters: [
+          { column: 'id', operator: 'eq', value: angleRow.id },
+          { column: 'user_id', operator: 'eq', value: job.user_id },
+        ],
+      });
+      await writeWorkerLog(job.user_id, 'warn', 'legacy_angle_quarantined', {
+        jobId: job.id,
+        angleId: angleRow.id,
+        reason: !platform ? 'disabled_or_missing_platform' : 'missing_source_metadata',
+      });
+      continue;
+    }
 
     const locked = await supabaseUpdate<AngleRecordRow>('angle_records', {
       status: 'in_progress',
@@ -926,7 +968,16 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
           used: false,
           fetched_at: nowIso(),
         };
-        const sourceRows = await supabaseInsert<{ id: string }>('source_records', sourcePayload, true);
+        const existingSource = await loadExistingSourceRecord(job.user_id, sourceUrl);
+        const sourceRows = existingSource?.status === 'rejected'
+          ? await supabaseUpdate<{ id: string }>('source_records', sourcePayload, {
+              filters: [
+                { column: 'id', operator: 'eq', value: existingSource.id },
+                { column: 'user_id', operator: 'eq', value: job.user_id },
+              ],
+              returning: true,
+            })
+          : await supabaseInsert<{ id: string }>('source_records', sourcePayload, true);
         const sourceRecordId = sourceRows[0]?.id || null;
         existingSourceUrls.add(sourceUrl);
 
