@@ -455,9 +455,16 @@ async function fetchTenantSourcePosts(source: UserSourceRow): Promise<RedditPost
       .filter(Boolean);
 
     if (subs.length) {
-      const listings = await Promise.all(
-        subs.map(sub => fetchRedditListing(`https://www.reddit.com/r/${encodeURIComponent(sub)}/new.json?limit=50&raw_json=1`))
-      );
+      const listings: RedditPost[][] = [];
+      for (const sub of subs) {
+        try {
+          listings.push(
+            await fetchRedditListing(`https://www.reddit.com/r/${encodeURIComponent(sub)}/new.json?limit=50&raw_json=1`)
+          );
+        } catch {
+          listings.push([]);
+        }
+      }
       const seen = new Set<string>();
       return listings
         .flat()
