@@ -268,7 +268,7 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
     });
   });
   config.OPENAI_API_KEY = tenant.credentials.openaiApiKey || previous.OPENAI_API_KEY || '';
-  config.OPENAI_MODEL = tenant.settings.ai_model || previous.OPENAI_MODEL || 'gpt-4o-mini';
+  config.OPENAI_MODEL = tenant.settings.ai_model || 'gpt-4o-mini';
   config.ENABLE_THREADS = tenant.activePlatforms.includes('threads');
   config.ENABLE_INSTAGRAM = tenant.activePlatforms.includes('instagram');
   config.ENABLE_LINKEDIN = tenant.activePlatforms.includes('linkedin');
@@ -689,7 +689,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
           extraction.summary,
           selectedAngle,
           tenant.activePlatforms,
-          { disableLearningMemory: true }
+          { disableLearningMemory: true, disableImageGeneration: true }
         );
         const rows = toQueueRows(job.user_id, slotIndex, post, sourceUrl, selectedAngle, draft, tenant.activePlatforms);
         if (!rows.length) continue;

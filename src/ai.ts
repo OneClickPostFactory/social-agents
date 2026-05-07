@@ -59,6 +59,7 @@ interface PlatformDraft {
 
 interface DraftOptions {
   disableLearningMemory?: boolean;
+  disableImageGeneration?: boolean;
   learningNotesByPlatform?: Partial<Record<PlatformKey, string[]>>;
 }
 
@@ -910,7 +911,7 @@ export async function draftPlatforms(
     };
   }
 
-  if (activePlatforms.includes('instagram')) {
+  if (activePlatforms.includes('instagram') && !options.disableImageGeneration) {
     const image = await generateImage(source, summary, angle);
     transformed.imageUrl = image.imageUrl;
     transformed.imagePrompt = image.imagePrompt;
