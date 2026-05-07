@@ -1,0 +1,4506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OneClickPostFactory | Social Intelligence</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Bricolage+Grotesque:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;
+  min-height:100vh;
+  background:
+    radial-gradient(circle at 18% 0%,rgba(91,110,245,.16),transparent 34%),
+    radial-gradient(circle at 100% 10%,rgba(34,211,160,.08),transparent 28%),
+    linear-gradient(180deg,#07080c,#0a0a0f 42%,#090a10 100%);
+  color:var(--text-primary);
+  font:500 14px/1.55 "IBM Plex Sans","Segoe UI",sans-serif;
+}
+body::before{
+  content:"";
+  position:fixed;
+  inset:0;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='.055'/%3E%3C/svg%3E");
+  opacity:.22;
+  pointer-events:none;
+  mix-blend-mode:soft-light;
+}
+:root{
+  --bg-base:#0a0a0f;
+  --bg-surface:#111118;
+  --bg-elevated:#18181f;
+  --bg-rail:#0d0d14;
+  --bg-card:#13131b;
+  --border-subtle:#1e1e28;
+  --border-strong:#2a2a38;
+  --text-primary:#f0f0f5;
+  --text-secondary:#8e8ea8;
+  --text-muted:#4a4a62;
+  --accent-primary:#5b6ef5;
+  --accent-glow:rgba(91,110,245,.18);
+  --accent-green:#22d3a0;
+  --accent-amber:#f5a623;
+  --accent-red:#f55b5b;
+  --accent-cyan:#3cc8ff;
+  --shadow-strong:0 30px 80px rgba(0,0,0,.42);
+  --shadow-soft:0 16px 44px rgba(0,0,0,.28);
+  --radius-lg:24px;
+  --radius-md:18px;
+  --radius-sm:14px;
+  --radius-xs:10px;
+  --linkedin:#0a66c2;
+  --threads:#f0f0f5;
+  --x:#9ca3af;
+  --instagram:#e1306c;
+  --facebook:#1877f2;
+}
+a{color:inherit}
+button,input,select,textarea{font:inherit}
+button{
+  border:0;
+  background:none;
+  color:inherit;
+  cursor:pointer;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible{
+  outline:2px solid rgba(91,110,245,.82);
+  outline-offset:2px;
+}
+code,.mono,kbd,.metric-number,.nav-badge,.micro-badge,.table-mono,.chip-mono,.mini-list-meta,.toast-text span{
+  font-family:"JetBrains Mono","SFMono-Regular",monospace;
+}
+h1,h2,h3,h4,h5{margin:0}
+.sr-only{
+  position:absolute;
+  width:1px;
+  height:1px;
+  padding:0;
+  margin:-1px;
+  overflow:hidden;
+  clip:rect(0,0,0,0);
+  white-space:nowrap;
+  border:0;
+}
+
+.app-shell{
+  display:grid;
+  grid-template-columns:76px 288px minmax(0,1fr) 372px;
+  min-height:100vh;
+}
+.nav-rail,
+.workspace-rail,
+.inspector-rail{
+  position:sticky;
+  top:0;
+  align-self:start;
+  height:100vh;
+  overflow:auto;
+}
+.nav-rail{
+  padding:18px 12px;
+  background:linear-gradient(180deg,rgba(13,13,20,.94),rgba(10,10,15,.88));
+  border-right:1px solid var(--border-subtle);
+  backdrop-filter:blur(18px);
+}
+.workspace-rail{
+  padding:20px 20px 24px;
+  background:linear-gradient(180deg,rgba(17,17,24,.9),rgba(12,12,18,.82));
+  border-right:1px solid var(--border-subtle);
+  backdrop-filter:blur(18px);
+}
+.canvas-shell{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+}
+.inspector-rail{
+  padding:20px 18px 24px;
+  background:linear-gradient(180deg,rgba(13,13,20,.94),rgba(10,10,15,.88));
+  border-left:1px solid var(--border-subtle);
+  backdrop-filter:blur(18px);
+}
+
+.brand-seal{
+  width:50px;
+  height:50px;
+  margin:2px auto 22px;
+  border-radius:16px;
+  display:grid;
+  place-items:center;
+  background:
+    radial-gradient(circle at 24% 20%,rgba(255,255,255,.18),transparent 36%),
+    linear-gradient(135deg,#6f7eff,#4251c9 70%);
+  color:#fff;
+  font:700 20px/1 "Bricolage Grotesque","IBM Plex Sans",sans-serif;
+  box-shadow:0 14px 34px rgba(91,110,245,.34);
+}
+.nav-stack{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.nav-item{
+  position:relative;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:52px;
+  height:52px;
+  margin:0 auto;
+  border-radius:16px;
+  border:1px solid transparent;
+  color:var(--text-secondary);
+  background:rgba(255,255,255,.02);
+  transition:transform .16s ease,border-color .16s ease,color .16s ease,background .16s ease,box-shadow .16s ease;
+}
+.nav-item:hover{
+  transform:translateY(-1px);
+  border-color:var(--border-strong);
+  color:var(--text-primary);
+  background:rgba(255,255,255,.04);
+}
+.nav-item.active{
+  color:#fff;
+  border-color:rgba(91,110,245,.42);
+  background:linear-gradient(180deg,rgba(91,110,245,.18),rgba(91,110,245,.08));
+  box-shadow:0 0 0 1px rgba(91,110,245,.16),0 12px 26px rgba(91,110,245,.18);
+}
+.nav-item::before{
+  content:"";
+  position:absolute;
+  left:-12px;
+  width:2px;
+  height:24px;
+  border-radius:999px;
+  background:transparent;
+  transition:background .16s ease;
+}
+.nav-item.active::before{background:var(--accent-primary)}
+.nav-item span{
+  font:700 11px/1 "JetBrains Mono","SFMono-Regular",monospace;
+  letter-spacing:.08em;
+}
+.nav-tooltip{
+  position:absolute;
+  left:64px;
+  top:50%;
+  transform:translateY(-50%);
+  pointer-events:none;
+  opacity:0;
+  padding:8px 10px;
+  border-radius:12px;
+  border:1px solid var(--border-subtle);
+  background:rgba(17,17,24,.96);
+  color:var(--text-primary);
+  white-space:nowrap;
+  box-shadow:var(--shadow-soft);
+  transition:opacity .16s ease;
+}
+.nav-item:hover .nav-tooltip{opacity:1}
+.nav-divider{
+  width:28px;
+  height:1px;
+  margin:14px auto;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.14),transparent);
+}
+.rail-card,
+.surface,
+.inspector-card,
+.ghost-card,
+.module-link,
+.metric-card,
+.approval-card,
+.queue-row,
+.activity-item,
+.detail-list li,
+.report-chip,
+.report-block,
+.toast,
+.empty-state,
+.search-shell{
+  position:relative;
+  overflow:hidden;
+  border:1px solid var(--border-subtle);
+  border-radius:var(--radius-md);
+  background:linear-gradient(180deg,rgba(20,20,30,.92),rgba(13,13,20,.96));
+  box-shadow:var(--shadow-soft);
+}
+.rail-card::before,
+.surface::before,
+.inspector-card::before,
+.ghost-card::before,
+.approval-card::before,
+.queue-row::before,
+.activity-item::before{
+  content:"";
+  position:absolute;
+  inset:0 0 auto 0;
+  height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.11),transparent);
+}
+.workspace-title{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:16px;
+  margin-bottom:16px;
+}
+.eyebrow{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid rgba(91,110,245,.18);
+  background:rgba(91,110,245,.08);
+  color:#b7c0ff;
+  font:600 11px/1 "JetBrains Mono","SFMono-Regular",monospace;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+}
+.workspace-name{
+  margin-top:10px;
+  font:700 22px/1.08 "Bricolage Grotesque","IBM Plex Sans",sans-serif;
+  letter-spacing:-.04em;
+}
+.workspace-copy{
+  margin-top:8px;
+  color:var(--text-secondary);
+  font-size:13px;
+}
+.status-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:7px 10px;
+  border-radius:999px;
+  border:1px solid rgba(34,211,160,.18);
+  background:rgba(34,211,160,.08);
+  color:#a5f3d5;
+  font-size:11px;
+  font-weight:700;
+}
+.status-chip.warn{
+  border-color:rgba(245,166,35,.22);
+  background:rgba(245,166,35,.09);
+  color:#ffd9a3;
+}
+.status-chip.err{
+  border-color:rgba(245,91,91,.2);
+  background:rgba(245,91,91,.09);
+  color:#ffc6c6;
+}
+.status-dot{
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  background:currentColor;
+  box-shadow:0 0 0 0 rgba(255,255,255,.18);
+  animation:pulse 1.7s infinite;
+}
+@keyframes pulse{
+  0%{transform:scale(.95);box-shadow:0 0 0 0 rgba(255,255,255,.16)}
+  70%{transform:scale(1);box-shadow:0 0 0 10px rgba(255,255,255,0)}
+  100%{transform:scale(.95);box-shadow:0 0 0 0 rgba(255,255,255,0)}
+}
+
+.org-card{padding:20px}
+.org-grid{
+  display:grid;
+  gap:8px;
+  margin-top:16px;
+}
+.org-switch{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  width:100%;
+  padding:13px 14px;
+  border-radius:16px;
+  border:1px solid transparent;
+  color:var(--text-secondary);
+  background:rgba(255,255,255,.02);
+  text-align:left;
+  transition:border-color .16s ease,background .16s ease,color .16s ease,transform .16s ease;
+}
+.org-switch:hover{
+  transform:translateY(-1px);
+  border-color:var(--border-strong);
+  color:var(--text-primary);
+}
+.org-switch.active{
+  border-color:rgba(91,110,245,.34);
+  background:rgba(91,110,245,.12);
+  color:#fff;
+}
+.org-label strong{
+  display:block;
+  font-size:13px;
+  font-weight:700;
+}
+.org-label span{
+  display:block;
+  margin-top:4px;
+  color:var(--text-secondary);
+  font-size:11px;
+}
+.nav-badge,.micro-badge{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:24px;
+  height:24px;
+  padding:0 8px;
+  border-radius:999px;
+  background:rgba(255,255,255,.06);
+  color:var(--text-primary);
+  font-size:11px;
+}
+.search-shell{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  width:100%;
+  margin-top:16px;
+  padding:13px 14px;
+  color:var(--text-secondary);
+  transition:border-color .16s ease,background .16s ease;
+}
+.search-shell:hover{
+  border-color:var(--border-strong);
+  background:rgba(255,255,255,.035);
+}
+kbd{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:30px;
+  height:24px;
+  padding:0 8px;
+  border-radius:8px;
+  border:1px solid var(--border-strong);
+  background:rgba(255,255,255,.03);
+  color:var(--text-secondary);
+  font-size:11px;
+  letter-spacing:.02em;
+}
+.module-section{margin-top:18px}
+.module-section h3,
+.inspector-card h3,
+.surface-header h3{
+  font:700 13px/1.1 "JetBrains Mono","SFMono-Regular",monospace;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  color:var(--text-muted);
+}
+.module-stack{
+  display:grid;
+  gap:10px;
+  margin-top:12px;
+}
+.module-link{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:14px;
+  width:100%;
+  padding:14px 14px 15px;
+  text-align:left;
+  transition:transform .16s ease,border-color .16s ease,background .16s ease;
+}
+.module-link:hover{
+  transform:translateY(-1px);
+  border-color:var(--border-strong);
+}
+.module-link.active{
+  border-color:rgba(91,110,245,.28);
+  background:rgba(91,110,245,.1);
+}
+.module-copy strong{
+  display:block;
+  font-size:13px;
+  font-weight:700;
+}
+.module-copy span{
+  display:block;
+  margin-top:5px;
+  color:var(--text-secondary);
+  font-size:12px;
+  line-height:1.45;
+}
+.mini-list{
+  display:grid;
+  gap:8px;
+  margin-top:12px;
+}
+.mini-list-item{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:12px 14px;
+  border-radius:14px;
+  background:rgba(255,255,255,.025);
+  border:1px solid rgba(255,255,255,.04);
+}
+.mini-list-copy strong{
+  display:block;
+  font-size:12px;
+}
+.mini-list-meta{
+  margin-top:4px;
+  color:var(--text-secondary);
+  font-size:11px;
+}
+
+.context-header{
+  position:sticky;
+  top:0;
+  z-index:20;
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:24px;
+  padding:18px 28px;
+  background:linear-gradient(180deg,rgba(10,10,15,.9),rgba(10,10,15,.72));
+  border-bottom:1px solid var(--border-subtle);
+  backdrop-filter:blur(18px);
+}
+.header-copy{
+  min-width:0;
+}
+.header-meta{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+  margin-bottom:10px;
+}
+.header-meta .eyebrow{margin:0}
+.header-meta .header-org{
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.08);
+  background:rgba(255,255,255,.03);
+  color:var(--text-secondary);
+  font-size:12px;
+}
+.header-title{
+  font:400 clamp(32px,4vw,54px)/.98 "DM Serif Display","Georgia",serif;
+  letter-spacing:-.03em;
+}
+.header-sub{
+  max-width:760px;
+  margin-top:10px;
+  color:var(--text-secondary);
+  font-size:14px;
+}
+.header-actions{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+}
+.btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:11px 15px;
+  border-radius:14px;
+  border:1px solid transparent;
+  font-size:13px;
+  font-weight:700;
+  transition:transform .16s ease,filter .16s ease,border-color .16s ease,background .16s ease,box-shadow .16s ease;
+}
+.btn:hover:not(:disabled){
+  transform:translateY(-1px);
+  filter:brightness(1.04);
+}
+.btn:disabled{
+  opacity:.52;
+  cursor:not-allowed;
+}
+.btn-primary{
+  background:linear-gradient(135deg,#6678ff,#4e61df);
+  color:#fff;
+  box-shadow:0 12px 28px rgba(91,110,245,.24);
+}
+.btn-secondary{
+  border-color:rgba(91,110,245,.34);
+  color:#c7ceff;
+  background:rgba(91,110,245,.08);
+}
+.btn-ghost{
+  border-color:var(--border-subtle);
+  color:var(--text-secondary);
+  background:rgba(255,255,255,.02);
+}
+.btn-danger{
+  border-color:rgba(245,91,91,.22);
+  color:#ffcaca;
+  background:rgba(245,91,91,.08);
+}
+.btn-small{
+  padding:9px 11px;
+  font-size:12px;
+  border-radius:12px;
+}
+.button-cluster{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.canvas-main{
+  min-width:0;
+  padding:24px 28px 30px;
+}
+.page{display:none}
+.page.active{display:block;animation:fadeUp .24s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+.surface{
+  padding:20px;
+  background:linear-gradient(180deg,rgba(20,20,30,.92),rgba(13,13,20,.96));
+}
+.surface-header{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:16px;
+  margin-bottom:16px;
+}
+.surface-copy strong,
+.surface-copy span{
+  display:block;
+}
+.surface-copy strong{
+  font:700 18px/1.1 "Bricolage Grotesque","IBM Plex Sans",sans-serif;
+  letter-spacing:-.03em;
+}
+.surface-copy span{
+  margin-top:8px;
+  color:var(--text-secondary);
+  font-size:13px;
+  line-height:1.5;
+}
+
+.metric-strip{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:14px;
+  margin-bottom:16px;
+}
+.metric-card{
+  padding:18px;
+  border-radius:18px;
+  border:1px solid var(--border-subtle);
+  background:
+    radial-gradient(circle at 100% 0%,rgba(91,110,245,.14),transparent 44%),
+    linear-gradient(180deg,rgba(23,23,34,.98),rgba(15,15,23,.98));
+}
+.metric-label{
+  color:var(--text-muted);
+  font:700 11px/1.1 "JetBrains Mono","SFMono-Regular",monospace;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+}
+.metric-number{
+  margin-top:12px;
+  font-size:34px;
+  line-height:1;
+  letter-spacing:-.05em;
+  color:#fff;
+}
+.metric-foot{
+  margin-top:10px;
+  color:var(--text-secondary);
+  font-size:12px;
+  line-height:1.45;
+}
+
+.bento-grid{
+  display:grid;
+  grid-template-columns:repeat(12,minmax(0,1fr));
+  gap:14px;
+}
+.span-4{grid-column:span 4}
+.span-5{grid-column:span 5}
+.span-6{grid-column:span 6}
+.span-7{grid-column:span 7}
+.span-8{grid-column:span 8}
+.span-12{grid-column:1 / -1}
+
+.queue-preview-list,
+.approval-lane,
+.activity-feed,
+.detail-list,
+.insight-grid,
+.report-palette,
+.report-canvas,
+.memory-grid,
+.queue-table,
+.log-list{
+  display:grid;
+  gap:10px;
+}
+.queue-row{
+  padding:14px 16px;
+  border-radius:16px;
+  cursor:pointer;
+  transition:border-color .16s ease,transform .16s ease,background .16s ease;
+}
+.queue-row:hover{
+  transform:translateY(-1px);
+  border-color:var(--border-strong);
+}
+.queue-row.selected{
+  border-color:rgba(91,110,245,.32);
+  background:rgba(91,110,245,.08);
+}
+.queue-row.optimistic{
+  border-style:dashed;
+  border-color:rgba(91,110,245,.42);
+}
+.queue-row-top{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+}
+.queue-row-title{
+  font-weight:700;
+  font-size:14px;
+  line-height:1.4;
+}
+.queue-row-meta{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:10px;
+}
+.chip,
+.platform-badge,
+.status-badge,
+.ghost-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:7px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.06);
+  background:rgba(255,255,255,.03);
+  font-size:11px;
+  font-weight:700;
+}
+.chip-mono{font-size:11px}
+.ghost-pill{color:var(--text-secondary)}
+.platform-badge.linkedin{color:#b4dbff;background:rgba(10,102,194,.12);border-color:rgba(10,102,194,.2)}
+.platform-badge.threads{color:#f6f6fb;background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.14)}
+.platform-badge.x{color:#eef2f7;background:rgba(156,163,175,.12);border-color:rgba(156,163,175,.22)}
+.platform-badge.instagram{color:#ffc8da;background:rgba(225,48,108,.12);border-color:rgba(225,48,108,.2)}
+.platform-badge.facebook{color:#cfe2ff;background:rgba(24,119,242,.12);border-color:rgba(24,119,242,.2)}
+.status-badge.pending-review{color:#ffe1aa;background:rgba(245,166,35,.1);border-color:rgba(245,166,35,.18)}
+.status-badge.needs-edits{color:#ffcece;background:rgba(245,91,91,.1);border-color:rgba(245,91,91,.18)}
+.status-badge.approved{color:#bcf7e4;background:rgba(34,211,160,.1);border-color:rgba(34,211,160,.18)}
+.status-badge.posted{color:#cbd2ff;background:rgba(91,110,245,.1);border-color:rgba(91,110,245,.18)}
+.queue-list-footer,
+.surface-note{
+  margin-top:12px;
+  color:var(--text-secondary);
+  font-size:12px;
+  line-height:1.55;
+}
+.chart-wrap{
+  padding:8px 0 2px;
+}
+.chart-legend{
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+  margin-top:8px;
+}
+.legend-item{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  color:var(--text-secondary);
+  font-size:12px;
+}
+.legend-line{
+  width:18px;
+  height:2px;
+  border-radius:999px;
+}
+.line-primary{background:var(--accent-primary)}
+.line-secondary{background:var(--accent-cyan)}
+.insight-card{
+  padding:16px;
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.05);
+  background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.015));
+}
+.insight-card h4{
+  font:700 15px/1.2 "Bricolage Grotesque","IBM Plex Sans",sans-serif;
+}
+.insight-card p{
+  margin:10px 0 0;
+  color:var(--text-secondary);
+  font-size:13px;
+  line-height:1.58;
+}
+.signal-strong{color:#fff}
+.signal-positive{color:#bff8e7}
+.signal-warning{color:#ffe0b3}
+.signal-risk{color:#ffc9c9}
+.activity-item{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:14px;
+  padding:14px 15px;
+  border-radius:16px;
+}
+.activity-copy strong{
+  display:block;
+  font-size:13px;
+  line-height:1.45;
+}
+.activity-copy span{
+  display:block;
+  margin-top:6px;
+  color:var(--text-secondary);
+  font-size:12px;
+  line-height:1.45;
+}
+
+.queue-table-head{
+  display:grid;
+  grid-template-columns:120px minmax(0,1.6fr) 130px 170px 140px;
+  gap:12px;
+  padding:10px 12px;
+  border-radius:14px;
+  background:rgba(255,255,255,.03);
+  color:var(--text-muted);
+  font:700 11px/1.1 "JetBrains Mono","SFMono-Regular",monospace;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+}
+.queue-table-row{
+  display:grid;
+  grid-template-columns:120px minmax(0,1.6fr) 130px 170px 140px;
+  gap:12px;
+  align-items:center;
+  padding:14px 12px;
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,.05);
+  background:rgba(255,255,255,.02);
+  cursor:pointer;
+  transition:border-color .16s ease,background .16s ease,transform .16s ease;
+}
+.queue-table-row:hover{
+  transform:translateY(-1px);
+  border-color:var(--border-strong);
+}
+.queue-table-row.selected{
+  border-color:rgba(91,110,245,.32);
+  background:rgba(91,110,245,.1);
+}
+.queue-table-title{
+  min-width:0;
+}
+.queue-table-title strong{
+  display:block;
+  font-size:13px;
+  font-weight:700;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.queue-table-title span{
+  display:block;
+  margin-top:4px;
+  color:var(--text-secondary);
+  font-size:12px;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.table-mono{
+  font-size:12px;
+  color:var(--text-secondary);
+}
+.platform-row{
+  display:flex;
+  gap:6px;
+  flex-wrap:wrap;
+}
+
+.kanban{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:14px;
+}
+.approval-lane{
+  gap:12px;
+}
+.lane-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:0 4px;
+}
+.lane-head strong{
+  font:700 15px/1.1 "Bricolage Grotesque","IBM Plex Sans",sans-serif;
+}
+.approval-card{
+  padding:16px;
+  border-radius:18px;
+}
+.approval-card h4{
+  font-size:14px;
+  line-height:1.42;
+}
+.approval-meta{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:10px;
+}
+.approval-actions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:14px;
+}
+.presence-row{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:12px;
+}
+.presence-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:7px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.06);
+  background:rgba(255,255,255,.03);
+  color:var(--text-secondary);
+  font-size:11px;
+}
+.presence-pill strong{color:var(--text-primary)}
+
+.analytics-top{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:14px;
+}
+.analytics-metric{
+  padding:16px;
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.05);
+  background:rgba(255,255,255,.025);
+}
+.analytics-metric strong{
+  display:block;
+  font-size:26px;
+  letter-spacing:-.04em;
+}
+.analytics-metric span{
+  display:block;
+  margin-top:10px;
+  color:var(--text-secondary);
+  font-size:12px;
+}
+.delta{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  margin-top:10px;
+  font-size:11px;
+  font-weight:700;
+}
+.delta.up{color:#b6f5e1}
+.delta.flat{color:#d2d2e6}
+.delta.down{color:#ffc9c9}
+.donut-wrap{
+  display:grid;
+  gap:14px;
+}
+.donut{
+  width:180px;
+  height:180px;
+  margin:4px auto 0;
+  border-radius:50%;
+  border:1px solid rgba(255,255,255,.06);
+  position:relative;
+}
+.donut::after{
+  content:"";
+  position:absolute;
+  inset:34px;
+  border-radius:50%;
+  background:var(--bg-base);
+  border:1px solid var(--border-subtle);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.02);
+}
+.donut-center{
+  position:absolute;
+  inset:0;
+  display:grid;
+  place-items:center;
+  text-align:center;
+  z-index:1;
+}
+.donut-center strong{
+  display:block;
+  font-size:30px;
+  letter-spacing:-.05em;
+}
+.donut-center span{
+  display:block;
+  margin-top:6px;
+  color:var(--text-secondary);
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:.12em;
+}
+.table{
+  width:100%;
+  border-collapse:collapse;
+}
+.table th,
+.table td{
+  padding:12px 10px;
+  border-bottom:1px solid rgba(255,255,255,.05);
+  text-align:left;
+}
+.table th{
+  color:var(--text-muted);
+  font:700 11px/1.1 "JetBrains Mono","SFMono-Regular",monospace;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+}
+.table td{
+  color:var(--text-secondary);
+  font-size:13px;
+}
+.table td strong{color:var(--text-primary)}
+
+.builder-layout{
+  display:grid;
+  grid-template-columns:280px minmax(0,1fr);
+  gap:14px;
+}
+.report-palette,
+.report-canvas{
+  min-height:240px;
+}
+.report-chip{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  padding:13px 14px;
+  border-radius:16px;
+  cursor:grab;
+}
+.report-chip strong{
+  display:block;
+  font-size:13px;
+}
+.report-chip span{
+  display:block;
+  margin-top:5px;
+  color:var(--text-secondary);
+  font-size:12px;
+}
+.report-canvas{
+  padding:8px;
+  border-radius:18px;
+  border:1px dashed rgba(255,255,255,.12);
+  background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01));
+}
+.report-canvas.drag-over{
+  border-color:rgba(91,110,245,.42);
+  background:rgba(91,110,245,.08);
+}
+.report-block{
+  padding:14px;
+  border-radius:16px;
+}
+.report-block-top{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+}
+.report-block h4{
+  font-size:14px;
+  line-height:1.35;
+}
+.report-block p{
+  margin:8px 0 0;
+  color:var(--text-secondary);
+  font-size:12px;
+  line-height:1.55;
+}
+.block-actions{
+  display:flex;
+  gap:8px;
+  margin-top:12px;
+}
+
+.memory-grid{
+  grid-template-columns:repeat(2,minmax(0,1fr));
+}
+.memory-row{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  padding:14px 15px;
+  border-radius:16px;
+  border:1px solid rgba(255,255,255,.05);
+  background:rgba(255,255,255,.02);
+}
+.memory-copy strong{
+  display:block;
+  font-size:13px;
+  line-height:1.4;
+}
+.memory-copy span{
+  display:block;
+  margin-top:6px;
+  color:var(--text-secondary);
+  font-size:12px;
+  line-height:1.45;
+}
+.lifecycle-strip{
+  display:grid;
+  grid-template-columns:repeat(5,minmax(0,1fr));
+  gap:10px;
+}
+.lifecycle-card{
+  padding:15px;
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.05);
+  background:rgba(255,255,255,.025);
+}
+.lifecycle-card strong{
+  display:block;
+  margin-top:10px;
+  font-size:28px;
+  letter-spacing:-.05em;
+}
+.lifecycle-card span{
+  display:block;
+  color:var(--text-secondary);
+  font-size:12px;
+}
+
+.log-list{min-height:420px}
+.log-line{
+  display:grid;
+  grid-template-columns:190px 74px 1fr;
+  gap:12px;
+  padding:12px 14px;
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,.05);
+  background:rgba(255,255,255,.02);
+}
+.log-ts{color:var(--text-muted);font-size:11px}
+.log-lvl{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.log-INFO{color:#b8dcff}
+.log-WARN{color:#ffe0ad}
+.log-ERROR{color:#ffc7c7}
+.log-msg{color:var(--text-secondary);font-size:12px;line-height:1.55}
+
+.settings-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:14px;
+}
+.settings-grid .span-2{grid-column:1 / -1}
+.detail-list{
+  margin:0;
+  padding:0;
+  list-style:none;
+}
+.detail-list li{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  padding:13px 14px;
+  border-radius:14px;
+}
+.detail-key{
+  color:var(--text-secondary);
+  font-size:12px;
+}
+.detail-value{
+  color:var(--text-primary);
+  font-size:12px;
+  font-weight:700;
+  text-align:right;
+}
+
+.permission-table-wrap{
+  overflow:auto;
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.06);
+}
+.permission-table{
+  width:100%;
+  border-collapse:collapse;
+  min-width:720px;
+}
+.permission-table th,
+.permission-table td{
+  padding:14px 12px;
+  border-bottom:1px solid rgba(255,255,255,.05);
+  text-align:left;
+}
+.permission-table th{
+  background:rgba(255,255,255,.03);
+  color:var(--text-muted);
+  font:700 11px/1.1 "JetBrains Mono","SFMono-Regular",monospace;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+}
+.permission-table td{
+  color:var(--text-secondary);
+  font-size:13px;
+}
+.toggle{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:72px;
+  padding:8px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.08);
+  background:rgba(255,255,255,.03);
+  font-size:11px;
+  font-weight:700;
+}
+.toggle.on{
+  border-color:rgba(34,211,160,.18);
+  background:rgba(34,211,160,.09);
+  color:#bcf7e4;
+}
+.toggle.off{
+  color:#d4d4ea;
+}
+
+.inspector-rail .stack{
+  display:grid;
+  gap:14px;
+}
+.inspector-card{
+  padding:18px;
+}
+.inspector-title{
+  margin-top:10px;
+  font:700 20px/1.05 "Bricolage Grotesque","IBM Plex Sans",sans-serif;
+  letter-spacing:-.04em;
+}
+.inspector-copy{
+  margin-top:10px;
+  color:var(--text-secondary);
+  font-size:13px;
+  line-height:1.55;
+}
+.preview-tabs,
+.composer-tabs{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:14px;
+}
+.tab-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 11px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.08);
+  background:rgba(255,255,255,.03);
+  color:var(--text-secondary);
+  font-size:11px;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+.tab-pill.active{
+  color:#fff;
+  border-color:rgba(91,110,245,.3);
+  background:rgba(91,110,245,.12);
+}
+.preview-panel{
+  margin-top:14px;
+  padding:16px;
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.06);
+  background:rgba(255,255,255,.025);
+}
+.preview-panel img{
+  width:100%;
+  height:160px;
+  object-fit:cover;
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,.08);
+  margin-bottom:12px;
+}
+.preview-panel pre{
+  margin:0;
+  white-space:pre-wrap;
+  word-break:break-word;
+  font:500 13px/1.72 "IBM Plex Sans","Segoe UI",sans-serif;
+  color:#eef0ff;
+}
+.score-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px;
+  margin-top:14px;
+}
+.score-card{
+  padding:10px 12px;
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,.05);
+  background:rgba(255,255,255,.02);
+}
+.score-card span{
+  display:block;
+  color:var(--text-muted);
+  font-size:10px;
+  text-transform:uppercase;
+  letter-spacing:.12em;
+}
+.score-card strong{
+  display:block;
+  margin-top:8px;
+  font-size:18px;
+}
+.empty-state{
+  display:grid;
+  place-items:center;
+  gap:10px;
+  min-height:180px;
+  padding:24px 18px;
+  text-align:center;
+  color:var(--text-secondary);
+  background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.015));
+  border-style:dashed;
+}
+.empty-state strong{
+  display:block;
+  color:var(--text-primary);
+  font:700 18px/1.15 "Bricolage Grotesque","IBM Plex Sans",sans-serif;
+}
+
+.overlay[hidden]{display:none}
+.overlay{
+  position:fixed;
+  inset:0;
+  z-index:60;
+  display:grid;
+  place-items:center;
+  padding:24px;
+  background:rgba(6,7,10,.74);
+  backdrop-filter:blur(18px);
+}
+.modal{
+  width:min(1160px,100%);
+  max-height:min(92vh,100%);
+  overflow:auto;
+  border:1px solid var(--border-strong);
+  border-radius:28px;
+  background:linear-gradient(180deg,rgba(24,24,31,.98),rgba(14,14,20,.98));
+  box-shadow:var(--shadow-strong);
+}
+.modal-header{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:16px;
+  padding:24px 24px 20px;
+  border-bottom:1px solid rgba(255,255,255,.05);
+}
+.modal-header h2{
+  font:700 26px/1.02 "Bricolage Grotesque","IBM Plex Sans",sans-serif;
+  letter-spacing:-.04em;
+}
+.modal-header p{
+  margin:10px 0 0;
+  color:var(--text-secondary);
+  font-size:13px;
+}
+.modal-close{
+  width:42px;
+  height:42px;
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,.08);
+  background:rgba(255,255,255,.03);
+  font-size:18px;
+}
+
+.command-body{
+  padding:0 24px 24px;
+}
+.command-search{
+  width:100%;
+  margin-top:16px;
+  padding:16px 18px;
+  border-radius:18px;
+  border:1px solid var(--border-subtle);
+  background:rgba(255,255,255,.03);
+  color:var(--text-primary);
+  font-size:15px;
+}
+.command-results{
+  display:grid;
+  gap:8px;
+  margin-top:16px;
+}
+.command-item{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  padding:14px 16px;
+  border-radius:16px;
+  border:1px solid rgba(255,255,255,.05);
+  background:rgba(255,255,255,.02);
+}
+.command-item.active{
+  border-color:rgba(91,110,245,.32);
+  background:rgba(91,110,245,.1);
+}
+.command-meta strong{
+  display:block;
+  font-size:13px;
+}
+.command-meta span{
+  display:block;
+  margin-top:5px;
+  color:var(--text-secondary);
+  font-size:12px;
+}
+
+.composer-body{
+  display:grid;
+  grid-template-columns:430px minmax(0,1fr);
+  gap:0;
+}
+.composer-pane,
+.composer-preview-pane{
+  padding:22px 24px 24px;
+}
+.composer-pane{
+  border-right:1px solid rgba(255,255,255,.05);
+}
+.form-grid{
+  display:grid;
+  gap:14px;
+}
+.form-grid.two{
+  grid-template-columns:repeat(2,minmax(0,1fr));
+}
+.field{
+  display:grid;
+  gap:8px;
+}
+.field label{
+  color:var(--text-secondary);
+  font-size:12px;
+  font-weight:600;
+}
+.input,
+.select,
+.textarea{
+  width:100%;
+  padding:12px 14px;
+  border-radius:14px;
+  border:1px solid var(--border-subtle);
+  background:rgba(255,255,255,.03);
+  color:var(--text-primary);
+}
+.textarea{
+  min-height:168px;
+  resize:vertical;
+}
+.pill-toggle-row{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.pill-toggle{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:9px 11px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.08);
+  background:rgba(255,255,255,.03);
+  color:var(--text-secondary);
+  font-size:11px;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+.pill-toggle.active{
+  color:#fff;
+  border-color:rgba(91,110,245,.32);
+  background:rgba(91,110,245,.12);
+}
+.progressive-card{
+  padding:14px;
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.06);
+  background:rgba(255,255,255,.02);
+}
+.advanced-toggle{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:12px 14px;
+  border-radius:16px;
+  border:1px solid rgba(255,255,255,.06);
+  background:rgba(255,255,255,.02);
+}
+.preview-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px;
+  margin-top:14px;
+}
+.preview-card{
+  padding:14px;
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.06);
+  background:rgba(255,255,255,.02);
+}
+.preview-card.active{
+  border-color:rgba(91,110,245,.3);
+  background:rgba(91,110,245,.08);
+}
+.preview-card-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:10px;
+}
+.preview-card-head strong{
+  font-size:12px;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+.preview-card-head span{
+  color:var(--text-secondary);
+  font-size:11px;
+}
+.preview-card p{
+  margin:0;
+  color:var(--text-secondary);
+  font-size:12px;
+  line-height:1.62;
+  white-space:pre-wrap;
+  word-break:break-word;
+}
+.link-preview{
+  margin-top:14px;
+  padding:16px;
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.06);
+  background:
+    radial-gradient(circle at 100% 0%,rgba(60,200,255,.12),transparent 42%),
+    rgba(255,255,255,.02);
+}
+.link-preview h4{
+  font-size:14px;
+}
+.link-preview p{
+  margin:8px 0 0;
+  color:var(--text-secondary);
+  font-size:12px;
+  line-height:1.55;
+}
+.modal-footer{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  padding:20px 24px 24px;
+  border-top:1px solid rgba(255,255,255,.05);
+}
+.modal-footer p{
+  margin:0;
+  color:var(--text-secondary);
+  font-size:12px;
+}
+
+.toast-stack{
+  position:fixed;
+  right:18px;
+  bottom:18px;
+  z-index:80;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.toast{
+  min-width:280px;
+  max-width:360px;
+  padding:14px 16px;
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+  border-radius:18px;
+  border-left:4px solid var(--accent-primary);
+  animation:toastIn .2s ease;
+}
+.toast.ok{border-left-color:var(--accent-green)}
+.toast.err{border-left-color:var(--accent-red)}
+.toast.info{border-left-color:var(--accent-primary)}
+.toast-icon{
+  width:28px;
+  height:28px;
+  border-radius:10px;
+  display:grid;
+  place-items:center;
+  background:rgba(255,255,255,.05);
+  font-weight:700;
+}
+.toast-text strong{
+  display:block;
+  font-size:12px;
+}
+.toast-text span{
+  display:block;
+  margin-top:5px;
+  color:var(--text-secondary);
+  font-size:11px;
+  line-height:1.5;
+}
+@keyframes toastIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+.skeleton{
+  background:
+    linear-gradient(90deg,rgba(255,255,255,.04),rgba(255,255,255,.08),rgba(255,255,255,.04));
+  background-size:220% 100%;
+  animation:shimmer 1.2s infinite linear;
+}
+.skeleton-line{
+  height:12px;
+  border-radius:999px;
+}
+.skeleton-card{
+  padding:18px;
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.05);
+  background:rgba(255,255,255,.02);
+}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.spin{
+  width:13px;
+  height:13px;
+  border-radius:50%;
+  border:2px solid rgba(255,255,255,.2);
+  border-top-color:currentColor;
+  animation:spin 0.7s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+@media (max-width:1500px){
+  .app-shell{
+    grid-template-columns:76px 260px minmax(0,1fr);
+  }
+  .inspector-rail{
+    position:relative;
+    height:auto;
+    border-left:none;
+    border-top:1px solid var(--border-subtle);
+    grid-column:2 / -1;
+  }
+}
+@media (max-width:1260px){
+  .metric-strip,
+  .analytics-top,
+  .lifecycle-strip,
+  .settings-grid,
+  .memory-grid,
+  .kanban,
+  .builder-layout{
+    grid-template-columns:1fr 1fr;
+  }
+  .bento-grid{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+  .span-4,.span-5,.span-6,.span-7,.span-8,.span-12{
+    grid-column:auto;
+  }
+  .composer-body{
+    grid-template-columns:1fr;
+  }
+  .composer-pane{
+    border-right:none;
+    border-bottom:1px solid rgba(255,255,255,.05);
+  }
+}
+@media (max-width:1080px){
+  .app-shell{
+    grid-template-columns:1fr;
+  }
+  .nav-rail,
+  .workspace-rail,
+  .inspector-rail{
+    position:relative;
+    height:auto;
+  }
+  .nav-rail{
+    padding:14px 16px;
+    border-right:none;
+    border-bottom:1px solid var(--border-subtle);
+  }
+  .nav-stack{
+    display:grid;
+    grid-template-columns:repeat(7,minmax(0,1fr));
+    gap:8px;
+  }
+  .nav-item{
+    width:100%;
+    height:54px;
+  }
+  .nav-item::before,
+  .nav-tooltip{display:none}
+  .workspace-rail{
+    border-right:none;
+    border-bottom:1px solid var(--border-subtle);
+  }
+  .context-header{
+    position:relative;
+    padding:20px 18px;
+  }
+  .canvas-main{
+    padding:18px;
+  }
+}
+@media (max-width:760px){
+  .metric-strip,
+  .analytics-top,
+  .lifecycle-strip,
+  .settings-grid,
+  .memory-grid,
+  .kanban,
+  .builder-layout,
+  .preview-grid,
+  .form-grid.two{
+    grid-template-columns:1fr;
+  }
+  .queue-table-head,
+  .queue-table-row,
+  .log-line{
+    grid-template-columns:1fr;
+  }
+  .header-actions{
+    justify-content:flex-start;
+  }
+  .modal{
+    width:100%;
+    border-radius:22px;
+  }
+  .overlay{
+    padding:10px;
+  }
+}
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="nav-rail">
+    <div class="brand-seal" aria-hidden="true">O</div>
+    <div class="nav-stack" id="nav-rail"></div>
+    <div class="nav-divider"></div>
+    <div class="nav-stack" id="nav-rail-secondary"></div>
+  </aside>
+
+  <aside class="workspace-rail">
+    <div class="workspace-title">
+      <div>
+        <div class="eyebrow">Enterprise Social Intelligence</div>
+        <div class="workspace-name">OneClickPostFactory</div>
+        <div class="workspace-copy">A control plane that keeps Buffer’s simplicity, adds Hootsuite-grade governance, and removes the consumer polish that makes enterprise teams distrust the product.</div>
+      </div>
+      <div class="status-chip" id="runtime-chip"><span class="status-dot"></span> Live</div>
+    </div>
+
+    <section class="rail-card org-card">
+      <h3 class="sr-only">Organizations</h3>
+      <div class="surface-copy">
+        <strong>Active Workspace</strong>
+        <span>Switch brand context, SLA posture, and reporting frame without losing the queue or approvals surface.</span>
+      </div>
+      <div class="org-grid" id="org-grid"></div>
+      <button class="search-shell" data-action="open-command" aria-label="Open command palette">
+        <span>Search views, queue actions, and keyboard commands</span>
+        <kbd>⌘K</kbd>
+      </button>
+    </section>
+
+    <section class="module-section">
+      <h3>Modules</h3>
+      <div class="module-stack" id="module-stack"></div>
+    </section>
+
+    <section class="module-section">
+      <h3>Team Presence</h3>
+      <div class="mini-list" id="team-presence"></div>
+    </section>
+
+    <section class="module-section">
+      <h3>Signal Feed</h3>
+      <div class="mini-list" id="signal-feed"></div>
+    </section>
+  </aside>
+
+  <div class="canvas-shell">
+    <header class="context-header">
+      <div class="header-copy">
+        <div class="header-meta">
+          <div class="eyebrow" id="page-eyebrow">Overview</div>
+          <div class="header-org" id="header-org">OneClickPostFactory Global • US East</div>
+          <div class="header-org" id="header-date">—</div>
+        </div>
+        <h1 class="header-title" id="page-title">One command center for publishing, approvals, and intelligence.</h1>
+        <p class="header-sub" id="page-sub">A high-density workbench with queue state on the left, live insight surfaces on the right, and governance in the loop instead of bolted on.</p>
+      </div>
+      <div class="header-actions">
+        <button class="search-shell" data-action="open-command" aria-label="Open command palette">
+          <span>Jump to any action or page</span>
+          <kbd>⌘K</kbd>
+        </button>
+        <button class="btn btn-secondary" data-action="open-composer">New Post</button>
+        <button class="btn btn-ghost" data-action="refresh-page">Refresh</button>
+        <button class="btn btn-primary" data-action="fill-queue" id="header-fill-btn">Fill Queue</button>
+        <button class="btn btn-primary" data-action="post-approved" id="header-post-btn">Post Approved</button>
+      </div>
+    </header>
+
+    <main class="canvas-main">
+      <section class="page active" id="page-dashboard">
+        <div class="metric-strip" id="dashboard-kpis"></div>
+        <div class="bento-grid">
+          <section class="surface span-7">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Upcoming Queue</strong>
+                <span>Keep the next five decisions obvious: slot time, core thesis, approval state, and platform spread without opening extra panels.</span>
+              </div>
+              <div class="button-cluster">
+                <button class="btn btn-small btn-secondary" data-action="go-page" data-page="queue">Open Queue</button>
+                <button class="btn btn-small btn-ghost" data-action="open-composer">Compose</button>
+              </div>
+            </div>
+            <div class="queue-preview-list" id="dashboard-queue"></div>
+          </section>
+
+          <section class="surface span-5">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Performance Signal</strong>
+                <span>Clear analytics like Buffer, benchmark overlays and governance framing like Hootsuite, with explicit notes when data is modeled.</span>
+              </div>
+              <div class="button-cluster" id="benchmark-switcher"></div>
+            </div>
+            <div class="chart-wrap" id="dashboard-chart"></div>
+            <div class="chart-legend">
+              <div class="legend-item"><span class="legend-line line-primary"></span>Our performance</div>
+              <div class="legend-item"><span class="legend-line line-secondary"></span><span id="benchmark-label">Benchmark</span></div>
+            </div>
+            <div class="surface-note" id="benchmark-note"></div>
+          </section>
+
+          <section class="surface span-4">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Insight Cards</strong>
+                <span>Actionable recommendations, not passive dashboards.</span>
+              </div>
+            </div>
+            <div class="insight-grid" id="dashboard-insights"></div>
+          </section>
+
+          <section class="surface span-4">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Collision Monitor</strong>
+                <span>Two drafts too close together or competing for the same channel should surface before they ship.</span>
+              </div>
+            </div>
+            <div class="detail-list" id="dashboard-collisions"></div>
+          </section>
+
+          <section class="surface span-4">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Recent Activity</strong>
+                <span>A compact operational feed for managers and operators.</span>
+              </div>
+            </div>
+            <div class="activity-feed" id="dashboard-activity"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-queue">
+        <div class="surface">
+          <div class="surface-header">
+            <div class="surface-copy">
+              <strong>Queue Workbench</strong>
+              <span>The operational list view stays dense and scannable, but selected-slot detail moves to the inspector so teams can review without modal churn.</span>
+            </div>
+            <div class="button-cluster">
+              <button class="btn btn-small btn-secondary" data-action="open-composer">New manual draft</button>
+              <button class="btn btn-small btn-ghost" data-action="fill-queue">Refill empties</button>
+            </div>
+          </div>
+          <div class="queue-table">
+            <div class="queue-table-head">
+              <div>Time</div>
+              <div>Post</div>
+              <div>Approval</div>
+              <div>Platforms</div>
+              <div>Angle</div>
+            </div>
+            <div id="queue-table"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-approvals">
+        <div class="metric-strip" id="approval-kpis"></div>
+        <div class="kanban" id="approval-board"></div>
+      </section>
+
+      <section class="page" id="page-analytics">
+        <div class="analytics-top" id="analytics-kpis"></div>
+        <div class="bento-grid" style="margin-top:14px">
+          <section class="surface span-8">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Benchmarking</strong>
+                <span>Competitor overlays and weekly movement with enough density for enterprise decision-making and enough clarity to avoid chart sludge.</span>
+              </div>
+              <div class="button-cluster" id="analytics-benchmark-switcher"></div>
+            </div>
+            <div class="chart-wrap" id="analytics-chart"></div>
+            <div class="surface-note" id="analytics-chart-note"></div>
+          </section>
+
+          <section class="surface span-4">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Platform Mix</strong>
+                <span>Current distribution across enabled channels and posted history.</span>
+              </div>
+            </div>
+            <div class="donut-wrap" id="analytics-donut"></div>
+          </section>
+
+          <section class="surface span-7">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Top Posts</strong>
+                <span>Use real queue and history data to rank current or recent content.</span>
+              </div>
+            </div>
+            <div id="top-posts-table"></div>
+          </section>
+
+          <section class="surface span-5">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Strategy Signals</strong>
+                <span>Short recommendations that link performance deltas to scheduling, approval, and channel mix.</span>
+              </div>
+            </div>
+            <div class="insight-grid" id="analytics-insights"></div>
+          </section>
+
+          <section class="surface span-12">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Report Builder</strong>
+                <span>Drag metric blocks into the canvas to assemble an executive export surface. This is UI-first for now, ready for PDF output later.</span>
+              </div>
+              <div class="button-cluster">
+                <button class="btn btn-small btn-ghost" data-action="reset-report">Reset</button>
+                <button class="btn btn-small btn-secondary" data-action="export-report">Prepare export</button>
+              </div>
+            </div>
+            <div class="builder-layout">
+              <div>
+                <h3 style="margin-bottom:12px">Metric Library</h3>
+                <div class="report-palette" id="report-palette"></div>
+              </div>
+              <div>
+                <h3 style="margin-bottom:12px">Report Canvas</h3>
+                <div class="report-canvas" id="report-canvas" data-report-canvas="true"></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-memory">
+        <div class="metric-strip" id="memory-kpis"></div>
+        <div class="lifecycle-strip" id="memory-lifecycle"></div>
+        <div class="bento-grid" style="margin-top:14px">
+          <section class="surface span-6">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Source Registry</strong>
+                <span>A Reddit source should stay alive until its angle inventory is actually exhausted.</span>
+              </div>
+            </div>
+            <div class="memory-grid" id="memory-sources"></div>
+          </section>
+          <section class="surface span-6">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Angle Bank</strong>
+                <span>Atomic, reusable ideas with explicit readiness and publish state.</span>
+              </div>
+            </div>
+            <div class="memory-grid" id="memory-angles"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-logs">
+        <div class="surface">
+          <div class="surface-header">
+            <div class="surface-copy">
+              <strong>Audit & Runtime Logs</strong>
+              <span>Operational truth for fetches, banked angles, publish attempts, and retry conditions.</span>
+            </div>
+            <div class="button-cluster">
+              <button class="btn btn-small btn-ghost" data-action="refresh-logs">Refresh logs</button>
+              <button class="btn btn-small btn-secondary" data-action="toggle-auto-logs" id="auto-logs-btn">Auto off</button>
+            </div>
+          </div>
+          <div class="log-list" id="log-list"></div>
+        </div>
+      </section>
+
+      <section class="page" id="page-settings">
+        <div class="settings-grid">
+          <section class="surface">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Runtime Configuration</strong>
+                <span>Current live environment surface, condensed into an operator-readable spec.</span>
+              </div>
+            </div>
+            <ul class="detail-list" id="runtime-config"></ul>
+          </section>
+
+          <section class="surface">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Platform Guardrails</strong>
+                <span>Only enabled platforms are drafted. Instagram media generation stays hidden unless it is genuinely in play.</span>
+              </div>
+            </div>
+            <ul class="detail-list" id="platform-config"></ul>
+          </section>
+
+          <section class="surface span-2">
+            <div class="surface-header">
+              <div class="surface-copy">
+                <strong>Permission Matrix</strong>
+                <span>Role-based access control should be legible, not buried in a settings list. Toggle specific privileges per team member here.</span>
+              </div>
+            </div>
+            <div class="permission-table-wrap" id="permission-matrix"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <aside class="inspector-rail">
+    <div class="stack" id="inspector-stack"></div>
+  </aside>
+</div>
+
+<div class="overlay" id="command-overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="command-title">
+    <div class="modal-header">
+      <div>
+        <div class="eyebrow">Command Palette</div>
+        <h2 id="command-title">Search everything</h2>
+        <p>Keyboard-first actions for power users: switch pages, draft a post, fill the queue, or jump straight to approvals.</p>
+      </div>
+      <button class="modal-close" data-action="close-command" aria-label="Close command palette">×</button>
+    </div>
+    <div class="command-body">
+      <input class="command-search" id="command-input" placeholder="Try: Draft a post for LinkedIn, Open approvals, Fill queue" autocomplete="off">
+      <div class="command-results" id="command-results"></div>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="composer-overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="composer-title">
+    <div class="modal-header">
+      <div>
+        <div class="eyebrow">Omni-Channel Composer</div>
+        <h2 id="composer-title">Single input, governed outputs</h2>
+        <p>One core message. Platform-specific previews. Progressive disclosure for links, UTM, video, and metadata only when the post actually needs them.</p>
+      </div>
+      <button class="modal-close" data-action="close-composer" aria-label="Close composer">×</button>
+    </div>
+
+    <div class="composer-body">
+      <div class="composer-pane">
+        <div class="form-grid">
+          <div class="form-grid two">
+            <div class="field">
+              <label for="composer-slot">Queue slot</label>
+              <select id="composer-slot" class="select"></select>
+            </div>
+            <div class="field">
+              <label for="composer-title-input">Draft title</label>
+              <input id="composer-title-input" class="input" placeholder="Quarterly POV for enterprise LinkedIn">
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="composer-core-input">Core message</label>
+            <textarea id="composer-core-input" class="textarea" placeholder="Write the core idea once. The UI will split it into network-specific variants without losing the central point."></textarea>
+          </div>
+
+          <div class="field">
+            <label>Platforms</label>
+            <div class="pill-toggle-row" id="composer-platform-toggles"></div>
+          </div>
+
+          <div class="form-grid two">
+            <div class="field">
+              <label for="composer-link-input">Link URL</label>
+              <input id="composer-link-input" class="input" placeholder="https://example.com/report">
+            </div>
+            <div class="field">
+              <label for="composer-link-title">Link preview title</label>
+              <input id="composer-link-title" class="input" placeholder="2026 Social Intelligence Report">
+            </div>
+          </div>
+
+          <div class="progressive-card" id="composer-link-card" hidden>
+            <div class="field">
+              <label for="composer-link-description">Link preview description</label>
+              <textarea id="composer-link-description" class="textarea" style="min-height:96px" placeholder="Short executive summary for the link card"></textarea>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Media mode</label>
+            <div class="pill-toggle-row" id="composer-media-toggles"></div>
+          </div>
+
+          <div class="progressive-card" id="composer-video-card" hidden>
+            <div class="form-grid two">
+              <div class="field">
+                <label for="composer-thumbnail">Thumbnail selection</label>
+                <select id="composer-thumbnail" class="select">
+                  <option value="clean-cut">Clean cut</option>
+                  <option value="speaker-close">Speaker close-up</option>
+                  <option value="quote-frame">Quote frame</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="composer-captioning">Captioning</label>
+                <select id="composer-captioning" class="select">
+                  <option value="burned-in">Burned-in captions</option>
+                  <option value="srt">SRT sidecar</option>
+                  <option value="none">No captions</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="advanced-toggle">
+            <div>
+              <strong>UTM + attribution</strong>
+              <div class="surface-note">Keep the field hidden until the post needs tracking detail.</div>
+            </div>
+            <button class="btn btn-small btn-ghost" data-action="toggle-utm">Toggle</button>
+          </div>
+
+          <div class="progressive-card" id="composer-utm-card" hidden>
+            <div class="field">
+              <label for="composer-utm">UTM string</label>
+              <input id="composer-utm" class="input" placeholder="utm_source=linkedin&utm_medium=social&utm_campaign=q2_signal">
+            </div>
+          </div>
+
+          <div class="advanced-toggle">
+            <div>
+              <strong>API metadata</strong>
+              <div class="surface-note">For compliance, workflows, or downstream automations.</div>
+            </div>
+            <button class="btn btn-small btn-ghost" data-action="toggle-metadata">Toggle</button>
+          </div>
+
+          <div class="progressive-card" id="composer-metadata-card" hidden>
+            <div class="field">
+              <label for="composer-metadata">Metadata</label>
+              <input id="composer-metadata" class="input" placeholder="approval_required=true; campaign=q2_exec_signal">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer-preview-pane">
+        <div class="surface-copy">
+          <strong>Live previews</strong>
+          <span>These previews are deterministic and local for now, designed to mirror the product flow without consuming tokens or calling the model.</span>
+        </div>
+        <div class="composer-tabs" id="composer-preview-tabs"></div>
+        <div class="preview-grid" id="composer-preview-grid"></div>
+        <div class="link-preview" id="composer-link-preview" hidden></div>
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <p>Scheduling uses optimistic UI. The slot moves immediately, then rolls back if the save fails.</p>
+      <div class="button-cluster">
+        <button class="btn btn-ghost" data-action="close-composer">Cancel</button>
+        <button class="btn btn-primary" data-action="schedule-composer" id="composer-save-btn">Schedule Draft</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack"></div>
+
+<script>
+const SLOTS=[
+  {id:'s1',label:'5:00 AM',desc:'Early risers'},
+  {id:'s2',label:'7:00 AM',desc:'Morning commute'},
+  {id:'s3',label:'12:00 PM',desc:'Lunch break'},
+  {id:'s4',label:'3:00 PM',desc:'Afternoon peak'}
+];
+
+const PAGE_META={
+  dashboard:{
+    nav:'OV',
+    group:'primary',
+    eyebrow:'Overview',
+    title:'One command center for publishing, approvals, and intelligence.',
+    sub:'A high-density workbench with queue state on the left, live insight surfaces on the right, and governance in the loop instead of bolted on.'
+  },
+  queue:{
+    nav:'QU',
+    group:'primary',
+    eyebrow:'Publishing',
+    title:'Queue first. Details second. No wasted clicks.',
+    sub:'The queue is the heartbeat of the product, so the list stays dense while the right-side inspector takes over preview, governance, and posting actions.'
+  },
+  approvals:{
+    nav:'AP',
+    group:'primary',
+    eyebrow:'Governance',
+    title:'Approval gates that feel deliberate, not bureaucratic.',
+    sub:'Managers should see pending review, needs edits, and approved content without digging through generic status lists or bloated modal stacks.'
+  },
+  analytics:{
+    nav:'AN',
+    group:'primary',
+    eyebrow:'Analytics',
+    title:'Clarity like Buffer, power like Hootsuite, with a stronger narrative layer.',
+    sub:'Benchmark overlays, strategy signals, and a report canvas that turns raw metrics into operator-friendly insight.'
+  },
+  memory:{
+    nav:'MB',
+    group:'primary',
+    eyebrow:'Memory',
+    title:'Source memory and angle memory, surfaced like a real asset ledger.',
+    sub:'A Reddit source is only exhausted when the angle bank is empty. This view makes that lifecycle explicit.'
+  },
+  logs:{
+    nav:'LG',
+    group:'secondary',
+    eyebrow:'Audit',
+    title:'Operational truth should never hide behind a spinner.',
+    sub:'A live, searchable-style event feed for queue fills, source banking, retries, and publish outcomes.'
+  },
+  settings:{
+    nav:'ST',
+    group:'secondary',
+    eyebrow:'Settings',
+    title:'Permissions and runtime config belong in clear matrices, not buried toggles.',
+    sub:'Enterprise teams need a sharp view of environment state, platform guardrails, and role-level permissions.'
+  }
+};
+
+const ORGS=[
+  {id:'oneclickpostfactory-global',name:'OneClickPostFactory Global',region:'US East',desc:'Enterprise command center',sla:'99.97% SLA'},
+  {id:'northstar-retail',name:'Northstar Retail',region:'EMEA',desc:'Omni-channel retail ops',sla:'Managed approvals'},
+  {id:'atlas-b2b',name:'Atlas B2B',region:'US West',desc:'B2B demand and brand',sla:'Attribution priority'}
+];
+
+const TEAM=[
+  {id:'maria',name:'Maria Chen',role:'Brand Director',state:'Online'},
+  {id:'owen',name:'Owen Park',role:'Ops Lead',state:'Reviewing approvals'},
+  {id:'jules',name:'Jules Moreau',role:'Analytics Manager',state:'Building report'}
+];
+
+const PERMISSION_ROWS=[
+  {id:'publish',label:'Publish posts'},
+  {id:'approve',label:'Approve content'},
+  {id:'viewAnalytics',label:'View analytics'},
+  {id:'exportReports',label:'Export reports'},
+  {id:'managePermissions',label:'Manage permissions'},
+  {id:'editQueue',label:'Edit queue'}
+];
+
+const DEFAULT_PERMISSIONS={
+  maria:{publish:false,approve:true,viewAnalytics:true,exportReports:true,managePermissions:true,editQueue:true},
+  owen:{publish:true,approve:true,viewAnalytics:true,exportReports:false,managePermissions:false,editQueue:true},
+  jules:{publish:false,approve:false,viewAnalytics:true,exportReports:true,managePermissions:false,editQueue:false}
+};
+
+const BENCHMARKS={
+  buffer:{
+    label:'Buffer',
+    note:'Modeled benchmark inspired by Buffer’s analytics emphasis on clear cross-channel snapshots and best-time-to-post guidance.',
+    series:[42,45,47,49,54,57,60]
+  },
+  hootsuite:{
+    label:'Hootsuite',
+    note:'Modeled benchmark inspired by Hootsuite’s enterprise reporting, competitive overlays, and workflow-heavy operations view.',
+    series:[46,48,51,55,58,61,63]
+  },
+  industry:{
+    label:'Industry median',
+    note:'Modeled benchmark placeholder until live competitive or social listening data is wired in next phase.',
+    series:[40,42,44,46,48,50,51]
+  }
+};
+
+const REPORT_LIBRARY=[
+  {id:'reach',label:'Reach',desc:'Cross-platform audience delivery with period-over-period change.'},
+  {id:'engagement',label:'Engagement Rate',desc:'Weighted engagement across posted and queued platform mix.'},
+  {id:'approvals',label:'Approval Velocity',desc:'How quickly pending content turns into approved content.'},
+  {id:'memory',label:'Angle Reuse',desc:'Banked vs. published angle throughput and source exhaustion pace.'},
+  {id:'queueHealth',label:'Queue Health',desc:'Filled slots, ready-angle runway, and retry pressure.'},
+  {id:'competitors',label:'Benchmark Overlay',desc:'Our series compared with selected competitor or modeled median.'}
+];
+
+const STORAGE_KEY='pulse_frontend_state_v3';
+
+const PLATFORM_META={
+  linkedin:{label:'LinkedIn',icon:'in',color:'var(--linkedin)'},
+  threads:{label:'Threads',icon:'th',color:'var(--threads)'},
+  x:{label:'X',icon:'x',color:'var(--x)'},
+  instagram:{label:'Instagram',icon:'ig',color:'var(--instagram)'},
+  facebook:{label:'Facebook',icon:'fb',color:'var(--facebook)'}
+};
+
+const MEDIA_MODES=['none','link','image','video'];
+
+const COMMAND_DEFS=[
+  {id:'goto-dashboard',label:'Open overview',category:'Navigation',keywords:['overview','dashboard','home'],run:()=>setPage('dashboard')},
+  {id:'goto-queue',label:'Open queue',category:'Navigation',keywords:['queue','calendar','publishing'],run:()=>setPage('queue')},
+  {id:'goto-approvals',label:'Open approvals',category:'Navigation',keywords:['approval','review','governance'],run:()=>setPage('approvals')},
+  {id:'goto-analytics',label:'Open analytics',category:'Navigation',keywords:['analytics','reports','benchmark'],run:()=>setPage('analytics')},
+  {id:'goto-memory',label:'Open memory',category:'Navigation',keywords:['memory','angles','sources'],run:()=>setPage('memory')},
+  {id:'open-composer',label:'Draft a new post',category:'Actions',keywords:['compose','draft','new post'],run:()=>openComposer()},
+  {id:'fill-queue',label:'Fill empty slots',category:'Actions',keywords:['fill','fetch','queue'],run:()=>fillQueue()},
+  {id:'post-approved',label:'Post approved slots',category:'Actions',keywords:['post','approved','publish'],run:()=>postApproved()},
+  {id:'refresh-view',label:'Refresh current page',category:'Actions',keywords:['refresh','reload'],run:()=>refreshCurrentPage()},
+  {id:'toggle-logs',label:'Toggle auto logs',category:'Actions',keywords:['logs','auto'],run:()=>toggleAutoLogs()}
+];
+
+function esc(value){
+  return String(value ?? '')
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+function truncate(value,size=120){
+  const str=String(value || '').trim();
+  if(!str) return '—';
+  return str.length>size?str.slice(0,size).trimEnd()+'…':str;
+}
+
+function compact(value){
+  return new Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:1}).format(Number(value||0));
+}
+
+function fmtDate(value){
+  if(!value) return '—';
+  try{
+    return new Date(value).toLocaleString([],{
+      month:'short',
+      day:'numeric',
+      hour:'numeric',
+      minute:'2-digit'
+    });
+  }catch{
+    return String(value);
+  }
+}
+
+function nowLabel(){
+  try{
+    return new Date().toLocaleDateString([],{
+      weekday:'short',
+      month:'short',
+      day:'numeric'
+    });
+  }catch{
+    return 'Today';
+  }
+}
+
+function getEnabledPlatforms(status){
+  if(!status?.config?.platforms) return [];
+  return Object.entries(status.config.platforms)
+    .filter(([,enabled])=>Boolean(enabled))
+    .map(([platform])=>platform);
+}
+
+function getPostPlatforms(post){
+  if(!post) return [];
+  const explicit=Array.isArray(post.draftedPlatforms)?post.draftedPlatforms:[];
+  const keys=Object.keys(PLATFORM_META).filter(platform=>explicit.includes(platform) || String(post[platform] || '').trim());
+  return keys;
+}
+
+function isPlatformEnabled(platform){
+  return getEnabledPlatforms(store.getState().resources.status).includes(platform);
+}
+
+function getDefaultPreviewPlatform(post){
+  const platforms=getPostPlatforms(post);
+  return platforms[0] || 'linkedin';
+}
+
+function safeJsonClone(value){
+  return JSON.parse(JSON.stringify(value));
+}
+
+function api(path,opts={}){
+  return fetch(path,{
+    headers:{'Content-Type':'application/json'},
+    ...opts
+  }).then(async res=>{
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok || data.error){
+      throw new Error(data.error || `Request failed (${res.status})`);
+    }
+    return data;
+  });
+}
+
+function createStore(initialState){
+  let state=initialState;
+  const listeners=new Set();
+
+  return {
+    getState(){
+      return state;
+    },
+    setState(updater){
+      state=typeof updater === 'function' ? updater(state) : updater;
+      persistState(state);
+      listeners.forEach(listener=>listener(state));
+    },
+    subscribe(listener){
+      listeners.add(listener);
+      return ()=>listeners.delete(listener);
+    }
+  };
+}
+
+function defaultComposer(){
+  return {
+    slotId:'s1',
+    title:'',
+    core:'',
+    link:'',
+    linkTitle:'',
+    linkDescription:'',
+    media:'none',
+    thumbnail:'clean-cut',
+    captioning:'burned-in',
+    showUtm:false,
+    utm:'utm_source=linkedin&utm_medium=social&utm_campaign=pulse_signal',
+    showMetadata:false,
+    metadata:'approval_required=true',
+    activePreview:'linkedin',
+    platformsInitialized:false,
+    platforms:{linkedin:false,threads:false,x:false,instagram:false,facebook:false}
+  };
+}
+
+function loadPersistedState(){
+  try{
+    const raw=localStorage.getItem(STORAGE_KEY);
+    if(!raw) return null;
+    return JSON.parse(raw);
+  }catch{
+    return null;
+  }
+}
+
+function persistState(state){
+  try{
+    localStorage.setItem(STORAGE_KEY,JSON.stringify({
+      page:state.page,
+      orgId:state.orgId,
+      benchmark:state.benchmark,
+      selectedSlotId:state.selectedSlotId,
+      selectedPreviewPlatform:state.selectedPreviewPlatform,
+      approvals:state.approvals,
+      permissions:state.permissions,
+      reportBlocks:state.reportBlocks,
+      composer:state.composer
+    }));
+  }catch{}
+}
+
+const persisted=loadPersistedState() || {};
+
+const store=createStore({
+  page:persisted.page || 'dashboard',
+  orgId:persisted.orgId || ORGS[0].id,
+  benchmark:persisted.benchmark || 'buffer',
+  selectedSlotId:persisted.selectedSlotId || 's1',
+  selectedPreviewPlatform:persisted.selectedPreviewPlatform || 'linkedin',
+  commandQuery:'',
+  approvals:persisted.approvals || {},
+  permissions:persisted.permissions || safeJsonClone(DEFAULT_PERMISSIONS),
+  reportBlocks:Array.isArray(persisted.reportBlocks) && persisted.reportBlocks.length ? persisted.reportBlocks : ['reach','engagement','queueHealth'],
+  composer:{...defaultComposer(),...(persisted.composer || {})},
+  resources:{
+    status:null,
+    queue:[],
+    history:[],
+    memory:null,
+    logs:[]
+  },
+  loading:{
+    core:true,
+    logs:false
+  },
+  ui:{
+    commandOpen:false,
+    commandIndex:0,
+    composerOpen:false,
+    autoLogs:false,
+    fetching:false,
+    postingAll:false,
+    postingSlots:{},
+    releasingSlots:{},
+    scheduling:false,
+    reportDragId:null
+  }
+});
+
+const els={
+  navRail:document.getElementById('nav-rail'),
+  navRailSecondary:document.getElementById('nav-rail-secondary'),
+  orgGrid:document.getElementById('org-grid'),
+  moduleStack:document.getElementById('module-stack'),
+  teamPresence:document.getElementById('team-presence'),
+  signalFeed:document.getElementById('signal-feed'),
+  runtimeChip:document.getElementById('runtime-chip'),
+  pageEyebrow:document.getElementById('page-eyebrow'),
+  pageTitle:document.getElementById('page-title'),
+  pageSub:document.getElementById('page-sub'),
+  headerOrg:document.getElementById('header-org'),
+  headerDate:document.getElementById('header-date'),
+  headerFillBtn:document.getElementById('header-fill-btn'),
+  headerPostBtn:document.getElementById('header-post-btn'),
+  pages:[...document.querySelectorAll('.page')],
+  dashboardKpis:document.getElementById('dashboard-kpis'),
+  dashboardQueue:document.getElementById('dashboard-queue'),
+  dashboardChart:document.getElementById('dashboard-chart'),
+  benchmarkSwitcher:document.getElementById('benchmark-switcher'),
+  benchmarkLabel:document.getElementById('benchmark-label'),
+  benchmarkNote:document.getElementById('benchmark-note'),
+  dashboardInsights:document.getElementById('dashboard-insights'),
+  dashboardCollisions:document.getElementById('dashboard-collisions'),
+  dashboardActivity:document.getElementById('dashboard-activity'),
+  queueTable:document.getElementById('queue-table'),
+  approvalKpis:document.getElementById('approval-kpis'),
+  approvalBoard:document.getElementById('approval-board'),
+  analyticsKpis:document.getElementById('analytics-kpis'),
+  analyticsBenchmarkSwitcher:document.getElementById('analytics-benchmark-switcher'),
+  analyticsChart:document.getElementById('analytics-chart'),
+  analyticsChartNote:document.getElementById('analytics-chart-note'),
+  analyticsDonut:document.getElementById('analytics-donut'),
+  topPostsTable:document.getElementById('top-posts-table'),
+  analyticsInsights:document.getElementById('analytics-insights'),
+  reportPalette:document.getElementById('report-palette'),
+  reportCanvas:document.getElementById('report-canvas'),
+  memoryKpis:document.getElementById('memory-kpis'),
+  memoryLifecycle:document.getElementById('memory-lifecycle'),
+  memorySources:document.getElementById('memory-sources'),
+  memoryAngles:document.getElementById('memory-angles'),
+  logList:document.getElementById('log-list'),
+  autoLogsBtn:document.getElementById('auto-logs-btn'),
+  runtimeConfig:document.getElementById('runtime-config'),
+  platformConfig:document.getElementById('platform-config'),
+  permissionMatrix:document.getElementById('permission-matrix'),
+  inspectorStack:document.getElementById('inspector-stack'),
+  commandOverlay:document.getElementById('command-overlay'),
+  commandInput:document.getElementById('command-input'),
+  commandResults:document.getElementById('command-results'),
+  composerOverlay:document.getElementById('composer-overlay'),
+  composerSlot:document.getElementById('composer-slot'),
+  composerTitle:document.getElementById('composer-title-input'),
+  composerCore:document.getElementById('composer-core-input'),
+  composerPlatformToggles:document.getElementById('composer-platform-toggles'),
+  composerLink:document.getElementById('composer-link-input'),
+  composerLinkTitle:document.getElementById('composer-link-title'),
+  composerLinkCard:document.getElementById('composer-link-card'),
+  composerLinkDescription:document.getElementById('composer-link-description'),
+  composerMediaToggles:document.getElementById('composer-media-toggles'),
+  composerVideoCard:document.getElementById('composer-video-card'),
+  composerThumbnail:document.getElementById('composer-thumbnail'),
+  composerCaptioning:document.getElementById('composer-captioning'),
+  composerUtmCard:document.getElementById('composer-utm-card'),
+  composerUtm:document.getElementById('composer-utm'),
+  composerMetadataCard:document.getElementById('composer-metadata-card'),
+  composerMetadata:document.getElementById('composer-metadata'),
+  composerPreviewTabs:document.getElementById('composer-preview-tabs'),
+  composerPreviewGrid:document.getElementById('composer-preview-grid'),
+  composerLinkPreview:document.getElementById('composer-link-preview'),
+  composerSaveBtn:document.getElementById('composer-save-btn'),
+  toastStack:document.getElementById('toast-stack')
+};
+
+function getOrg(){
+  return ORGS.find(org=>org.id===store.getState().orgId) || ORGS[0];
+}
+
+function getQueueEntries(){
+  const state=store.getState();
+  if(state.resources.queue?.length) return state.resources.queue;
+  if(state.resources.status?.slots) return state.resources.status.slots.map(slot=>({slot:{id:slot.id,label:slot.label,desc:slot.desc},post:slot.post}));
+  return [];
+}
+
+function getSelectedEntry(){
+  return getQueueEntries().find(entry=>entry.slot.id===store.getState().selectedSlotId) || null;
+}
+
+function getApprovalKey(entry){
+  if(!entry?.post) return null;
+  return entry.post.angleId || entry.post.redditId || entry.slot.id;
+}
+
+function getApprovalStatus(entry){
+  if(!entry?.post) return null;
+  const key=getApprovalKey(entry);
+  const saved=key ? store.getState().approvals[key] : null;
+  if(saved) return saved;
+  if(entry.post.publishErrors && Object.keys(entry.post.publishErrors).length) return 'needs-edits';
+  return 'pending-review';
+}
+
+function setApprovalStatus(entry,status){
+  const key=getApprovalKey(entry);
+  if(!key) return;
+  store.setState(prev=>({
+    ...prev,
+    approvals:{
+      ...prev.approvals,
+      [key]:status
+    }
+  }));
+  renderAll();
+}
+
+function getApprovalCounts(entries=getQueueEntries()){
+  return entries.reduce((acc,entry)=>{
+    const status=getApprovalStatus(entry);
+    if(status) acc[status]=(acc[status] || 0)+1;
+    return acc;
+  },{'pending-review':0,'needs-edits':0,approved:0});
+}
+
+function getFilledEntries(){
+  return getQueueEntries().filter(entry=>Boolean(entry.post));
+}
+
+function ensureSelection(){
+  const entries=getFilledEntries();
+  const state=store.getState();
+  const valid=entries.find(entry=>entry.slot.id===state.selectedSlotId);
+  if(valid) return;
+  const fallback=entries[0] || getQueueEntries()[0] || {slot:{id:'s1'}};
+  store.setState(prev=>({
+    ...prev,
+    selectedSlotId:fallback.slot.id,
+    selectedPreviewPlatform:fallback.post ? getDefaultPreviewPlatform(fallback.post) : 'linkedin'
+  }));
+}
+
+function setPage(page){
+  store.setState(prev=>({...prev,page}));
+  if(page==='logs' && !store.getState().resources.logs.length){
+    refreshLogs();
+  }
+  renderAll();
+}
+
+function openCommand(){
+  store.setState(prev=>({
+    ...prev,
+    ui:{...prev.ui,commandOpen:true,commandIndex:0},
+    commandQuery:''
+  }));
+  renderCommand();
+  requestAnimationFrame(()=>els.commandInput.focus());
+}
+
+function closeCommand(){
+  store.setState(prev=>({
+    ...prev,
+    ui:{...prev.ui,commandOpen:false},
+    commandQuery:''
+  }));
+  renderCommand();
+}
+
+function openComposer(slotId){
+  const state=store.getState();
+  const entry=getQueueEntries().find(item=>item.slot.id===slotId) || getSelectedEntry();
+  const nextComposer={...state.composer};
+  nextComposer.slotId=slotId || entry?.slot?.id || state.selectedSlotId || 's1';
+  if(entry?.post){
+    nextComposer.title=entry.post.title || '';
+    nextComposer.core=entry.post.linkedin || entry.post.threads || entry.post.x || entry.post.facebook || entry.post.instagram || '';
+    const platforms=getPostPlatforms(entry.post);
+    nextComposer.platforms={linkedin:false,threads:false,x:false,instagram:false,facebook:false};
+    platforms.forEach(platform=>{ nextComposer.platforms[platform]=true; });
+  }
+  store.setState(prev=>({
+    ...prev,
+    composer:nextComposer,
+    ui:{...prev.ui,composerOpen:true}
+  }));
+  renderComposer();
+  requestAnimationFrame(()=>els.composerCore.focus());
+}
+
+function closeComposer(){
+  store.setState(prev=>({
+    ...prev,
+    ui:{...prev.ui,composerOpen:false}
+  }));
+  renderComposer();
+}
+
+function pushToast(title,message,type='info'){
+  const node=document.createElement('div');
+  node.className=`toast ${type}`;
+  node.innerHTML=`
+    <div class="toast-icon">${type==='ok'?'✓':type==='err'?'!':'i'}</div>
+    <div class="toast-text">
+      <strong>${esc(title)}</strong>
+      <span>${esc(message)}</span>
+    </div>
+  `;
+  els.toastStack.appendChild(node);
+  setTimeout(()=>node.remove(),4200);
+}
+
+function moduleRows(){
+  const status=store.getState().resources.status;
+  const approvalCounts=getApprovalCounts();
+  const collisions=getCollisions();
+  const memory=status?.memory || {angles:{ready:0},sources:{banked:0}};
+  return [
+    {page:'dashboard',title:'Overview',desc:'Global state of play',badge:filledCount() || '0'},
+    {page:'queue',title:'Queue',desc:'Scheduled slots and previews',badge:filledCount() || '0'},
+    {page:'approvals',title:'Approvals',desc:'Manager review gates',badge:approvalCounts['pending-review'] || '0'},
+    {page:'analytics',title:'Analytics',desc:'Benchmarks and reports',badge:'7d'},
+    {page:'memory',title:'Memory',desc:'Source and angle bank',badge:memory.angles?.ready ?? 0},
+    {page:'logs',title:'Audit Trail',desc:'Runtime events',badge:collisions.length},
+    {page:'settings',title:'Permissions',desc:'RBAC and environment',badge:TEAM.length}
+  ];
+}
+
+function filledCount(){
+  return getFilledEntries().length;
+}
+
+function enabledPlatformCount(){
+  return getEnabledPlatforms(store.getState().resources.status).length;
+}
+
+function getCollisions(){
+  const entries=getFilledEntries();
+  const collisions=[];
+
+  for(let i=0;i<entries.length-1;i+=1){
+    const current=entries[i];
+    const next=entries[i+1];
+    const currentPlatforms=getPostPlatforms(current.post);
+    const nextPlatforms=getPostPlatforms(next.post);
+    const shared=currentPlatforms.filter(platform=>nextPlatforms.includes(platform));
+    if(shared.length){
+      collisions.push({
+        id:`spacing-${current.slot.id}-${next.slot.id}`,
+        slotIds:[current.slot.id,next.slot.id],
+        severity:'warning',
+        title:`${current.slot.label} and ${next.slot.label} both target ${shared.map(platform=>PLATFORM_META[platform].label).join(', ')}`,
+        detail:'Posts are scheduled too close together on the same channel. Space them out or vary format to avoid feed compression.'
+      });
+    }
+    if(current.post.sourceHash && next.post.sourceHash && current.post.sourceHash===next.post.sourceHash){
+      collisions.push({
+        id:`source-${current.slot.id}-${next.slot.id}`,
+        slotIds:[current.slot.id,next.slot.id],
+        severity:'risk',
+        title:'Adjacent slots reuse the same source record',
+        detail:'Two close slots are pulling from the same source. Consider rotating to a different angle or delaying one of them.'
+      });
+    }
+  }
+
+  const selected=getSelectedEntry();
+  if(selected?.post && getApprovalStatus(selected) !== 'approved'){
+    collisions.push({
+      id:`approval-${selected.slot.id}`,
+      slotIds:[selected.slot.id],
+      severity:'warning',
+      title:`${selected.slot.label} is not approved`,
+      detail:'Publishing is gated until the selected slot is approved in the workflow column.'
+    });
+  }
+
+  return collisions;
+}
+
+function buildActivityFeed(){
+  const history=store.getState().resources.history || [];
+  const entries=getFilledEntries();
+  const memory=store.getState().resources.memory?.stats || {sources:{banked:0},angles:{ready:0,queued:0}};
+  const items=[
+    {
+      label:'Queue runway',
+      detail:`${filledCount()} scheduled slots are live with ${memory.angles.ready || 0} ready angles behind them.`,
+      stamp:'Live'
+    },
+    {
+      label:'Approval workload',
+      detail:`${getApprovalCounts()['pending-review'] || 0} drafts still need manager review before publish actions unlock.`,
+      stamp:'Governance'
+    }
+  ];
+
+  history.slice(0,3).forEach(entry=>{
+    items.push({
+      label:entry.title || 'Published item',
+      detail:`${entry.slot} posted ${fmtDate(entry.postedAt)}${entry.angleLabel ? ` using ${entry.angleLabel}` : ''}.`,
+      stamp:'Published'
+    });
+  });
+
+  if(!history.length){
+    items.push({
+      label:'Memory ready',
+      detail:`${memory.sources.banked || 0} banked sources and ${memory.angles.queued || 0} queued angles are waiting for the next publish cycle.`,
+      stamp:'Memory'
+    });
+  }
+
+  return items.slice(0,5);
+}
+
+function buildInsights(){
+  const status=store.getState().resources.status;
+  const history=store.getState().resources.history || [];
+  const counts=getApprovalCounts();
+  const ready=status?.memory?.angles?.ready || 0;
+  const banked=status?.memory?.sources?.banked || 0;
+  const enabled=getEnabledPlatforms(status);
+  const insights=[];
+
+  if(ready < 2){
+    insights.push({
+      title:'Angle runway is thin',
+      body:`Only ${ready} ready angles remain. Refill before tomorrow’s first slot or the system will need fresh extraction again.`,
+      tone:'warning'
+    });
+  }else{
+    insights.push({
+      title:'Angle reuse is working',
+      body:`${ready} ready angles remain with ${banked} banked sources still productive. The queue can pull from memory before touching new Reddit input.`,
+      tone:'positive'
+    });
+  }
+
+  insights.push({
+    title:'Governance is the real bottleneck',
+    body:counts['pending-review']
+      ? `${counts['pending-review']} drafts are waiting on approval. Clearing that lane will move throughput faster than generating more drafts.`
+      : 'Approval backlog is clear. You can move from review to publish without creating a compliance choke point.',
+    tone:counts['pending-review'] ? 'warning' : 'positive'
+  });
+
+  insights.push({
+    title:'Token guardrails are active',
+    body:enabled.includes('instagram')
+      ? `Instagram is enabled, so image generation remains in play. ${enabled.length} platforms are currently active.`
+      : `Instagram is off, so image generation is suppressed. Drafting remains limited to ${enabled.length} enabled platforms to protect token spend.`,
+    tone:'neutral'
+  });
+
+  if(history.length){
+    insights.push({
+      title:'Publishing cadence is visible',
+      body:`${history.length} batches are already in history. Use the benchmark view to decide whether cadence or channel mix should move next.`,
+      tone:'neutral'
+    });
+  }
+
+  return insights.slice(0,4);
+}
+
+function deriveSeries(){
+  const state=store.getState();
+  const status=state.resources.status;
+  const memory=state.resources.memory?.stats || {sources:{banked:0},angles:{ready:0,queued:0,published:0}};
+  const history=state.resources.history || [];
+  const base=38 + history.length * 2 + (memory.angles.ready || 0) + Math.max(0,filledCount()-1) * 2;
+  return Array.from({length:7},(_,index)=>Math.max(18,Math.round(base + index * 2 + (index % 2 === 0 ? memory.sources.banked || 0 : memory.angles.queued || 0))));
+}
+
+function svgLineChart(primary,secondary){
+  const width=540;
+  const height=220;
+  const padding=22;
+  const values=[...primary,...secondary];
+  const min=Math.min(...values) - 4;
+  const max=Math.max(...values) + 4;
+  const stepX=(width - padding*2) / (primary.length - 1 || 1);
+  const scaleY=value=>height - padding - ((value - min) / (max - min || 1)) * (height - padding*2);
+  const pathFor=series=>series.map((value,index)=>`${index===0?'M':'L'} ${padding + stepX*index} ${scaleY(value)}`).join(' ');
+  const areaPath=`${pathFor(primary)} L ${padding + stepX*(primary.length-1)} ${height-padding} L ${padding} ${height-padding} Z`;
+  const grid=[0,1,2,3].map(index=>{
+    const y=padding + ((height-padding*2)/3)*index;
+    return `<line x1="${padding}" y1="${y}" x2="${width-padding}" y2="${y}" stroke="rgba(255,255,255,.08)" stroke-dasharray="4 6" />`;
+  }).join('');
+  const labels=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((label,index)=>`
+    <text x="${padding + stepX*index}" y="${height-6}" fill="rgba(142,142,168,.8)" font-size="11" font-family="JetBrains Mono" text-anchor="middle">${label}</text>
+  `).join('');
+
+  return `
+    <svg viewBox="0 0 ${width} ${height}" width="100%" height="220" aria-hidden="true">
+      <defs>
+        <linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="rgba(91,110,245,.28)"/>
+          <stop offset="100%" stop-color="rgba(91,110,245,0)"/>
+        </linearGradient>
+      </defs>
+      ${grid}
+      <path d="${areaPath}" fill="url(#chart-fill)"></path>
+      <path d="${pathFor(secondary)}" fill="none" stroke="rgba(60,200,255,.85)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
+      <path d="${pathFor(primary)}" fill="none" stroke="rgba(91,110,245,1)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"></path>
+      ${primary.map((value,index)=>`
+        <circle cx="${padding + stepX*index}" cy="${scaleY(value)}" r="4.5" fill="#5b6ef5" stroke="#0a0a0f" stroke-width="2"></circle>
+      `).join('')}
+      ${labels}
+    </svg>
+  `;
+}
+
+function getTopPosts(){
+  const history=store.getState().resources.history || [];
+  const queue=getFilledEntries();
+  const pool=history.length ? history : queue.map(entry=>({
+    title:entry.post.title,
+    draftedPlatforms:entry.post.draftedPlatforms,
+    linkedin:entry.post.linkedin,
+    threads:entry.post.threads,
+    x:entry.post.x,
+    instagram:entry.post.instagram,
+    facebook:entry.post.facebook
+  }));
+
+  return pool.slice(0,5).map((entry,index)=>{
+    const platforms=Array.isArray(entry.draftedPlatforms) && entry.draftedPlatforms.length ? entry.draftedPlatforms : getPostPlatforms(entry);
+    const platform=platforms[0] || 'linkedin';
+    const text=entry[platform] || entry.linkedin || entry.threads || entry.x || entry.facebook || entry.instagram || '';
+    const impressions=28000 + text.length * 18 + index * 3400;
+    const rate=(3.2 + (text.length % 24)/10 + index*.4).toFixed(1);
+    return {
+      rank:index+1,
+      title:entry.title || 'Untitled',
+      platform,
+      impressions,
+      rate
+    };
+  });
+}
+
+function platformMix(){
+  const entries=[...getFilledEntries().map(entry=>entry.post),...(store.getState().resources.history || [])];
+  const totals=Object.fromEntries(Object.keys(PLATFORM_META).map(platform=>[platform,0]));
+  entries.forEach(entry=>{
+    getPostPlatforms(entry).forEach(platform=>{ totals[platform]+=1; });
+  });
+  return totals;
+}
+
+function derivedAnalyticsMetrics(){
+  const state=store.getState();
+  const mix=platformMix();
+  const history=state.resources.history || [];
+  const ready=state.resources.memory?.stats?.angles?.ready || 0;
+  const totalPlatforms=Object.values(mix).reduce((sum,value)=>sum+value,0);
+
+  return [
+    {label:'Impressions',value:compact(420000 + history.length * 62000 + ready * 11000),delta:'+12.4%',dir:'up'},
+    {label:'Engagements',value:compact(18000 + totalPlatforms * 1400 + ready * 420),delta:'+7.1%',dir:'up'},
+    {label:'Follower Growth',value:compact(2400 + history.length * 180),delta:'+3.8%',dir:'up'},
+    {label:'Link Clicks',value:compact(6100 + totalPlatforms * 240),delta:ready ? '+5.2%' : '-1.0%',dir:ready ? 'up' : 'down'}
+  ];
+}
+
+function buildAnalyticsInsights(){
+  const counts=getApprovalCounts();
+  const collisions=getCollisions();
+  const ready=store.getState().resources.memory?.stats?.angles?.ready || 0;
+  const benchmark=BENCHMARKS[store.getState().benchmark].label;
+  return [
+    {
+      title:'Thursday lift is visible',
+      body:'Your modeled engagement signal peaks mid-to-late week. Move Friday thought-leadership slots into late Thursday if executive stakeholders need more reach.',
+      tone:'positive'
+    },
+    {
+      title:'Benchmark pressure',
+      body:`You are currently comparing against ${benchmark}. Keep the overlay honest by treating it as directional until live competitor feeds are integrated next week.`,
+      tone:'neutral'
+    },
+    {
+      title:'Approval drag',
+      body:counts['pending-review']
+        ? `${counts['pending-review']} drafts are still waiting for review. Analytics can improve just by shortening the approval queue.`
+        : 'Approval throughput is clean. Any lift now likely comes from better angle selection or timing, not workflow delay.',
+      tone:counts['pending-review'] ? 'warning' : 'positive'
+    },
+    {
+      title:'Queue resilience',
+      body:ready
+        ? `${ready} ready angles remain. That gives the operator room to shift timing or rebuild reports without starving the queue.`
+        : 'No ready angles remain. Refill before testing new schedules or the queue will collapse into fresh extraction demand.',
+      tone:ready ? 'positive' : 'risk'
+    },
+    {
+      title:'Collision risk',
+      body:collisions.length
+        ? `${collisions.length} collision flags are active. Fixing channel spacing can unlock more value than publishing another near-duplicate draft.`
+        : 'No major channel-spacing collisions are visible in the current queue. That makes your next test cleaner.',
+      tone:collisions.length ? 'warning' : 'positive'
+    }
+  ];
+}
+
+function composerStatePatch(patch){
+  store.setState(prev=>({
+    ...prev,
+    composer:{...prev.composer,...patch}
+  }));
+}
+
+function syncComposerFromDom(){
+  const next={
+    slotId:els.composerSlot.value,
+    title:els.composerTitle.value,
+    core:els.composerCore.value,
+    link:els.composerLink.value,
+    linkTitle:els.composerLinkTitle.value,
+    linkDescription:els.composerLinkDescription.value,
+    thumbnail:els.composerThumbnail.value,
+    captioning:els.composerCaptioning.value,
+    utm:els.composerUtm.value,
+    metadata:els.composerMetadata.value
+  };
+  composerStatePatch(next);
+  renderComposerPreview();
+}
+
+function detectUrl(text){
+  const match=String(text || '').match(/https?:\/\/\S+/);
+  return match ? match[0] : '';
+}
+
+function composerVariants(){
+  const state=store.getState().composer;
+  const core=state.core.trim();
+  const fallbackTitle=state.title.trim() || truncate(core.split('\n')[0] || 'Manual draft',60);
+  const link=state.link.trim() || detectUrl(core);
+  const utm=state.showUtm && state.utm.trim() ? `\n\n${state.utm.trim()}` : '';
+  const meta=state.showMetadata && state.metadata.trim() ? `\n\n[${state.metadata.trim()}]` : '';
+  const mediaContext=state.media==='video'
+    ? `\n\nVideo note: ${state.thumbnail.replace('-',' ')} thumbnail, ${state.captioning.replace('-',' ')} captions.`
+    : state.media==='image'
+      ? '\n\nVisual note: static supporting image required.'
+      : '';
+  const base=core || 'Add a core message to generate previews.';
+  return {
+    title:fallbackTitle,
+    variants:{
+      linkedin:`${base}\n\nWhy it matters: keep one operational lesson, one consequence, and one calm point of view.${link ? `\n\n${link}` : ''}${utm}${meta}`,
+      threads:`${base}\n\nKeep it sharp, specific, and worth replying to.${link ? `\n\n${link}` : ''}`,
+      x:truncate(`${base}\n\nMake it sharp, specific, and worth replying to.${link ? `\n\n${link}` : ''}`,280),
+      instagram:`${base}\n\nLead with the image or clip context, then give the takeaway.${mediaContext}${link ? '\n\nLink in bio or profile CTA.' : ''}`,
+      facebook:`${base}\n\nAdd one practical frame so the post lands with broader context.${link ? `\n\n${link}` : ''}${utm}`
+    }
+  };
+}
+
+function buildManualQueueItem(){
+  const state=store.getState();
+  const composer=state.composer;
+  const derived=composerVariants();
+  const activePlatforms=Object.entries(composer.platforms)
+    .filter(([platform,enabled])=>Boolean(enabled) && isPlatformEnabled(platform))
+    .map(([platform])=>platform);
+  const timestamp=Date.now();
+  const title=derived.title;
+  return {
+    redditId:`manual-${timestamp}`,
+    title,
+    sourceHash:`manual-${timestamp}`,
+    angleId:`manual-${timestamp}`,
+    angleLabel:'Manual draft',
+    angleThesis:truncate(composer.core || title,110),
+    linkedin:activePlatforms.includes('linkedin') ? derived.variants.linkedin : '',
+    threads:activePlatforms.includes('threads') ? derived.variants.threads : '',
+    x:activePlatforms.includes('x') ? derived.variants.x : '',
+    instagram:activePlatforms.includes('instagram') ? derived.variants.instagram : '',
+    facebook:activePlatforms.includes('facebook') ? derived.variants.facebook : '',
+    draftedPlatforms:activePlatforms,
+    imageUrl:composer.media==='image' || composer.media==='video'
+      ? `https://images.unsplash.com/photo-1516321497487-e288fb19713f?auto=format&fit=crop&w=1200&q=80`
+      : '',
+    imagePrompt:composer.media==='image' ? 'Enterprise social graphic' : '',
+    draftMeta:{},
+    publishErrors:{}
+  };
+}
+
+function updateStatusSlot(slotId,post){
+  const state=store.getState();
+  const nextStatus=state.resources.status ? safeJsonClone(state.resources.status) : null;
+  const nextQueue=safeJsonClone(getQueueEntries());
+
+  if(nextStatus?.slots){
+    nextStatus.slots=nextStatus.slots.map(slot=>slot.id===slotId ? {...slot,post} : slot);
+  }
+
+  const existingIndex=nextQueue.findIndex(entry=>entry.slot.id===slotId);
+  if(existingIndex >= 0){
+    nextQueue[existingIndex]={...nextQueue[existingIndex],post};
+  }else{
+    const slot=SLOTS.find(entry=>entry.id===slotId);
+    if(slot){
+      nextQueue.push({slot,post});
+    }
+  }
+
+  store.setState(prev=>({
+    ...prev,
+    resources:{
+      ...prev.resources,
+      status:nextStatus,
+      queue:nextQueue
+    }
+  }));
+}
+
+function removeStatusSlot(slotId){
+  updateStatusSlot(slotId,null);
+}
+
+async function refreshCore({silent=false}={}){
+  if(!silent){
+    store.setState(prev=>({...prev,loading:{...prev.loading,core:true}}));
+    renderAll();
+  }
+
+  try{
+    const [status,queue,history,memory]=await Promise.all([
+      api('/api/status'),
+      api('/api/queue'),
+      api('/api/history'),
+      api('/api/memory')
+    ]);
+
+    store.setState(prev=>({
+      ...prev,
+      resources:{
+        ...prev.resources,
+        status,
+        queue,
+        history,
+        memory
+      },
+      loading:{...prev.loading,core:false}
+    }));
+
+    ensureComposerPlatforms();
+    ensureSelection();
+    renderAll();
+  }catch(error){
+    store.setState(prev=>({...prev,loading:{...prev.loading,core:false}}));
+    renderAll();
+    pushToast('Refresh failed',error.message,'err');
+  }
+}
+
+async function refreshLogs(){
+  store.setState(prev=>({...prev,loading:{...prev.loading,logs:true}}));
+  renderLogs();
+  try{
+    const logs=await api('/api/logs');
+    store.setState(prev=>({
+      ...prev,
+      resources:{...prev.resources,logs},
+      loading:{...prev.loading,logs:false}
+    }));
+    renderLogs();
+  }catch(error){
+    store.setState(prev=>({...prev,loading:{...prev.loading,logs:false}}));
+    renderLogs();
+    pushToast('Log refresh failed',error.message,'err');
+  }
+}
+
+function ensureComposerPlatforms(){
+  const status=store.getState().resources.status;
+  if(!status) return;
+  if(store.getState().composer.platformsInitialized) return;
+  const enabled=getEnabledPlatforms(status);
+  const next={linkedin:false,threads:false,x:false,instagram:false,facebook:false};
+  enabled.forEach(platform=>{
+    next[platform]=true;
+  });
+  store.setState(prev=>({
+    ...prev,
+    composer:{
+      ...prev.composer,
+      platforms:next,
+      platformsInitialized:true
+    }
+  }));
+}
+
+async function fillQueue(){
+  if(store.getState().ui.fetching) return;
+  store.setState(prev=>({...prev,ui:{...prev.ui,fetching:true}}));
+  renderAll();
+  try{
+    const result=await api('/api/fetch',{method:'POST'});
+    pushToast('Queue filled',`Filled ${result.filled} slots, reused ${result.reusedAngles} banked angles, extracted ${result.extractedSources} fresh sources.`,result.filled ? 'ok' : 'info');
+    await refreshCore({silent:true});
+  }catch(error){
+    pushToast('Queue fill failed',error.message,'err');
+  }
+  store.setState(prev=>({...prev,ui:{...prev.ui,fetching:false}}));
+  renderAll();
+}
+
+function canPublishEntry(entry){
+  if(!entry?.post){
+    pushToast('Nothing to publish','Select a filled queue slot first.','err');
+    return false;
+  }
+  if(getApprovalStatus(entry) !== 'approved'){
+    pushToast('Approval required','Approve the slot before publishing it.','err');
+    setPage('approvals');
+    return false;
+  }
+  return true;
+}
+
+async function postSelectedSlot(){
+  const entry=getSelectedEntry();
+  if(!canPublishEntry(entry)) return;
+  const slotId=entry.slot.id;
+  const snapshot=safeJsonClone(store.getState().resources);
+
+  store.setState(prev=>({
+    ...prev,
+    ui:{
+      ...prev.ui,
+      postingSlots:{...prev.ui.postingSlots,[slotId]:true}
+    }
+  }));
+  removeStatusSlot(slotId);
+  renderAll();
+
+  try{
+    const result=await api('/api/post-slot',{method:'POST',body:JSON.stringify({slotId})});
+    if(result.queuedForRetry){
+      store.setState(prev=>({
+        ...prev,
+        resources:snapshot
+      }));
+      pushToast('Publish retained for retry','One or more platforms failed, so the slot stayed queued.','err');
+    }else{
+      pushToast('Slot published',`${entry.slot.label} cleared successfully.`,result.errors?.length ? 'err' : 'ok');
+    }
+    await refreshCore({silent:true});
+  }catch(error){
+    store.setState(prev=>({
+      ...prev,
+      resources:snapshot
+    }));
+    pushToast('Slot publish failed',error.message,'err');
+  }
+
+  store.setState(prev=>({
+    ...prev,
+    ui:{
+      ...prev.ui,
+      postingSlots:{...prev.ui.postingSlots,[slotId]:false}
+    }
+  }));
+  renderAll();
+}
+
+async function postApproved(){
+  const filled=getFilledEntries();
+  if(!filled.length){
+    pushToast('Queue empty','There are no filled slots to publish.','info');
+    return;
+  }
+  const blocked=filled.filter(entry=>getApprovalStatus(entry) !== 'approved');
+  if(blocked.length){
+    pushToast('Approval gate active',`${blocked.length} slots still need review before a batch publish can run.`, 'err');
+    setPage('approvals');
+    return;
+  }
+  if(store.getState().ui.postingAll) return;
+
+  const snapshot=safeJsonClone(store.getState().resources);
+  store.setState(prev=>({...prev,ui:{...prev.ui,postingAll:true}}));
+  filled.forEach(entry=>removeStatusSlot(entry.slot.id));
+  renderAll();
+
+  try{
+    const result=await api('/api/post-all',{method:'POST'});
+    const queuedForRetry=result.results?.filter(item=>item.queuedForRetry).length || 0;
+    if(queuedForRetry){
+      store.setState(prev=>({...prev,resources:snapshot}));
+      pushToast('Batch partially retained',`${queuedForRetry} slots stayed queued for retry.`, 'err');
+    }else{
+      pushToast('Approved slots published',`${filled.length} slots were processed.`, 'ok');
+    }
+    await refreshCore({silent:true});
+  }catch(error){
+    store.setState(prev=>({...prev,resources:snapshot}));
+    pushToast('Batch publish failed',error.message,'err');
+  }
+  store.setState(prev=>({...prev,ui:{...prev.ui,postingAll:false}}));
+  renderAll();
+}
+
+async function releaseSelectedSlot(){
+  const entry=getSelectedEntry();
+  if(!entry?.post){
+    pushToast('Nothing to release','Select a filled slot first.','err');
+    return;
+  }
+  const snapshot=safeJsonClone(store.getState().resources);
+  store.setState(prev=>({
+    ...prev,
+    ui:{...prev.ui,releasingSlots:{...prev.ui.releasingSlots,[entry.slot.id]:true}}
+  }));
+  removeStatusSlot(entry.slot.id);
+  renderAll();
+  try{
+    await api('/api/slot',{method:'DELETE',body:JSON.stringify({slotId:entry.slot.id})});
+    pushToast('Slot released','The queued angle is back in the bank for later reuse.','ok');
+    await refreshCore({silent:true});
+  }catch(error){
+    store.setState(prev=>({...prev,resources:snapshot}));
+    pushToast('Release failed',error.message,'err');
+  }
+  store.setState(prev=>({
+    ...prev,
+    ui:{...prev.ui,releasingSlots:{...prev.ui.releasingSlots,[entry.slot.id]:false}}
+  }));
+  renderAll();
+}
+
+async function scheduleComposer(){
+  if(store.getState().ui.scheduling) return;
+  syncComposerFromDom();
+  const composer=store.getState().composer;
+  if(!composer.core.trim()){
+    pushToast('Core message required','Add a core idea before scheduling the draft.','err');
+    return;
+  }
+  const activePlatforms=Object.values(composer.platforms).filter(Boolean).length;
+  if(!activePlatforms){
+    pushToast('Select a platform','Turn on at least one platform preview before scheduling.','err');
+    return;
+  }
+
+  const slotId=composer.slotId;
+  const queueEntries=getQueueEntries();
+  const existing=queueEntries.find(entry=>entry.slot.id===slotId && entry.post);
+  if(existing && !window.confirm(`Replace the current draft in ${existing.slot.label}?`)){
+    return;
+  }
+
+  const snapshot=safeJsonClone(store.getState().resources);
+  const item=buildManualQueueItem();
+  updateStatusSlot(slotId,item);
+  const approvalKey=item.angleId;
+  store.setState(prev=>({
+    ...prev,
+    approvals:{...prev.approvals,[approvalKey]:'pending-review'},
+    ui:{...prev.ui,scheduling:true}
+  }));
+  renderAll();
+
+  try{
+    await api('/api/slot',{method:'PUT',body:JSON.stringify({slotId,updates:item})});
+    pushToast('Draft scheduled',`${SLOTS.find(slot=>slot.id===slotId)?.label || slotId} now holds the manual draft.`, 'ok');
+    closeComposer();
+    await refreshCore({silent:true});
+  }catch(error){
+    store.setState(prev=>({...prev,resources:snapshot}));
+    pushToast('Schedule failed',error.message,'err');
+  }
+  store.setState(prev=>({...prev,ui:{...prev.ui,scheduling:false}}));
+  renderAll();
+}
+
+function toggleAutoLogs(){
+  const enabled=!store.getState().ui.autoLogs;
+  store.setState(prev=>({...prev,ui:{...prev.ui,autoLogs:enabled}}));
+  if(enabled){
+    refreshLogs();
+    autoLogTimer=setInterval(refreshLogs,4000);
+  }else if(autoLogTimer){
+    clearInterval(autoLogTimer);
+    autoLogTimer=null;
+  }
+  renderLogs();
+}
+
+function refreshCurrentPage(){
+  if(store.getState().page==='logs'){
+    refreshLogs();
+  }else{
+    refreshCore();
+  }
+}
+
+let autoLogTimer=null;
+let chordKey=null;
+
+function renderNav(){
+  const page=store.getState().page;
+  const primary=Object.entries(PAGE_META).filter(([,meta])=>meta.group==='primary');
+  const secondary=Object.entries(PAGE_META).filter(([,meta])=>meta.group==='secondary');
+
+  const renderGroup=entries=>entries.map(([id,meta])=>`
+    <button class="nav-item ${page===id?'active':''}" data-action="go-page" data-page="${id}" aria-label="${esc(meta.eyebrow)}">
+      <span>${esc(meta.nav)}</span>
+      <div class="nav-tooltip">${esc(meta.eyebrow)}</div>
+    </button>
+  `).join('');
+
+  els.navRail.innerHTML=renderGroup(primary);
+  els.navRailSecondary.innerHTML=renderGroup(secondary);
+}
+
+function renderWorkspaceRail(){
+  const status=store.getState().resources.status;
+  const org=getOrg();
+  const approvalCounts=getApprovalCounts();
+  const collisions=getCollisions();
+  const history=store.getState().resources.history || [];
+
+  els.orgGrid.innerHTML=ORGS.map(item=>`
+    <button class="org-switch ${item.id===org.id?'active':''}" data-action="switch-org" data-org="${item.id}">
+      <div class="org-label">
+        <strong>${esc(item.name)}</strong>
+        <span>${esc(item.region)} • ${esc(item.sla)}</span>
+      </div>
+      <div class="nav-badge">${item.id===org.id?'On':'Go'}</div>
+    </button>
+  `).join('');
+
+  els.runtimeChip.className=`status-chip ${approvalCounts['needs-edits'] ? 'warn' : ''}`;
+  els.runtimeChip.innerHTML=`<span class="status-dot"></span>${approvalCounts['needs-edits'] ? 'Needs edits' : 'Live runtime'}`;
+
+  els.moduleStack.innerHTML=moduleRows().map(item=>`
+    <button class="module-link ${store.getState().page===item.page?'active':''}" data-action="go-page" data-page="${item.page}">
+      <div class="module-copy">
+        <strong>${esc(item.title)}</strong>
+        <span>${esc(item.desc)}</span>
+      </div>
+      <div class="micro-badge">${esc(String(item.badge))}</div>
+    </button>
+  `).join('');
+
+  els.teamPresence.innerHTML=TEAM.map(member=>`
+    <div class="mini-list-item">
+      <div class="mini-list-copy">
+        <strong>${esc(member.name)}</strong>
+        <div class="mini-list-meta">${esc(member.role)} • ${esc(member.state)}</div>
+      </div>
+      <div class="status-chip"><span class="status-dot"></span>On</div>
+    </div>
+  `).join('');
+
+  const signalItems=[
+    {
+      label:'Approvals pending',
+      detail:`${approvalCounts['pending-review'] || 0} items need sign-off before publish.`,
+      stamp:'Review'
+    },
+    {
+      label:'Collision alerts',
+      detail:collisions.length ? `${collisions.length} scheduling conflicts need spacing checks.` : 'No critical proximity collisions in the queue.',
+      stamp:'Spacing'
+    },
+    {
+      label:'Published history',
+      detail:`${history.length} batches are already in the audit trail.`,
+      stamp:'Audit'
+    },
+    {
+      label:'Platform surface',
+      detail:`${enabledPlatformCount()} platforms are live in this environment.`,
+      stamp:'Runtime'
+    }
+  ];
+
+  els.signalFeed.innerHTML=signalItems.map(item=>`
+    <div class="mini-list-item">
+      <div class="mini-list-copy">
+        <strong>${esc(item.label)}</strong>
+        <div class="mini-list-meta">${esc(item.detail)}</div>
+      </div>
+      <div class="micro-badge">${esc(item.stamp)}</div>
+    </div>
+  `).join('');
+}
+
+function renderHeader(){
+  const pageMeta=PAGE_META[store.getState().page];
+  const org=getOrg();
+  els.pageEyebrow.textContent=pageMeta.eyebrow;
+  els.pageTitle.textContent=pageMeta.title;
+  els.pageSub.textContent=pageMeta.sub;
+  els.headerOrg.textContent=`${org.name} • ${org.region}`;
+  els.headerDate.textContent=nowLabel();
+
+  const ui=store.getState().ui;
+  els.headerFillBtn.innerHTML=ui.fetching ? '<span class="spin"></span> Filling' : 'Fill Queue';
+  els.headerFillBtn.disabled=ui.fetching;
+  els.headerPostBtn.innerHTML=ui.postingAll ? '<span class="spin"></span> Posting' : 'Post Approved';
+  els.headerPostBtn.disabled=ui.postingAll;
+
+  els.pages.forEach(page=>{
+    page.classList.toggle('active',page.id===`page-${store.getState().page}`);
+  });
+}
+
+function metricCard(label,value,foot){
+  return `
+    <div class="metric-card">
+      <div class="metric-label">${esc(label)}</div>
+      <div class="metric-number">${esc(String(value))}</div>
+      <div class="metric-foot">${esc(foot)}</div>
+    </div>
+  `;
+}
+
+function renderSkeletonGrid(target,count=4){
+  target.innerHTML=Array.from({length:count},()=>`
+    <div class="skeleton-card">
+      <div class="skeleton skeleton-line" style="width:38%"></div>
+      <div class="skeleton skeleton-line" style="width:72%;height:28px;margin-top:14px"></div>
+      <div class="skeleton skeleton-line" style="width:100%;margin-top:14px"></div>
+      <div class="skeleton skeleton-line" style="width:78%;margin-top:10px"></div>
+    </div>
+  `).join('');
+}
+
+function renderDashboard(){
+  if(store.getState().loading.core){
+    renderSkeletonGrid(els.dashboardKpis,4);
+    els.dashboardQueue.innerHTML='<div class="empty-state"><strong>Loading queue</strong><span>Bringing in status, memory, and approval state.</span></div>';
+    els.dashboardChart.innerHTML='<div class="skeleton-card"><div class="skeleton skeleton-line" style="width:100%;height:220px"></div></div>';
+    els.dashboardInsights.innerHTML='';
+    els.dashboardCollisions.innerHTML='';
+    els.dashboardActivity.innerHTML='';
+    return;
+  }
+
+  const status=store.getState().resources.status;
+  const memory=store.getState().resources.memory?.stats || status?.memory || {sources:{banked:0},angles:{ready:0,published:0}};
+  const approvals=getApprovalCounts();
+  const enabled=getEnabledPlatforms(status);
+  const modeledReach=420000 + (store.getState().resources.history.length || 0)*62000 + (memory.angles.ready || 0)*12000;
+
+  els.dashboardKpis.innerHTML=[
+    metricCard('Scheduled today',filledCount(),'Current queue occupancy across the four publishing windows.'),
+    metricCard('Modeled reach',compact(modeledReach),'Derived from queue, history, and active platform surface.'),
+    metricCard('Pending approvals',approvals['pending-review'] || 0,'Review gates that still block publish actions.'),
+    metricCard('Ready angles',memory.angles.ready || 0,'Reusable inventory waiting behind the current queue.')
+  ].join('');
+
+  const filled=getFilledEntries();
+  els.dashboardQueue.innerHTML=filled.length ? filled.map(entry=>{
+    const approval=getApprovalStatus(entry);
+    const posting=store.getState().ui.postingSlots[entry.slot.id];
+    return `
+      <div class="queue-row ${entry.slot.id===store.getState().selectedSlotId?'selected':''} ${posting?'optimistic':''}" data-action="select-slot" data-slot="${entry.slot.id}">
+        <div class="queue-row-top">
+          <div>
+            <div class="queue-row-title">${esc(entry.post.title || 'Untitled draft')}</div>
+            <div class="queue-row-meta">
+              <span class="ghost-pill">${esc(entry.slot.label)}</span>
+              <span class="status-badge ${approval}">${esc(approval.replace('-',' '))}</span>
+              ${(getPostPlatforms(entry.post)).map(platform=>`<span class="platform-badge ${platform}">${PLATFORM_META[platform].icon} ${PLATFORM_META[platform].label}</span>`).join('')}
+            </div>
+          </div>
+          <div class="nav-badge">${posting?'...':esc(entry.post.angleLabel || 'Angle')}</div>
+        </div>
+        <div class="surface-note">${esc(truncate(entry.post.angleThesis || entry.post.linkedin || entry.post.threads || entry.post.x || entry.post.facebook || entry.post.instagram,150))}</div>
+      </div>
+    `;
+  }).join('') : '<div class="empty-state"><strong>No posts scheduled</strong><span>Fill the queue or open the composer to place the first draft.</span><button class="btn btn-secondary" data-action="open-composer">New Post</button></div>';
+
+  const ourSeries=deriveSeries();
+  const benchmark=BENCHMARKS[store.getState().benchmark];
+  els.dashboardChart.innerHTML=svgLineChart(ourSeries,benchmark.series);
+  els.benchmarkLabel.textContent=benchmark.label;
+  els.benchmarkNote.textContent=benchmark.note;
+  els.benchmarkSwitcher.innerHTML=Object.entries(BENCHMARKS).map(([id,item])=>`
+    <button class="btn btn-small ${store.getState().benchmark===id?'btn-secondary':'btn-ghost'}" data-action="set-benchmark" data-benchmark="${id}">${esc(item.label)}</button>
+  `).join('');
+
+  els.dashboardInsights.innerHTML=buildInsights().map(item=>`
+    <div class="insight-card">
+      <h4 class="signal-${item.tone==='positive'?'positive':item.tone==='warning'?'warning':item.tone==='risk'?'risk':'strong'}">${esc(item.title)}</h4>
+      <p>${esc(item.body)}</p>
+    </div>
+  `).join('');
+
+  const collisions=getCollisions();
+  els.dashboardCollisions.innerHTML=collisions.length ? collisions.map(item=>`
+    <li>
+      <span class="detail-key">${esc(item.title)}</span>
+      <span class="detail-value">${esc(item.detail)}</span>
+    </li>
+  `).join('') : '<div class="empty-state"><strong>No active collisions</strong><span>Channel spacing and approval state are currently clear enough to ship.</span></div>';
+
+  els.dashboardActivity.innerHTML=buildActivityFeed().map(item=>`
+    <div class="activity-item">
+      <div class="activity-copy">
+        <strong>${esc(item.label)}</strong>
+        <span>${esc(item.detail)}</span>
+      </div>
+      <div class="micro-badge">${esc(item.stamp)}</div>
+    </div>
+  `).join('');
+}
+
+function renderQueue(){
+  if(store.getState().loading.core){
+    els.queueTable.innerHTML='<div class="skeleton-card"><div class="skeleton skeleton-line" style="width:100%;height:52px"></div><div class="skeleton skeleton-line" style="width:100%;height:52px;margin-top:10px"></div><div class="skeleton skeleton-line" style="width:100%;height:52px;margin-top:10px"></div></div>';
+    return;
+  }
+
+  const entries=getQueueEntries();
+  els.queueTable.innerHTML=entries.map(entry=>{
+    const approval=getApprovalStatus(entry);
+    const post=entry.post;
+    if(!post){
+      return `
+        <div class="queue-table-row ${entry.slot.id===store.getState().selectedSlotId?'selected':''}" data-action="select-slot" data-slot="${entry.slot.id}">
+          <div class="table-mono">${esc(entry.slot.label)}</div>
+          <div class="queue-table-title"><strong>Empty slot</strong><span>${esc(entry.slot.desc || 'Awaiting next fill run')}</span></div>
+          <div><span class="ghost-pill">Empty</span></div>
+          <div class="table-mono">—</div>
+          <div class="table-mono">—</div>
+        </div>
+      `;
+    }
+    return `
+      <div class="queue-table-row ${entry.slot.id===store.getState().selectedSlotId?'selected':''}" data-action="select-slot" data-slot="${entry.slot.id}">
+        <div class="table-mono">${esc(entry.slot.label)}</div>
+        <div class="queue-table-title">
+          <strong>${esc(post.title || 'Untitled draft')}</strong>
+          <span>${esc(truncate(post.angleThesis || post.linkedin || post.threads || post.x || post.facebook || post.instagram,86))}</span>
+        </div>
+        <div><span class="status-badge ${approval}">${esc(approval.replace('-',' '))}</span></div>
+        <div class="platform-row">${getPostPlatforms(post).map(platform=>`<span class="platform-badge ${platform}">${PLATFORM_META[platform].icon}</span>`).join('')}</div>
+        <div class="table-mono">${esc(post.angleLabel || 'Angle')}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderApprovals(){
+  if(store.getState().loading.core){
+    renderSkeletonGrid(els.approvalKpis,4);
+    els.approvalBoard.innerHTML='<div class="skeleton-card"><div class="skeleton skeleton-line" style="width:100%;height:260px"></div></div>';
+    return;
+  }
+
+  const entries=getFilledEntries();
+  const counts=getApprovalCounts(entries);
+  const needsEdits=entries.filter(entry=>getApprovalStatus(entry)==='needs-edits').length;
+  const approved=entries.filter(entry=>getApprovalStatus(entry)==='approved').length;
+
+  els.approvalKpis.innerHTML=[
+    metricCard('Pending review',counts['pending-review'] || 0,'Drafts blocked on manager review.'),
+    metricCard('Needs edits',needsEdits,'Items with corrections or publish failures in the loop.'),
+    metricCard('Approved',approved,'Slots cleared for publish actions.'),
+    metricCard('Review velocity','2.6h','Modeled manager turnaround until live audit timestamps land.')
+  ].join('');
+
+  const lanes=[
+    {status:'pending-review',title:'Pending Review',desc:'Drafts waiting on a decision.'},
+    {status:'needs-edits',title:'Needs Edits',desc:'Items that should not ship yet.'},
+    {status:'approved',title:'Approved',desc:'Ready for publish or batch push.'}
+  ];
+
+  els.approvalBoard.innerHTML=lanes.map(lane=>{
+    const items=entries.filter(entry=>getApprovalStatus(entry)===lane.status);
+    return `
+      <div class="surface approval-lane">
+        <div class="lane-head">
+          <strong>${esc(lane.title)}</strong>
+          <div class="nav-badge">${items.length}</div>
+        </div>
+        <div class="surface-note">${esc(lane.desc)}</div>
+        ${items.length ? items.map(entry=>`
+          <div class="approval-card" data-action="select-slot" data-slot="${entry.slot.id}">
+            <h4>${esc(entry.post.title || 'Untitled draft')}</h4>
+            <div class="approval-meta">
+              <span class="ghost-pill">${esc(entry.slot.label)}</span>
+              ${getPostPlatforms(entry.post).map(platform=>`<span class="platform-badge ${platform}">${PLATFORM_META[platform].label}</span>`).join('')}
+            </div>
+            <div class="surface-note">${esc(truncate(entry.post.angleThesis || entry.post.linkedin || entry.post.threads || entry.post.x || entry.post.facebook || entry.post.instagram,140))}</div>
+            <div class="presence-row">
+              ${TEAM.map(member=>`<span class="presence-pill"><strong>${esc(member.name.split(' ')[0])}</strong>${esc(member.role)}</span>`).join('')}
+            </div>
+            <div class="approval-actions">
+              <button class="btn btn-small btn-ghost" data-action="set-approval" data-slot="${entry.slot.id}" data-status="needs-edits">Needs edits</button>
+              <button class="btn btn-small btn-secondary" data-action="set-approval" data-slot="${entry.slot.id}" data-status="approved">Approve</button>
+              <button class="btn btn-small btn-ghost" data-action="set-approval" data-slot="${entry.slot.id}" data-status="pending-review">Reset</button>
+            </div>
+          </div>
+        `).join('') : '<div class="empty-state"><strong>No items here</strong><span>This approval lane is clear right now.</span></div>'}
+      </div>
+    `;
+  }).join('');
+}
+
+function renderAnalytics(){
+  if(store.getState().loading.core){
+    renderSkeletonGrid(els.analyticsKpis,4);
+    els.analyticsChart.innerHTML='<div class="skeleton-card"><div class="skeleton skeleton-line" style="width:100%;height:220px"></div></div>';
+    els.topPostsTable.innerHTML='';
+    els.analyticsDonut.innerHTML='';
+    els.analyticsInsights.innerHTML='';
+    return;
+  }
+
+  const metrics=derivedAnalyticsMetrics();
+  els.analyticsKpis.innerHTML=metrics.map(item=>`
+    <div class="analytics-metric">
+      <div class="metric-label">${esc(item.label)}</div>
+      <strong>${esc(item.value)}</strong>
+      <div class="delta ${item.dir}">${esc(item.delta)} vs previous period</div>
+      <span>Modeled from current queue density, history volume, and memory depth.</span>
+    </div>
+  `).join('');
+
+  const benchmark=BENCHMARKS[store.getState().benchmark];
+  const ourSeries=deriveSeries();
+  els.analyticsChart.innerHTML=svgLineChart(ourSeries,benchmark.series);
+  els.analyticsChartNote.textContent=benchmark.note;
+  els.analyticsBenchmarkSwitcher.innerHTML=Object.entries(BENCHMARKS).map(([id,item])=>`
+    <button class="btn btn-small ${store.getState().benchmark===id?'btn-secondary':'btn-ghost'}" data-action="set-benchmark" data-benchmark="${id}">${esc(item.label)}</button>
+  `).join('');
+
+  const mix=platformMix();
+  const total=Math.max(1,Object.values(mix).reduce((sum,value)=>sum+value,0));
+  const platformOrder=Object.keys(PLATFORM_META);
+  let offset=0;
+  const segments=platformOrder.map((platform,index)=>{
+    const remaining=100 - offset;
+    const percentage=index===platformOrder.length-1
+      ? remaining
+      : Math.round(((mix[platform] || 0) / total) * 100);
+    const start=offset;
+    offset=Math.min(100, offset + percentage);
+    return `${PLATFORM_META[platform].color} ${start}% ${offset}%`;
+  });
+  els.analyticsDonut.innerHTML=`
+    <div class="donut" style="background:conic-gradient(${segments.join(', ')})">
+      <div class="donut-center">
+        <strong>${total}</strong>
+        <span>Tracked items</span>
+      </div>
+    </div>
+    <div class="detail-list">
+      ${Object.entries(mix).map(([platform,value])=>`
+        <li>
+          <span class="detail-key">${PLATFORM_META[platform].label}</span>
+          <span class="detail-value">${value}</span>
+        </li>
+      `).join('')}
+    </div>
+  `;
+
+  const posts=getTopPosts();
+  els.topPostsTable.innerHTML=posts.length ? `
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Rank</th>
+          <th>Post</th>
+          <th>Platform</th>
+          <th>Impressions</th>
+          <th>Eng Rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${posts.map(item=>`
+          <tr>
+            <td>#${item.rank}</td>
+            <td><strong>${esc(truncate(item.title,72))}</strong></td>
+            <td>${esc(PLATFORM_META[item.platform].label)}</td>
+            <td>${compact(item.impressions)}</td>
+            <td>${esc(item.rate)}%</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  ` : '<div class="empty-state"><strong>No performance rows yet</strong><span>Publish or schedule a few posts to seed the table.</span></div>';
+
+  els.analyticsInsights.innerHTML=buildAnalyticsInsights().map(item=>`
+    <div class="insight-card">
+      <h4 class="signal-${item.tone==='positive'?'positive':item.tone==='warning'?'warning':item.tone==='risk'?'risk':'strong'}">${esc(item.title)}</h4>
+      <p>${esc(item.body)}</p>
+    </div>
+  `).join('');
+
+  els.reportPalette.innerHTML=REPORT_LIBRARY.map(block=>`
+    <div class="report-chip" draggable="true" data-report-id="${block.id}">
+      <div>
+        <strong>${esc(block.label)}</strong>
+        <span>${esc(block.desc)}</span>
+      </div>
+      <div class="micro-badge">Drag</div>
+    </div>
+  `).join('');
+
+  const selectedBlocks=store.getState().reportBlocks
+    .map(id=>REPORT_LIBRARY.find(block=>block.id===id))
+    .filter(Boolean);
+
+  els.reportCanvas.innerHTML=selectedBlocks.length ? selectedBlocks.map(block=>`
+    <div class="report-block">
+      <div class="report-block-top">
+        <h4>${esc(block.label)}</h4>
+        <div class="micro-badge">Ready</div>
+      </div>
+      <p>${esc(block.desc)}</p>
+      <div class="block-actions">
+        <button class="btn btn-small btn-ghost" data-action="remove-report-block" data-block="${block.id}">Remove</button>
+      </div>
+    </div>
+  `).join('') : '<div class="empty-state"><strong>Drop metric blocks here</strong><span>Assemble a white-label report surface before PDF export lands.</span></div>';
+}
+
+function renderMemory(){
+  if(store.getState().loading.core){
+    renderSkeletonGrid(els.memoryKpis,4);
+    els.memoryLifecycle.innerHTML='';
+    els.memorySources.innerHTML='';
+    els.memoryAngles.innerHTML='';
+    return;
+  }
+
+  const memory=store.getState().resources.memory;
+  const stats=memory?.stats || {sources:{total:0,banked:0,exhausted:0},angles:{ready:0,queued:0,published:0,discarded:0,total:0}};
+  els.memoryKpis.innerHTML=[
+    metricCard('Tracked sources',stats.sources.total || 0,'All sources currently in registry.'),
+    metricCard('Banked',stats.sources.banked || 0,'Sources that still contain reusable angles.'),
+    metricCard('Ready angles',stats.angles.ready || 0,'Angles available for the next fill pass.'),
+    metricCard('Published angles',stats.angles.published || 0,'Ideas already converted into shipped content.')
+  ].join('');
+
+  els.memoryLifecycle.innerHTML=[
+    {label:'New sources',value:stats.sources.total,foot:'Seen and indexed'},
+    {label:'Ready angles',value:stats.angles.ready,foot:'Available to queue'},
+    {label:'Queued angles',value:stats.angles.queued,foot:'Reserved in slots'},
+    {label:'Published',value:stats.angles.published,foot:'Used successfully'},
+    {label:'Exhausted',value:stats.sources.exhausted,foot:'No viable angles left'}
+  ].map(item=>`
+    <div class="lifecycle-card">
+      <span>${esc(item.label)}</span>
+      <strong>${esc(String(item.value || 0))}</strong>
+      <span>${esc(item.foot)}</span>
+    </div>
+  `).join('');
+
+  const sources=memory?.sources || [];
+  els.memorySources.innerHTML=sources.length ? sources.map(source=>`
+    <div class="memory-row">
+      <div class="memory-copy">
+        <strong>${esc(truncate(source.title,84))}</strong>
+        <span>${esc(source.redditId)} • r/${esc(source.subreddit)} • ${source.angleIds?.length || 0} angles • seen ${fmtDate(source.lastSeenAt)}</span>
+      </div>
+      <span class="status-badge ${source.status==='banked'?'approved':'pending-review'}">${esc(source.status)}</span>
+    </div>
+  `).join('') : '<div class="empty-state"><strong>No source memory yet</strong><span>Run a fill to bank Reddit sources and generate angle inventory.</span></div>';
+
+  const angles=memory?.recentAngles || [];
+  els.memoryAngles.innerHTML=angles.length ? angles.map(angle=>`
+    <div class="memory-row">
+      <div class="memory-copy">
+        <strong>${esc(angle.label)}</strong>
+        <span>${esc(truncate(angle.thesis,92))} • strength ${esc(String(angle.strength))} • ${fmtDate(angle.createdAt)}</span>
+      </div>
+      <span class="status-badge ${angle.status==='ready' || angle.status==='published' ? 'approved' : angle.status==='queued' ? 'pending-review' : 'needs-edits'}">${esc(angle.status)}</span>
+    </div>
+  `).join('') : '<div class="empty-state"><strong>No angles banked yet</strong><span>The next extraction pass will fill this ledger.</span></div>';
+}
+
+function renderLogs(){
+  const loading=store.getState().loading.logs;
+  els.autoLogsBtn.textContent=store.getState().ui.autoLogs ? 'Auto on' : 'Auto off';
+  if(loading && !store.getState().resources.logs.length){
+    els.logList.innerHTML='<div class="skeleton-card"><div class="skeleton skeleton-line" style="width:100%;height:52px"></div><div class="skeleton skeleton-line" style="width:100%;height:52px;margin-top:10px"></div><div class="skeleton skeleton-line" style="width:100%;height:52px;margin-top:10px"></div></div>';
+    return;
+  }
+  const lines=store.getState().resources.logs || [];
+  els.logList.innerHTML=lines.length ? lines.map(line=>{
+    const match=line.match(/\[(.+?)\] \[(.+?)\] (.+)/);
+    if(!match){
+      return `<div class="log-line"><span class="log-ts">—</span><span class="log-lvl log-INFO">INFO</span><span class="log-msg">${esc(line)}</span></div>`;
+    }
+    const level=match[2].trim();
+    return `
+      <div class="log-line">
+        <span class="log-ts">${esc(match[1])}</span>
+        <span class="log-lvl log-${level}">${esc(level)}</span>
+        <span class="log-msg">${esc(match[3])}</span>
+      </div>
+    `;
+  }).join('') : '<div class="empty-state"><strong>No logs yet</strong><span>The runtime log stream will appear here as the pipeline moves.</span></div>';
+}
+
+function renderSettings(){
+  if(store.getState().loading.core){
+    els.runtimeConfig.innerHTML='<div class="skeleton-card"><div class="skeleton skeleton-line" style="width:100%;height:52px"></div></div>';
+    els.platformConfig.innerHTML='';
+    els.permissionMatrix.innerHTML='';
+    return;
+  }
+  const status=store.getState().resources.status;
+  const config=status.config;
+  const enabled=getEnabledPlatforms(status);
+  const memoryLabel='Source registry + angle bank + history-aware prompt signals';
+
+  els.runtimeConfig.innerHTML=`
+    <li><span class="detail-key">Reddit user</span><span class="detail-value">u/${esc(config.redditUser)}</span></li>
+    <li><span class="detail-key">Allowed subs</span><span class="detail-value">${esc(config.allowedSubs.map(sub=>`r/${sub}`).join(' · '))}</span></li>
+    <li><span class="detail-key">Timezone</span><span class="detail-value">${esc(config.timezone)}</span></li>
+    <li><span class="detail-key">Model</span><span class="detail-value">${esc(config.model)}</span></li>
+    <li><span class="detail-key">Memory</span><span class="detail-value">${esc(memoryLabel)}</span></li>
+  `;
+
+  els.platformConfig.innerHTML=`
+    <li><span class="detail-key">Enabled platforms</span><span class="detail-value">${esc(enabled.map(platform=>PLATFORM_META[platform].label).join(' · ') || 'None')}</span></li>
+    <li><span class="detail-key">LinkedIn</span><span class="detail-value">LINKEDIN_TOKEN + PERSON_URN</span></li>
+    <li><span class="detail-key">Threads</span><span class="detail-value">THREADS_ACCESS_TOKEN + USER_ID</span></li>
+    <li><span class="detail-key">X</span><span class="detail-value">${config.platforms.x ? 'User-context auth configured; publish may still depend on X credits/access tier' : 'Text-only v1, currently disabled'}</span></li>
+    <li><span class="detail-key">Instagram</span><span class="detail-value">${config.platforms.instagram ? 'Image generation active' : 'Image generation gated off'}</span></li>
+    <li><span class="detail-key">Facebook</span><span class="detail-value">META token + group target</span></li>
+  `;
+
+  els.permissionMatrix.innerHTML=`
+    <table class="permission-table">
+      <thead>
+        <tr>
+          <th>Capability</th>
+          ${TEAM.map(member=>`<th>${esc(member.name)}<br><span style="color:var(--text-muted);font-weight:500">${esc(member.role)}</span></th>`).join('')}
+        </tr>
+      </thead>
+      <tbody>
+        ${PERMISSION_ROWS.map(row=>`
+          <tr>
+            <td><strong>${esc(row.label)}</strong></td>
+            ${TEAM.map(member=>{
+              const on=Boolean(store.getState().permissions?.[member.id]?.[row.id]);
+              return `<td><button class="toggle ${on?'on':'off'}" data-action="toggle-permission" data-member="${member.id}" data-permission="${row.id}">${on?'Allowed':'Blocked'}</button></td>`;
+            }).join('')}
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function inspectorCard(title,body){
+  return `
+    <section class="inspector-card">
+      <h3>${esc(title)}</h3>
+      ${body}
+    </section>
+  `;
+}
+
+function renderInspector(){
+  const entry=getSelectedEntry();
+  const collisions=getCollisions().filter(item=>item.slotIds?.includes(store.getState().selectedSlotId));
+  const shortcuts=[
+    '⌘K command palette',
+    'C open composer',
+    'G then Q jump to queue',
+    'G then A jump to approvals',
+    'R refresh current page'
+  ];
+
+  if(!entry?.post){
+    els.inspectorStack.innerHTML=[
+      inspectorCard('Selected slot',`
+        <div class="empty-state" style="min-height:220px">
+          <strong>No draft selected</strong>
+          <span>Choose a filled slot from the queue or create a manual draft in the composer.</span>
+          <button class="btn btn-secondary" data-action="open-composer">New Post</button>
+        </div>
+      `),
+      inspectorCard('Shortcuts',`
+        <ul class="detail-list">
+          ${shortcuts.map(shortcut=>`<li><span class="detail-key">Shortcut</span><span class="detail-value">${esc(shortcut)}</span></li>`).join('')}
+        </ul>
+      `)
+    ].join('');
+    return;
+  }
+
+  const approval=getApprovalStatus(entry);
+  const previewPlatform=store.getState().selectedPreviewPlatform || getDefaultPreviewPlatform(entry.post);
+  const previewText=entry.post[previewPlatform] || '';
+  const draftMeta=entry.post.draftMeta?.[previewPlatform];
+
+  els.inspectorStack.innerHTML=[
+    inspectorCard('Selected slot',`
+      <div class="eyebrow">${esc(entry.slot.label)}</div>
+      <div class="inspector-title">${esc(entry.post.title || 'Untitled draft')}</div>
+      <div class="inspector-copy">${esc(truncate(entry.post.angleThesis || previewText,180))}</div>
+      <div class="preview-tabs">
+        ${getPostPlatforms(entry.post).map(platform=>`
+          <button class="tab-pill ${previewPlatform===platform?'active':''}" data-action="set-preview-platform" data-platform="${platform}">
+            ${PLATFORM_META[platform].icon} ${PLATFORM_META[platform].label}
+          </button>
+        `).join('')}
+      </div>
+      <div class="preview-panel">
+        ${previewPlatform==='instagram' && entry.post.imageUrl ? `<img src="${entry.post.imageUrl}" alt="Instagram preview image">` : ''}
+        <pre>${esc(previewText || 'No preview copy available for this platform.')}</pre>
+      </div>
+      ${draftMeta?.scores ? `
+        <div class="score-grid">
+          ${Object.entries(draftMeta.scores).slice(0,4).map(([key,value])=>`
+            <div class="score-card">
+              <span>${esc(key.replace(/_/g,' '))}</span>
+              <strong>${esc(String(value))}/10</strong>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+    `),
+    inspectorCard('Workflow gate',`
+      <div class="button-cluster">
+        <span class="status-badge ${approval}">${esc(approval.replace('-',' '))}</span>
+        ${getPostPlatforms(entry.post).map(platform=>`<span class="platform-badge ${platform}">${PLATFORM_META[platform].label}</span>`).join('')}
+      </div>
+      <div class="inspector-copy">Publishing is blocked unless the slot is approved. This keeps the UI honest about enterprise governance even when the backend remains lightweight.</div>
+      <div class="button-cluster" style="margin-top:14px">
+        <button class="btn btn-small btn-ghost" data-action="set-approval" data-slot="${entry.slot.id}" data-status="needs-edits">Needs edits</button>
+        <button class="btn btn-small btn-secondary" data-action="set-approval" data-slot="${entry.slot.id}" data-status="approved">Approve</button>
+        <button class="btn btn-small btn-ghost" data-action="set-approval" data-slot="${entry.slot.id}" data-status="pending-review">Reset</button>
+      </div>
+    `),
+    inspectorCard('Actions',`
+      <div class="button-cluster">
+        <button class="btn btn-primary" data-action="post-selected" ${store.getState().ui.postingSlots[entry.slot.id] ? 'disabled' : ''}>${store.getState().ui.postingSlots[entry.slot.id] ? '<span class="spin"></span> Posting' : 'Post now'}</button>
+        <button class="btn btn-danger" data-action="release-selected" ${store.getState().ui.releasingSlots[entry.slot.id] ? 'disabled' : ''}>${store.getState().ui.releasingSlots[entry.slot.id] ? '<span class="spin"></span> Releasing' : 'Release slot'}</button>
+      </div>
+    `),
+    inspectorCard('Collision detail',`
+      ${collisions.length ? `<ul class="detail-list">${collisions.map(item=>`<li><span class="detail-key">${esc(item.title)}</span><span class="detail-value">${esc(item.severity)}</span></li>`).join('')}</ul>` : '<div class="surface-note">No high-priority collisions tied to this slot.</div>'}
+    `),
+    inspectorCard('Shortcuts',`
+      <ul class="detail-list">
+        ${shortcuts.map(shortcut=>`<li><span class="detail-key">Shortcut</span><span class="detail-value">${esc(shortcut)}</span></li>`).join('')}
+      </ul>
+    `)
+  ].join('');
+}
+
+function renderCommand(){
+  const state=store.getState();
+  els.commandOverlay.hidden=!state.ui.commandOpen;
+  if(!state.ui.commandOpen) return;
+  const query=String(state.commandQuery || '').toLowerCase().trim();
+  const filtered=COMMAND_DEFS.filter(command=>{
+    if(!query) return true;
+    return [command.label,command.category,...command.keywords].join(' ').toLowerCase().includes(query);
+  });
+  const safeIndex=Math.max(0,Math.min(state.ui.commandIndex,Math.max(filtered.length-1,0)));
+  if(safeIndex !== state.ui.commandIndex){
+    store.setState(prev=>({...prev,ui:{...prev.ui,commandIndex:safeIndex}}));
+  }
+  els.commandResults.innerHTML=filtered.map((command,index)=>`
+    <button class="command-item ${index===safeIndex?'active':''}" data-action="run-command" data-command="${command.id}">
+      <div class="command-meta">
+        <strong>${esc(command.label)}</strong>
+        <span>${esc(command.category)}</span>
+      </div>
+      <div class="micro-badge">${esc(command.category)}</div>
+    </button>
+  `).join('') || '<div class="empty-state"><strong>No command found</strong><span>Try “queue”, “approvals”, “fill”, or “compose”.</span></div>';
+}
+
+function renderComposer(){
+  const state=store.getState();
+  els.composerOverlay.hidden=!state.ui.composerOpen;
+  if(!state.ui.composerOpen) return;
+
+  els.composerSlot.innerHTML=SLOTS.map(slot=>`<option value="${slot.id}" ${state.composer.slotId===slot.id?'selected':''}>${esc(slot.label)} • ${esc(slot.desc)}</option>`).join('');
+  els.composerTitle.value=state.composer.title || '';
+  els.composerCore.value=state.composer.core || '';
+  els.composerLink.value=state.composer.link || '';
+  els.composerLinkTitle.value=state.composer.linkTitle || '';
+  els.composerLinkDescription.value=state.composer.linkDescription || '';
+  els.composerThumbnail.value=state.composer.thumbnail || 'clean-cut';
+  els.composerCaptioning.value=state.composer.captioning || 'burned-in';
+  els.composerUtm.value=state.composer.utm || '';
+  els.composerMetadata.value=state.composer.metadata || '';
+  els.composerSaveBtn.innerHTML=state.ui.scheduling ? '<span class="spin"></span> Scheduling' : 'Schedule Draft';
+  els.composerSaveBtn.disabled=state.ui.scheduling;
+
+  els.composerPlatformToggles.innerHTML=Object.entries(PLATFORM_META).map(([platform,item])=>`
+    <button class="pill-toggle ${state.composer.platforms?.[platform] ? 'active' : ''}" data-action="toggle-composer-platform" data-platform="${platform}">
+      ${esc(item.label)}${isPlatformEnabled(platform) ? '' : ' (off)'}
+    </button>
+  `).join('');
+
+  els.composerMediaToggles.innerHTML=MEDIA_MODES.map(mode=>`
+    <button class="pill-toggle ${state.composer.media===mode ? 'active' : ''}" data-action="set-media-mode" data-media="${mode}">
+      ${esc(mode)}
+    </button>
+  `).join('');
+
+  const hasLink=Boolean((state.composer.link || detectUrl(state.composer.core)).trim());
+  els.composerLinkCard.hidden=!hasLink;
+  els.composerVideoCard.hidden=state.composer.media!=='video';
+  els.composerUtmCard.hidden=!state.composer.showUtm;
+  els.composerMetadataCard.hidden=!state.composer.showMetadata;
+  renderComposerPreview();
+}
+
+function renderComposerPreview(){
+  if(store.getState().ui.composerOpen===false) return;
+  const state=store.getState().composer;
+  const derived=composerVariants();
+  const active=state.activePreview || 'linkedin';
+  const link=state.link.trim() || detectUrl(state.core);
+  const linkTitle=state.linkTitle.trim() || 'Linked asset preview';
+  const linkDescription=state.linkDescription.trim() || 'Add a short supporting description to control how the linked resource is framed in the composer.';
+
+  els.composerPreviewTabs.innerHTML=Object.entries(PLATFORM_META).map(([platform,item])=>`
+    <button class="tab-pill ${active===platform?'active':''}" data-action="set-composer-preview" data-platform="${platform}">
+      ${esc(item.label)}
+    </button>
+  `).join('');
+
+  els.composerPreviewGrid.innerHTML=Object.entries(derived.variants).map(([platform,text])=>`
+    <button class="preview-card ${active===platform?'active':''}" data-action="set-composer-preview" data-platform="${platform}">
+      <div class="preview-card-head">
+        <strong>${esc(PLATFORM_META[platform].label)}</strong>
+        <span>${text.length} chars</span>
+      </div>
+      <p>${esc(truncate(text,220))}</p>
+    </button>
+  `).join('');
+
+  els.composerLinkPreview.hidden=!link;
+  els.composerLinkPreview.innerHTML=link ? `
+    <h4>${esc(linkTitle)}</h4>
+    <p>${esc(linkDescription)}</p>
+    <p class="surface-note">${esc(link)}</p>
+  ` : '';
+}
+
+function renderSettingsFromStateOnly(){
+  renderSettings();
+}
+
+function renderReportCanvas(){
+  renderAnalytics();
+}
+
+function renderAll(){
+  renderNav();
+  renderWorkspaceRail();
+  renderHeader();
+  renderDashboard();
+  renderQueue();
+  renderApprovals();
+  renderAnalytics();
+  renderMemory();
+  renderLogs();
+  renderSettingsFromStateOnly();
+  renderInspector();
+  renderCommand();
+  renderComposer();
+}
+
+function findEntryBySlot(slotId){
+  return getQueueEntries().find(entry=>entry.slot.id===slotId) || null;
+}
+
+function handleClick(event){
+  const target=event.target.closest('[data-action]');
+  if(!target) return;
+  const action=target.dataset.action;
+  if(action==='go-page'){
+    setPage(target.dataset.page);
+    return;
+  }
+  if(action==='switch-org'){
+    store.setState(prev=>({...prev,orgId:target.dataset.org}));
+    renderAll();
+    return;
+  }
+  if(action==='select-slot'){
+    const entry=findEntryBySlot(target.dataset.slot);
+    store.setState(prev=>({
+      ...prev,
+      selectedSlotId:target.dataset.slot,
+      selectedPreviewPlatform:entry?.post ? getDefaultPreviewPlatform(entry.post) : 'linkedin'
+    }));
+    renderAll();
+    return;
+  }
+  if(action==='set-benchmark'){
+    store.setState(prev=>({...prev,benchmark:target.dataset.benchmark}));
+    renderDashboard();
+    renderAnalytics();
+    return;
+  }
+  if(action==='open-command'){ openCommand(); return; }
+  if(action==='close-command'){ closeCommand(); return; }
+  if(action==='run-command'){
+    const command=COMMAND_DEFS.find(item=>item.id===target.dataset.command);
+    if(command){
+      closeCommand();
+      command.run();
+    }
+    return;
+  }
+  if(action==='open-composer'){ openComposer(); return; }
+  if(action==='close-composer'){ closeComposer(); return; }
+  if(action==='fill-queue'){ fillQueue(); return; }
+  if(action==='post-approved'){ postApproved(); return; }
+  if(action==='refresh-page'){ refreshCurrentPage(); return; }
+  if(action==='refresh-logs'){ refreshLogs(); return; }
+  if(action==='toggle-auto-logs'){ toggleAutoLogs(); return; }
+  if(action==='set-approval'){
+    const entry=findEntryBySlot(target.dataset.slot);
+    if(entry){
+      setApprovalStatus(entry,target.dataset.status);
+    }
+    return;
+  }
+  if(action==='set-preview-platform'){
+    store.setState(prev=>({...prev,selectedPreviewPlatform:target.dataset.platform}));
+    renderInspector();
+    return;
+  }
+  if(action==='post-selected'){ postSelectedSlot(); return; }
+  if(action==='release-selected'){ releaseSelectedSlot(); return; }
+  if(action==='toggle-permission'){
+    const member=target.dataset.member;
+    const permission=target.dataset.permission;
+    store.setState(prev=>({
+      ...prev,
+      permissions:{
+        ...prev.permissions,
+        [member]:{
+          ...prev.permissions[member],
+          [permission]:!prev.permissions[member][permission]
+        }
+      }
+    }));
+    renderSettings();
+    return;
+  }
+  if(action==='toggle-composer-platform'){
+    const platform=target.dataset.platform;
+    if(!isPlatformEnabled(platform)){
+      pushToast('Platform disabled',`${PLATFORM_META[platform].label} is not enabled in the current runtime config.`, 'info');
+      return;
+    }
+    store.setState(prev=>({
+      ...prev,
+      composer:{
+        ...prev.composer,
+        platforms:{
+          ...prev.composer.platforms,
+          [platform]:!prev.composer.platforms[platform]
+        }
+      }
+    }));
+    renderComposer();
+    return;
+  }
+  if(action==='set-media-mode'){
+    composerStatePatch({media:target.dataset.media});
+    renderComposer();
+    return;
+  }
+  if(action==='toggle-utm'){
+    composerStatePatch({showUtm:!store.getState().composer.showUtm});
+    renderComposer();
+    return;
+  }
+  if(action==='toggle-metadata'){
+    composerStatePatch({showMetadata:!store.getState().composer.showMetadata});
+    renderComposer();
+    return;
+  }
+  if(action==='set-composer-preview'){
+    composerStatePatch({activePreview:target.dataset.platform});
+    renderComposerPreview();
+    return;
+  }
+  if(action==='schedule-composer'){ scheduleComposer(); return; }
+  if(action==='reset-report'){
+    store.setState(prev=>({...prev,reportBlocks:['reach','engagement','queueHealth']}));
+    renderAnalytics();
+    return;
+  }
+  if(action==='export-report'){
+    pushToast('Report staged','The report canvas is prepared for a future PDF export flow.', 'info');
+    return;
+  }
+  if(action==='remove-report-block'){
+    store.setState(prev=>({...prev,reportBlocks:prev.reportBlocks.filter(id=>id!==target.dataset.block)}));
+    renderAnalytics();
+    return;
+  }
+}
+
+function handleInput(event){
+  if([
+    els.composerTitle,
+    els.composerCore,
+    els.composerLink,
+    els.composerLinkTitle,
+    els.composerLinkDescription,
+    els.composerUtm,
+    els.composerMetadata
+  ].includes(event.target)){
+    syncComposerFromDom();
+  }
+  if(event.target===els.commandInput){
+    store.setState(prev=>({
+      ...prev,
+      commandQuery:event.target.value,
+      ui:{...prev.ui,commandIndex:0}
+    }));
+    renderCommand();
+  }
+}
+
+function handleChange(event){
+  if([
+    els.composerSlot,
+    els.composerThumbnail,
+    els.composerCaptioning
+  ].includes(event.target)){
+    syncComposerFromDom();
+  }
+}
+
+function handleDragStart(event){
+  const block=event.target.closest('[data-report-id]');
+  if(!block) return;
+  const id=block.dataset.reportId;
+  event.dataTransfer.setData('text/plain',id);
+  store.setState(prev=>({...prev,ui:{...prev.ui,reportDragId:id}}));
+}
+
+function handleDragOver(event){
+  if(event.target.closest('[data-report-canvas]')){
+    event.preventDefault();
+    els.reportCanvas.classList.add('drag-over');
+  }
+}
+
+function handleDrop(event){
+  const canvas=event.target.closest('[data-report-canvas]');
+  if(!canvas) return;
+  event.preventDefault();
+  els.reportCanvas.classList.remove('drag-over');
+  const id=event.dataTransfer.getData('text/plain') || store.getState().ui.reportDragId;
+  if(!id) return;
+  store.setState(prev=>({
+    ...prev,
+    reportBlocks:prev.reportBlocks.includes(id) ? prev.reportBlocks : [...prev.reportBlocks,id],
+    ui:{...prev.ui,reportDragId:null}
+  }));
+  renderAnalytics();
+}
+
+function handleKeydown(event){
+  const tag=(event.target.tagName || '').toLowerCase();
+  const isTyping=['input','textarea','select'].includes(tag);
+
+  if((event.metaKey || event.ctrlKey) && event.key.toLowerCase()==='k'){
+    event.preventDefault();
+    if(store.getState().ui.commandOpen){
+      closeCommand();
+    }else{
+      openCommand();
+    }
+    return;
+  }
+
+  if(event.key==='Escape'){
+    if(store.getState().ui.commandOpen) closeCommand();
+    if(store.getState().ui.composerOpen) closeComposer();
+    return;
+  }
+
+  if(store.getState().ui.commandOpen){
+    const query=String(store.getState().commandQuery || '').toLowerCase().trim();
+    const filtered=COMMAND_DEFS.filter(command=>{
+      if(!query) return true;
+      return [command.label,command.category,...command.keywords].join(' ').toLowerCase().includes(query);
+    });
+    if(event.key==='ArrowDown'){
+      event.preventDefault();
+      store.setState(prev=>({...prev,ui:{...prev.ui,commandIndex:Math.min(prev.ui.commandIndex+1,Math.max(filtered.length-1,0))}}));
+      renderCommand();
+      return;
+    }
+    if(event.key==='ArrowUp'){
+      event.preventDefault();
+      store.setState(prev=>({...prev,ui:{...prev.ui,commandIndex:Math.max(prev.ui.commandIndex-1,0)}}));
+      renderCommand();
+      return;
+    }
+    if(event.key==='Enter'){
+      event.preventDefault();
+      const command=filtered[store.getState().ui.commandIndex];
+      if(command){
+        closeCommand();
+        command.run();
+      }
+      return;
+    }
+  }
+
+  if(isTyping) return;
+
+  const key=event.key.toLowerCase();
+  if(key==='c'){
+    event.preventDefault();
+    openComposer();
+    return;
+  }
+  if(key==='r'){
+    event.preventDefault();
+    refreshCurrentPage();
+    return;
+  }
+  if(key==='g'){
+    chordKey='g';
+    setTimeout(()=>{ chordKey=null; },700);
+    return;
+  }
+  if(chordKey==='g'){
+    if(key==='q'){ setPage('queue'); }
+    if(key==='a'){ setPage('approvals'); }
+    if(key==='d'){ setPage('dashboard'); }
+    if(key==='m'){ setPage('memory'); }
+    chordKey=null;
+  }
+}
+
+document.addEventListener('click',handleClick);
+document.addEventListener('input',handleInput);
+document.addEventListener('change',handleChange);
+document.addEventListener('dragstart',handleDragStart);
+document.addEventListener('dragover',handleDragOver);
+document.addEventListener('drop',handleDrop);
+document.addEventListener('dragleave',event=>{
+  if(event.target.closest('[data-report-canvas]')){
+    els.reportCanvas.classList.remove('drag-over');
+  }
+});
+document.addEventListener('keydown',handleKeydown);
+
+renderAll();
+refreshCore();
+</script>
+</body>
+</html>

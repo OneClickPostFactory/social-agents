@@ -1,0 +1,12 @@
+name = "oneclickpostfactory-agent"
+main = "src/cloudflare-worker.ts"
+compatibility_date = "2026-05-07"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["*/1 * * * *"]
+
+[vars]
+NODE_ENV = "production"
+SUPABASE_WORKER_BATCH_SIZE = "5"
+HTTP_TIMEOUT_MS = "15000"

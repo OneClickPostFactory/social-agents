@@ -1,0 +1,1259 @@
+openapi: 3.1.0
+info:
+  title: Social Agent Single-Tenant API
+  version: 2.0.0
+  description: |
+    Current backend contract for the secure single-tenant Social Agent runtime.
+    This contract is grounded in the implemented server in src/server.ts.
+    The backend uses cookie session auth, CSRF protection on authenticated writes,
+    SQLite for control-plane state, and JSON files for legacy automation state.
+servers:
+  - url: http://localhost:4001
+    description: Default local backend port. Actual port comes from GUI_PORT.
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: social_agent_session
+      description: |
+        Session cookie. When COOKIE_SECURE=true, the runtime uses __Host-social_agent_session instead.
+
+  parameters:
+    CsrfHeader:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema:
+        type: string
+      description: CSRF token returned by GET /api/auth/me or bootstrap/login responses.
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    AuthUser:
+      type: object
+      required: [id, email, role, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [owner]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        lastLoginAt:
+          type: string
+          format: date-time
+
+    BillingState:
+      type: object
+      required: [status, updatedAt, accessActive, prices]
+      properties:
+        status:
+          type: string
+          enum: [setup, trialing, active, past_due, paused, canceled, unpaid]
+        trialStartedAt:
+          type: string
+          format: date-time
+        trialEndsAt:
+          type: string
+          format: date-time
+        planInterval:
+          type: string
+          enum: [monthly, yearly]
+        stripeCustomerId:
+          type: string
+        stripeSubscriptionId:
+          type: string
+        stripeCheckoutSessionId:
+          type: string
+        currentPeriodEnd:
+          type: string
+          format: date-time
+        cancelAtPeriodEnd:
+          type: boolean
+        lockedReason:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        accessActive:
+          type: boolean
+        prices:
+          type: object
+          required: [monthlyGbp, yearlyGbp]
+          properties:
+            monthlyGbp:
+              type: number
+            yearlyGbp:
+              type: number
+
+    Readiness:
+      type: object
+      required: [ready, missing, enabledPlatforms]
+      properties:
+        ready:
+          type: boolean
+        missing:
+          type: array
+          items:
+            type: string
+        enabledPlatforms:
+          type: array
+          items:
+            type: string
+
+    AutomationGate:
+      type: object
+      required: [allowed, reasons, readiness, billing, hasOwner]
+      properties:
+        allowed:
+          type: boolean
+        reasons:
+          type: array
+          items:
+            type: string
+        readiness:
+          $ref: '#/components/schemas/Readiness'
+        billing:
+          $ref: '#/components/schemas/BillingState'
+        hasOwner:
+          type: boolean
+
+    SetupStatus:
+      type: object
+      required: [initialized, hasOwner, billing, secretStorageReady]
+      properties:
+        initialized:
+          type: boolean
+        hasOwner:
+          type: boolean
+        billing:
+          $ref: '#/components/schemas/BillingState'
+        secretStorageReady:
+          type: boolean
+
+    StripeSummary:
+      type: object
+      required: [configured, webhookConfigured, priceIds, frontendBaseUrl]
+      properties:
+        configured:
+          type: boolean
+        webhookConfigured:
+          type: boolean
+        priceIds:
+          type: object
+          required: [monthly, yearly]
+          properties:
+            monthly:
+              type: boolean
+            yearly:
+              type: boolean
+        frontendBaseUrl:
+          type: string
+
+    DbHealth:
+      type: object
+      required: [ok, path]
+      properties:
+        ok:
+          type: boolean
+        path:
+          type: string
+
+    HealthResponse:
+      type: object
+      required: [ok, time, db, setup, readiness, automation]
+      properties:
+        ok:
+          type: boolean
+        time:
+          type: string
+          format: date-time
+        db:
+          $ref: '#/components/schemas/DbHealth'
+        setup:
+          $ref: '#/components/schemas/SetupStatus'
+        readiness:
+          $ref: '#/components/schemas/Readiness'
+        automation:
+          $ref: '#/components/schemas/AutomationGate'
+
+    BootstrapStatusResponse:
+      type: object
+      required: [setup, readiness, automation, stripe]
+      properties:
+        setup:
+          $ref: '#/components/schemas/SetupStatus'
+        readiness:
+          $ref: '#/components/schemas/Readiness'
+        automation:
+          $ref: '#/components/schemas/AutomationGate'
+        stripe:
+          $ref: '#/components/schemas/StripeSummary'
+
+    AuthMeUnauthenticatedResponse:
+      type: object
+      required: [authenticated, setup, stripe]
+      properties:
+        authenticated:
+          type: boolean
+          enum: [false]
+        setup:
+          $ref: '#/components/schemas/SetupStatus'
+        stripe:
+          $ref: '#/components/schemas/StripeSummary'
+
+    AuthSuccessResponse:
+      type: object
+      required: [authenticated, user, csrfToken, billing, readiness]
+      properties:
+        authenticated:
+          type: boolean
+          enum: [true]
+        user:
+          $ref: '#/components/schemas/AuthUser'
+        csrfToken:
+          type: string
+        billing:
+          $ref: '#/components/schemas/BillingState'
+        readiness:
+          $ref: '#/components/schemas/Readiness'
+
+    AuthMeAuthenticatedResponse:
+      allOf:
+        - $ref: '#/components/schemas/AuthSuccessResponse'
+        - type: object
+          required: [stripe]
+          properties:
+            stripe:
+              $ref: '#/components/schemas/StripeSummary'
+
+    BootstrapRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 12
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+
+    ChangePasswordRequest:
+      type: object
+      required: [currentPassword, nextPassword]
+      properties:
+        currentPassword:
+          type: string
+        nextPassword:
+          type: string
+          minLength: 12
+
+    RuntimeSettings:
+      type: object
+      additionalProperties: false
+      properties:
+        REDDIT_USER:
+          type: string
+        REDDIT_ALLOWED_SUBS:
+          type: array
+          items:
+            type: string
+        REDDIT_SORT:
+          type: string
+        REDDIT_LIMIT:
+          type: integer
+        OPENAI_MODEL:
+          type: string
+        AI_STYLE:
+          type: string
+        CUSTOM_PROMPT:
+          type: string
+        ENABLE_LINKEDIN:
+          type: boolean
+        ENABLE_X:
+          type: boolean
+        ENABLE_THREADS:
+          type: boolean
+        ENABLE_INSTAGRAM:
+          type: boolean
+        ENABLE_FACEBOOK:
+          type: boolean
+        META_GRAPH_VERSION:
+          type: string
+        THREADS_GRAPH_VERSION:
+          type: string
+        TIMEZONE:
+          type: string
+
+    RuntimeSecretPresence:
+      type: object
+      description: |
+        Boolean secret presence map. Keys may include OPENAI_API_KEY, LINKEDIN_TOKEN, LINKEDIN_PERSON_URN,
+        X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET, X_OAUTH2_ACCESS_TOKEN,
+        X_OAUTH2_REFRESH_TOKEN, X_CLIENT_ID, X_CLIENT_SECRET, X_REDIRECT_URI, THREADS_ACCESS_TOKEN,
+        THREADS_USER_ID, META_ACCESS_TOKEN, FACEBOOK_PAGE_ACCESS_TOKEN, INSTAGRAM_ACCOUNT_ID,
+        FACEBOOK_GROUP_ID, FACEBOOK_USER_ID, and FACEBOOK_PAGE_ID.
+      additionalProperties:
+        type: boolean
+
+    SettingsResponse:
+      type: object
+      required: [runtime, storedRuntimeSettings, secretPresence, readiness, billing]
+      properties:
+        runtime:
+          type: object
+          additionalProperties: true
+        storedRuntimeSettings:
+          $ref: '#/components/schemas/RuntimeSettings'
+        secretPresence:
+          $ref: '#/components/schemas/RuntimeSecretPresence'
+        readiness:
+          $ref: '#/components/schemas/Readiness'
+        billing:
+          $ref: '#/components/schemas/BillingState'
+
+    RuntimeSettingsUpdateRequest:
+      type: object
+      required: [settings]
+      properties:
+        settings:
+          $ref: '#/components/schemas/RuntimeSettings'
+
+    RuntimeSecretsUpdateRequest:
+      type: object
+      required: [secrets]
+      properties:
+        secrets:
+          type: object
+          additionalProperties:
+            anyOf:
+              - type: string
+              - type: 'null'
+
+    BillingResponse:
+      type: object
+      required: [billing, stripe]
+      properties:
+        billing:
+          $ref: '#/components/schemas/BillingState'
+        stripe:
+          $ref: '#/components/schemas/StripeSummary'
+
+    CheckoutSessionRequest:
+      type: object
+      properties:
+        interval:
+          type: string
+          enum: [monthly, yearly]
+
+    CheckoutSessionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+
+    PortalSessionResponse:
+      type: object
+      properties:
+        url:
+          type: string
+
+    AuditLogEntry:
+      type: object
+      required: [id, action, target, metadata, createdAt]
+      properties:
+        id:
+          type: integer
+        actorUserId:
+          type: integer
+        action:
+          type: string
+        target:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        ip:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    SlotId:
+      type: string
+      enum: [s1, s2, s3, s4]
+
+    PlatformKey:
+      type: string
+      enum: [threads, x, instagram, linkedin, facebook]
+
+    QueueItem:
+      type: object
+      additionalProperties: true
+      description: |
+        Queue payload stored in the SQLite-backed automation store. It is still weakly validated on writes
+        and returned with the same broad object shape for dashboard/operator compatibility.
+        Platform fields may include linkedin, threads, x, instagram, facebook, plus ids and publishErrors keyed by platform.
+
+    HistoryEntry:
+      type: object
+      additionalProperties: true
+      description: |
+        Legacy publish history payload. Platform ids may include ids.x for X/Twitter publishes.
+
+    SourceRecord:
+      type: object
+      additionalProperties: true
+
+    AngleRecord:
+      type: object
+      additionalProperties: true
+
+    MemoryStats:
+      type: object
+      additionalProperties: true
+
+    StatusResponse:
+      type: object
+      required: [slots, stats, memory, readiness, billing, config]
+      properties:
+        slots:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                $ref: '#/components/schemas/SlotId'
+              label:
+                type: string
+              desc:
+                type: string
+              post:
+                anyOf:
+                  - $ref: '#/components/schemas/QueueItem'
+                  - type: 'null'
+        stats:
+          type: object
+          additionalProperties: true
+        memory:
+          $ref: '#/components/schemas/MemoryStats'
+        readiness:
+          $ref: '#/components/schemas/Readiness'
+        billing:
+          $ref: '#/components/schemas/BillingState'
+        config:
+          type: object
+          additionalProperties: true
+
+    QueueResponseItem:
+      type: object
+      properties:
+        slot:
+          type: object
+          additionalProperties: true
+        post:
+          anyOf:
+            - $ref: '#/components/schemas/QueueItem'
+            - type: 'null'
+
+    MemoryResponse:
+      type: object
+      required: [stats, sources, recentAngles]
+      properties:
+        stats:
+          $ref: '#/components/schemas/MemoryStats'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceRecord'
+        recentAngles:
+          type: array
+          items:
+            $ref: '#/components/schemas/AngleRecord'
+
+    FillQueueResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        memory:
+          $ref: '#/components/schemas/MemoryStats'
+
+    PostSlotRequest:
+      type: object
+      required: [slotId]
+      properties:
+        slotId:
+          $ref: '#/components/schemas/SlotId'
+
+    PostSlotResponse:
+      type: object
+      required: [success, queuedForRetry, ids, errors, pendingPlatforms, memory]
+      properties:
+        success:
+          type: boolean
+        queuedForRetry:
+          type: boolean
+        ids:
+          type: object
+          additionalProperties:
+            type: string
+        errors:
+          type: array
+          items:
+            type: string
+        pendingPlatforms:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlatformKey'
+        memory:
+          $ref: '#/components/schemas/MemoryStats'
+
+    PostAllResponse:
+      type: object
+      required: [results, memory]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        memory:
+          $ref: '#/components/schemas/MemoryStats'
+
+    SlotUpdateRequest:
+      type: object
+      required: [slotId]
+      properties:
+        slotId:
+          $ref: '#/components/schemas/SlotId'
+        updates:
+          $ref: '#/components/schemas/QueueItem'
+
+    SlotDeleteRequest:
+      type: object
+      required: [slotId]
+      properties:
+        slotId:
+          $ref: '#/components/schemas/SlotId'
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness and setup health snapshot
+      operationId: getHealth
+      responses:
+        '200':
+          description: Backend health snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /api/bootstrap/status:
+    get:
+      summary: Get onboarding, readiness, and Stripe config status
+      operationId: getBootstrapStatus
+      responses:
+        '200':
+          description: Bootstrap and readiness state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BootstrapStatusResponse'
+
+  /api/auth/me:
+    get:
+      summary: Get current session state
+      operationId: getAuthMe
+      responses:
+        '200':
+          description: Authenticated or unauthenticated session view
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthMeUnauthenticatedResponse'
+                  - $ref: '#/components/schemas/AuthMeAuthenticatedResponse'
+
+  /api/auth/bootstrap:
+    post:
+      summary: Bootstrap the owner account for the installation
+      operationId: bootstrapOwner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BootstrapRequest'
+      responses:
+        '201':
+          description: Owner created and session established
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSuccessResponse'
+        '409':
+          description: Owner already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Bootstrap failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/auth/login:
+    post:
+      summary: Login as owner
+      operationId: loginOwner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session established
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSuccessResponse'
+        '500':
+          description: Login failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/auth/logout:
+    post:
+      summary: Logout current session
+      operationId: logoutOwner
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid CSRF token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/auth/password:
+    post:
+      summary: Change owner password
+      operationId: changeOwnerPassword
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '200':
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid CSRF token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Password change failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/settings:
+    get:
+      summary: Get effective runtime settings, stored settings, and secret presence
+      operationId: getSettings
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Current runtime settings state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/settings/runtime:
+    put:
+      summary: Update stored runtime settings
+      operationId: updateRuntimeSettings
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeSettingsUpdateRequest'
+      responses:
+        '200':
+          description: Settings updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid CSRF token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/settings/secrets:
+    put:
+      summary: Update encrypted runtime secrets
+      operationId: updateRuntimeSecrets
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeSecretsUpdateRequest'
+      responses:
+        '200':
+          description: Secrets updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid CSRF token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/billing:
+    get:
+      summary: Get billing state and Stripe config summary
+      operationId: getBilling
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Billing state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/billing/checkout-session:
+    post:
+      summary: Create Stripe Checkout session for subscription
+      operationId: createCheckoutSession
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutSessionRequest'
+      responses:
+        '200':
+          description: Stripe Checkout session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutSessionResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid CSRF token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '500':
+          description: Stripe config or request failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/billing/portal-session:
+    post:
+      summary: Create Stripe Billing Portal session
+      operationId: createPortalSession
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '200':
+          description: Stripe Billing Portal session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalSessionResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid CSRF token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: No Stripe customer linked yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/billing/webhook:
+    post:
+      summary: Stripe webhook receiver
+      operationId: handleStripeWebhook
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Webhook accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  received:
+                    type: boolean
+        '400':
+          description: Invalid Stripe webhook signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/audit-logs:
+    get:
+      summary: Get latest audit log entries
+      operationId: getAuditLogs
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Latest audit entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditLogEntry'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/status:
+    get:
+      summary: Get current automation status
+      operationId: getStatus
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Current automation status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/queue:
+    get:
+      summary: Get queue slots
+      operationId: getQueue
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Queue slots
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/QueueResponseItem'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/history:
+    get:
+      summary: Get latest publish history
+      operationId: getHistory
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Publish history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HistoryEntry'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/memory:
+    get:
+      summary: Get source and angle memory snapshot
+      operationId: getMemory
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Memory snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/logs:
+    get:
+      summary: Get latest runtime log lines
+      operationId: getLogs
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Runtime logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/fetch:
+    post:
+      summary: Fill queue from banked angles or fresh Reddit extraction
+      operationId: fetchQueueContent
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '200':
+          description: Queue fill result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FillQueueResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid CSRF token or automation gate closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/post-slot:
+    post:
+      summary: Publish a single queued slot
+      operationId: postSlot
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostSlotRequest'
+      responses:
+        '200':
+          description: Publish result for one slot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostSlotResponse'
+        '400':
+          description: Invalid slot or empty slot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid CSRF token or automation gate closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/post-all:
+    post:
+      summary: Publish all filled queue slots
+      operationId: postAll
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '200':
+          description: Per-slot publish results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostAllResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid CSRF token or automation gate closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /api/slot:
+    put:
+      summary: Update a queue slot manually
+      operationId: updateSlot
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlotUpdateRequest'
+      responses:
+        '200':
+          description: Slot updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+        '400':
+          description: Missing or invalid slotId
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid CSRF token or automation gate closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    delete:
+      summary: Release a queue slot
+      operationId: deleteSlot
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlotDeleteRequest'
+      responses:
+        '200':
+          description: Slot released
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  memory:
+                    $ref: '#/components/schemas/MemoryStats'
+        '400':
+          description: Missing or invalid slotId
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid CSRF token or automation gate closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'

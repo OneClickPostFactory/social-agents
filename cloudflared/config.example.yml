@@ -1,0 +1,13 @@
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /home/oneclickwebsitedesignfactory/.cloudflared/YOUR_TUNNEL_ID.json
+
+ingress:
+  # If your frontend is hosted elsewhere, keep only the API hostname rule.
+  - hostname: api.oneclickwebsitefactory.tailwaggingwebdesign.com
+    service: http://localhost:4001
+
+  # Optional: if your frontend also runs locally on this machine.
+  - hostname: oneclickwebsitefactory.tailwaggingwebdesign.com
+    service: http://localhost:3000
+
+  - service: http_status:404

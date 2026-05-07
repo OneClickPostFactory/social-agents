@@ -1,0 +1,44 @@
+{
+  "name": "social-agent",
+  "version": "1.0.0",
+  "description": "Reddit -> OpenAI -> LinkedIn + Threads + X + Instagram + Facebook autoposter with DALL-E images and web dashboard.",
+  "main": "dist/src/agent.js",
+  "scripts": {
+    "build": "tsx scripts/build.ts",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "test": "npm run build && node dist/test/security-hardening.test.js",
+    "smoke:dist": "node dist/src/cli.js status",
+    "ci": "npm run typecheck && npm run build && npm run smoke:dist && node dist/test/security-hardening.test.js",
+    "dev": "tsx src/agent.ts",
+    "worker:supabase": "tsx src/supabase-worker.ts",
+    "start": "node dist/src/agent.js",
+    "start:supabase": "node dist/src/supabase-worker.js",
+    "start:pm2": "pm2 start dist/src/agent.js --name social-agent --restart-delay=5000",
+    "deploy:cloudflare": "wrangler deploy",
+    "deploy": "tsx scripts/deploy.ts",
+    "backup": "tsx scripts/backup.ts",
+    "restore": "tsx scripts/restore.ts",
+    "fetch": "tsx src/cli.ts fetch",
+    "queue": "tsx src/cli.ts queue",
+    "status": "tsx src/cli.ts status",
+    "memory": "tsx src/cli.ts memory",
+    "history": "tsx src/cli.ts history",
+    "post-now": "tsx src/cli.ts post-now",
+    "import-x-oauth2": "tsx src/cli.ts import-x-oauth2",
+    "test-meta": "tsx src/test-meta.ts",
+    "test-x": "tsx src/test-x.ts"
+  },
+  "dependencies": {
+    "node-cron": "^3.0.3",
+    "tsx": "^4.21.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/node-cron": "^3.0.11",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.88.0"
+  }
+}
