@@ -629,18 +629,29 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
 
   const occupiedSlots = await loadActiveSlotIndexes(job.user_id);
   const existingSourceUrls = await loadExistingSourceUrls(job.user_id);
+  const redditAuthorFilter = sources
+    .find(source => source.kind === 'reddit_user')
+    ?.value
+    .split('|')[0]
+    ?.trim()
+    .replace(/^u\//i, '')
+    .toLowerCase();
   let fetched = 0;
   let banked = 0;
   let queued = 0;
 
   for (const source of sources) {
     if (firstOpenSlot(occupiedSlots) === undefined) break;
+    if (source.kind === 'reddit_user') continue;
 
     try {
       const posts = await fetchTenantSourcePosts(source, job.user_id, job.id);
-      fetched += posts.length;
+      const sourcePosts = source.kind === 'subreddit' && redditAuthorFilter
+        ? posts.filter(post => post.author.toLowerCase() === redditAuthorFilter)
+        : posts;
+      fetched += sourcePosts.length;
 
-      for (const post of posts) {
+      for (const post of sourcePosts) {
         const slotIndex = firstOpenSlot(occupiedSlots);
         if (slotIndex === undefined) break;
 
