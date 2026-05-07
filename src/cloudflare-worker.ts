@@ -7,6 +7,9 @@ interface Env {
   CREDENTIAL_ENCRYPTION_KEY?: string;
   SUPABASE_WORKER_BATCH_SIZE?: string;
   HTTP_TIMEOUT_MS?: string;
+  REDDIT_CLIENT_ID?: string;
+  REDDIT_CLIENT_SECRET?: string;
+  REDDIT_USER_AGENT?: string;
   OPENAI_MODEL?: string;
   META_GRAPH_VERSION?: string;
   THREADS_GRAPH_VERSION?: string;

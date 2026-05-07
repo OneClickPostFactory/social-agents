@@ -73,7 +73,15 @@ Required worker env:
 SUPABASE_URL=https://<your-owned-project-ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<sb_secret_... or legacy service_role JWT>
 CREDENTIAL_ENCRYPTION_KEY=<same-key-used-by-lovable-server-runtime>
+REDDIT_CLIENT_ID=<reddit-script-app-client-id>
+REDDIT_CLIENT_SECRET=<reddit-script-app-secret>
+REDDIT_USER_AGENT=oneclickpostfactory-agent/1.0 by u/<your-reddit-operator-user>
 ```
+
+Cloudflare production uses Reddit OAuth for subreddit listing reads. The
+tenant's Reddit username and allowed subreddits still come from `user_sources`;
+these Reddit app credentials only authenticate the API client and must not be
+used as a global tenant author/subreddit fallback.
 
 Run only the worker loop with:
 

@@ -21,6 +21,21 @@ Usernames and subreddits are normalized before comparison, so values such as
 `u/example`, `@example`, `r/builders`, and full reddit.com URLs compare by their
 canonical names.
 
+## Reddit API Access
+
+Local SQLite mode can still use the older public Reddit JSON listing fetch for
+developer runs. Cloudflare production fails closed unless Reddit OAuth client
+credentials are available from either tenant credentials or Worker secrets:
+
+- `REDDIT_CLIENT_ID`
+- `REDDIT_CLIENT_SECRET`
+- `REDDIT_USER_AGENT`
+
+Those values authenticate the Reddit API client only. They are not tenant
+settings and they do not provide a global Reddit author or subreddit fallback.
+The tenant's `reddit_user` and enabled `subreddit` sources remain the only
+inputs that decide which Reddit posts may enter that tenant's workflow.
+
 ## Source To Angle Flow
 
 The production flow is:

@@ -120,6 +120,18 @@ interface WorkerStats {
   failed: number;
 }
 
+interface RedditAccessToken {
+  access_token?: string;
+  token_type?: string;
+  expires_in?: number;
+}
+
+interface RedditListingPayload {
+  data?: {
+    children?: Array<{ data?: Record<string, unknown> }>;
+  };
+}
+
 class WorkerJobError extends Error {
   constructor(
     public readonly code: string,
@@ -142,6 +154,8 @@ const SUPPORTED_JOB_KINDS = new Set<JobKind>([
 const SLOT_HOURS = [5, 7, 12, 15];
 const ACTIVE_QUEUE_STATUSES = ['pending', 'ready', 'publishing'];
 const ACTIVE_ANGLE_STATUSES: AngleRecordStatus[] = ['unused', 'in_progress'];
+const REDDIT_TOKEN_SKEW_MS = 60_000;
+const redditTokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -281,6 +295,9 @@ function snapshotConfig(): Partial<AppConfig> {
   return {
     OPENAI_API_KEY: config.OPENAI_API_KEY,
     OPENAI_MODEL: config.OPENAI_MODEL,
+    REDDIT_CLIENT_ID: config.REDDIT_CLIENT_ID,
+    REDDIT_CLIENT_SECRET: config.REDDIT_CLIENT_SECRET,
+    REDDIT_USER_AGENT: config.REDDIT_USER_AGENT,
     ENABLE_THREADS: config.ENABLE_THREADS,
     ENABLE_INSTAGRAM: config.ENABLE_INSTAGRAM,
     ENABLE_LINKEDIN: config.ENABLE_LINKEDIN,
@@ -321,6 +338,9 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
   });
   config.OPENAI_API_KEY = tenant.credentials.openaiApiKey || previous.OPENAI_API_KEY || '';
   config.OPENAI_MODEL = tenant.settings.ai_model || 'gpt-4o-mini';
+  config.REDDIT_CLIENT_ID = tenant.credentials.redditClientId || previous.REDDIT_CLIENT_ID || '';
+  config.REDDIT_CLIENT_SECRET = tenant.credentials.redditClientSecret || previous.REDDIT_CLIENT_SECRET || '';
+  config.REDDIT_USER_AGENT = previous.REDDIT_USER_AGENT || config.REDDIT_USER_AGENT;
   config.ENABLE_THREADS = tenant.activePlatforms.includes('threads');
   config.ENABLE_INSTAGRAM = tenant.activePlatforms.includes('instagram');
   config.ENABLE_LINKEDIN = tenant.activePlatforms.includes('linkedin');
@@ -457,22 +477,17 @@ function parseRss(xml: string, sourceUrl: string): RedditPost[] {
   });
 }
 
-async function fetchRedditListing(url: string): Promise<RedditPost[]> {
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'oneclickpostfactory-supabase-worker/1.0',
-      Accept: 'application/json',
-    },
-    signal: AbortSignal.timeout(config.HTTP_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw new Error(`Reddit HTTP ${response.status}`);
-  }
-  const payload = await response.json() as {
-    data?: {
-      children?: Array<{ data?: Record<string, unknown> }>;
-    };
-  };
+function redditUserAgent(): string {
+  return config.REDDIT_USER_AGENT.trim() || 'oneclickpostfactory-agent/1.0';
+}
+
+function redditOauthListingUrl(publicUrl: string): string {
+  const parsed = new URL(publicUrl);
+  const path = parsed.pathname.replace(/\.json$/i, '');
+  return `https://oauth.reddit.com${path}${parsed.search}`;
+}
+
+function parseRedditListing(payload: RedditListingPayload): RedditPost[] {
   return (payload.data?.children || [])
     .map(child => child.data || {})
     .filter(post => !post.stickied && !post.is_video)
@@ -487,6 +502,82 @@ async function fetchRedditListing(url: string): Promise<RedditPost[]> {
       author: String(post.author || ''),
       created: Number(post.created_utc || Date.now() / 1000),
     }));
+}
+
+async function redditResponseError(response: Response, prefix: string): Promise<Error> {
+  let body = '';
+  try {
+    body = (await response.text()).replace(/\s+/g, ' ').slice(0, 220);
+  } catch {
+    body = '';
+  }
+  return new Error(body ? `${prefix} ${response.status}: ${body}` : `${prefix} ${response.status}`);
+}
+
+async function getRedditAccessToken(): Promise<string> {
+  const clientId = config.REDDIT_CLIENT_ID.trim();
+  const clientSecret = config.REDDIT_CLIENT_SECRET.trim();
+  if (!clientId || !clientSecret) {
+    throw new Error('reddit_oauth_credentials_missing');
+  }
+
+  const cached = redditTokenCache.get(clientId);
+  if (cached && cached.expiresAt > Date.now() + REDDIT_TOKEN_SKEW_MS) {
+    return cached.accessToken;
+  }
+
+  const response = await fetch('https://www.reddit.com/api/v1/access_token', {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': redditUserAgent(),
+      Accept: 'application/json',
+    },
+    body: new URLSearchParams({ grant_type: 'client_credentials' }).toString(),
+    signal: AbortSignal.timeout(config.HTTP_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw await redditResponseError(response, 'Reddit OAuth HTTP');
+  }
+
+  const token = await response.json() as RedditAccessToken;
+  if (!token.access_token) {
+    throw new Error('reddit_oauth_token_missing');
+  }
+
+  const expiresInMs = Math.max(60, Number(token.expires_in || 3600)) * 1000;
+  redditTokenCache.set(clientId, {
+    accessToken: token.access_token,
+    expiresAt: Date.now() + expiresInMs,
+  });
+  return token.access_token;
+}
+
+async function fetchRedditListing(url: string): Promise<RedditPost[]> {
+  const headers: Record<string, string> = {
+    'User-Agent': redditUserAgent(),
+    Accept: 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Cache-Control': 'no-cache',
+  };
+
+  let requestUrl = url;
+  if (config.REDDIT_CLIENT_ID.trim() && config.REDDIT_CLIENT_SECRET.trim()) {
+    headers.Authorization = `Bearer ${await getRedditAccessToken()}`;
+    requestUrl = redditOauthListingUrl(url);
+  } else if (process.env.CF_WORKER_RUNTIME === 'true') {
+    throw new Error('reddit_oauth_credentials_missing');
+  }
+
+  const response = await fetch(requestUrl, {
+    headers,
+    signal: AbortSignal.timeout(config.HTTP_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw await redditResponseError(response, 'Reddit HTTP');
+  }
+  return parseRedditListing(await response.json() as RedditListingPayload);
 }
 
 async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jobId?: string): Promise<RedditPost[]> {
