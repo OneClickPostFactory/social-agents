@@ -447,7 +447,29 @@ async function fetchTenantSourcePosts(source: UserSourceRow): Promise<RedditPost
   }
 
   if (source.kind === 'reddit_user') {
-    const user = value.replace(/^u\//i, '');
+    const [rawUser, rawSubs] = value.split('|').map(part => part.trim());
+    const user = rawUser.replace(/^u\//i, '').toLowerCase();
+    const subs = (rawSubs || '')
+      .split(',')
+      .map(sub => sub.trim().replace(/^r\//i, ''))
+      .filter(Boolean);
+
+    if (subs.length) {
+      const listings = await Promise.all(
+        subs.map(sub => fetchRedditListing(`https://www.reddit.com/r/${encodeURIComponent(sub)}/new.json?limit=50&raw_json=1`))
+      );
+      const seen = new Set<string>();
+      return listings
+        .flat()
+        .filter(post => post.author.toLowerCase() === user)
+        .sort((a, b) => b.created - a.created)
+        .filter(post => {
+          if (seen.has(post.id)) return false;
+          seen.add(post.id);
+          return true;
+        });
+    }
+
     return fetchRedditListing(`https://www.reddit.com/user/${encodeURIComponent(user)}/submitted.json?limit=20&raw_json=1`);
   }
 
