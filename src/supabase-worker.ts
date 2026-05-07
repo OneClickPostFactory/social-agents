@@ -82,7 +82,10 @@ interface QueueItemRow {
   source_url?: string | null;
   source_title?: string | null;
   angle?: string | null;
+  angle_record_id?: string | null;
 }
+
+type AngleRecordStatus = 'unused' | 'in_progress' | 'drafted' | 'published' | 'rejected' | 'exhausted';
 
 interface AngleRecordRow {
   id: string;
@@ -91,6 +94,17 @@ interface AngleRecordRow {
   topic?: string | null;
   used_count?: number | null;
   created_at?: string | null;
+  updated_at?: string | null;
+  source_record_id?: string | null;
+  source_reddit_post_id?: string | null;
+  subreddit?: string | null;
+  reddit_author?: string | null;
+  source_url?: string | null;
+  angle_title?: string | null;
+  angle_summary?: string | null;
+  intended_platform?: PlatformKey | null;
+  status?: AngleRecordStatus | null;
+  priority?: number | null;
 }
 
 interface TenantContext {
@@ -127,9 +141,38 @@ const SUPPORTED_JOB_KINDS = new Set<JobKind>([
 
 const SLOT_HOURS = [5, 7, 12, 15];
 const ACTIVE_QUEUE_STATUSES = ['pending', 'ready', 'publishing'];
+const ACTIVE_ANGLE_STATUSES: AngleRecordStatus[] = ['unused', 'in_progress'];
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function normalizeRedditUsername(value: string | null | undefined): string {
+  return String(value || '')
+    .trim()
+    .replace(/^https?:\/\/(?:www\.)?reddit\.com\/user\//i, '')
+    .replace(/^u\//i, '')
+    .replace(/^@/, '')
+    .split(/[/?#|]/)[0]
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeSubreddit(value: string | null | undefined): string {
+  return String(value || '')
+    .trim()
+    .replace(/^https?:\/\/(?:www\.)?reddit\.com\/r\//i, '')
+    .replace(/^r\//i, '')
+    .split(/[/?#|]/)[0]
+    .trim()
+    .toLowerCase();
+}
+
+function contentHashForPost(post: RedditPost): string {
+  return crypto
+    .createHash('sha256')
+    .update([post.id, post.subreddit, post.author, post.title, post.selftext, post.url].join('\n'))
+    .digest('hex');
 }
 
 function publicError(error: unknown): string {
@@ -451,16 +494,17 @@ async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jo
   if (!value) return [];
 
   if (source.kind === 'subreddit') {
-    const sub = value.replace(/^r\//i, '');
+    const sub = normalizeSubreddit(value);
+    if (!sub) return [];
     return fetchRedditListing(`https://www.reddit.com/r/${encodeURIComponent(sub)}/new.json?limit=20&raw_json=1`);
   }
 
   if (source.kind === 'reddit_user') {
     const [rawUser, rawSubs] = value.split('|').map(part => part.trim());
-    const user = rawUser.replace(/^u\//i, '').toLowerCase();
+    const user = normalizeRedditUsername(rawUser);
     const subs = (rawSubs || '')
       .split(',')
-      .map(sub => sub.trim().replace(/^r\//i, ''))
+      .map(sub => normalizeSubreddit(sub))
       .filter(Boolean);
 
     if (subs.length) {
@@ -511,7 +555,11 @@ async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jo
       return filtered;
     }
 
-    return fetchRedditListing(`https://www.reddit.com/user/${encodeURIComponent(user)}/submitted.json?limit=20&raw_json=1`);
+    await writeWorkerLog(userId || source.user_id, 'warn', 'reddit_author_source_missing_subreddits', {
+      jobId,
+      sourceId: source.id,
+    });
+    return [];
   }
 
   const response = await fetch(value, {
@@ -587,6 +635,35 @@ async function loadExistingSourceUrls(userId: string): Promise<Set<string>> {
   return new Set(rows.map(row => row.url));
 }
 
+async function hasActiveBankedAngles(userId: string): Promise<boolean> {
+  const rows = await supabaseSelect<{ id: string }>('angle_records', {
+    select: 'id',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'status', operator: 'in', value: ACTIVE_ANGLE_STATUSES },
+    ],
+    limit: 1,
+  });
+  return rows.length > 0;
+}
+
+function tenantRedditConfig(sources: UserSourceRow[]): {
+  author: string;
+  subredditSources: UserSourceRow[];
+  nonRedditSources: UserSourceRow[];
+} {
+  const author = normalizeRedditUsername(
+    sources.find(source => source.kind === 'reddit_user')?.value.split('|')[0]
+  );
+  const subredditSources = sources
+    .filter(source => source.kind === 'subreddit')
+    .map(source => ({ ...source, value: normalizeSubreddit(source.value) }))
+    .filter(source => source.value);
+  const nonRedditSources = sources.filter(source => source.kind === 'rss');
+
+  return { author, subredditSources, nonRedditSources };
+}
+
 function toQueueRows(
   userId: string,
   slotIndex: number,
@@ -594,7 +671,8 @@ function toQueueRows(
   sourceUrl: string,
   angle: AngleCandidate,
   draft: Awaited<ReturnType<typeof ai.draftPlatforms>>,
-  platforms: PlatformKey[]
+  platforms: PlatformKey[],
+  angleRecordId?: string
 ): Array<Record<string, unknown>> {
   const scheduledFor = nextScheduledFor(slotIndex);
   return platforms
@@ -610,24 +688,33 @@ function toQueueRows(
       source_url: sourceUrl,
       source_title: post.title,
       angle: angle.thesis,
+      angle_record_id: angleRecordId || null,
       error_message: null,
     }))
     .filter(row => String(row.draft_text || '').trim());
 }
 
 function toAngleCandidateFromRecord(row: AngleRecordRow): AngleCandidate {
-  const [label, ...thesisParts] = row.angle.split(':');
-  const thesis = thesisParts.join(':').trim() || row.angle;
+  const title = row.angle_title || row.topic || '';
+  const thesis = row.angle_summary || row.angle;
+  const [fallbackLabel, ...fallbackThesisParts] = row.angle.split(':');
+  const fallbackThesis = fallbackThesisParts.join(':').trim() || row.angle;
   return {
-    label: label.trim() || row.topic || 'Banked angle',
-    thesis,
-    hook: thesis,
+    label: title.trim() || fallbackLabel.trim() || 'Banked angle',
+    thesis: thesis.trim() || fallbackThesis,
+    hook: thesis.trim() || fallbackThesis,
     supportingPoints: [],
-    practicalConsequence: thesis,
+    practicalConsequence: thesis.trim() || fallbackThesis,
     specificExample: '',
     audienceFit: 'builders',
-    strength: 4,
+    strength: Math.max(1, Math.min(5, Math.round(Number(row.priority || 4)))),
   };
+}
+
+function anglePlatform(row: AngleRecordRow, tenant: TenantContext): PlatformKey | undefined {
+  return row.intended_platform && tenant.activePlatforms.includes(row.intended_platform)
+    ? row.intended_platform
+    : tenant.activePlatforms[0];
 }
 
 async function queueFromBankedAngles(
@@ -642,28 +729,44 @@ async function queueFromBankedAngles(
     select: '*',
     filters: [
       { column: 'user_id', operator: 'eq', value: job.user_id },
-      { column: 'used_count', operator: 'eq', value: 0 },
+      { column: 'status', operator: 'in', value: ACTIVE_ANGLE_STATUSES },
     ],
     order: 'created_at.asc',
-    limit: 5,
+    limit: 20,
   });
 
   for (const angleRow of angles) {
-    const selectedAngle = toAngleCandidateFromRecord(angleRow);
+    const platform = anglePlatform(angleRow, tenant);
+    if (!platform) continue;
+
+    const locked = await supabaseUpdate<AngleRecordRow>('angle_records', {
+      status: 'in_progress',
+    }, {
+      filters: [
+        { column: 'id', operator: 'eq', value: angleRow.id },
+        { column: 'user_id', operator: 'eq', value: job.user_id },
+        { column: 'status', operator: 'in', value: ACTIVE_ANGLE_STATUSES },
+      ],
+      returning: true,
+    });
+    const currentAngle = locked[0];
+    if (!currentAngle) continue;
+
+    const selectedAngle = toAngleCandidateFromRecord(currentAngle);
     const post: RedditPost = {
-      id: angleRow.id,
-      title: angleRow.topic || selectedAngle.label,
+      id: currentAngle.source_reddit_post_id || currentAngle.id,
+      title: currentAngle.topic || selectedAngle.label,
       selftext: selectedAngle.thesis,
-      url: '',
+      url: currentAngle.source_url || '',
       score: 0,
       comments: 0,
-      subreddit: 'banked',
-      author: 'oneclickpostfactory',
-      created: Date.parse(angleRow.created_at || '') / 1000 || Date.now() / 1000,
+      subreddit: currentAngle.subreddit || 'banked',
+      author: currentAngle.reddit_author || '',
+      created: Date.parse(currentAngle.created_at || '') / 1000 || Date.now() / 1000,
     };
     const summary: SourceSummary = {
       source_type: 'reddit_post',
-      topic: angleRow.topic || selectedAngle.label,
+      topic: currentAngle.topic || selectedAngle.label,
       core_claim: selectedAngle.thesis,
       surface_problem: selectedAngle.thesis,
       deeper_problem: selectedAngle.practicalConsequence || selectedAngle.thesis,
@@ -680,27 +783,37 @@ async function queueFromBankedAngles(
         post,
         summary,
         selectedAngle,
-        tenant.activePlatforms,
+        [platform],
         { disableLearningMemory: true, disableImageGeneration: true }
       );
       const rows = toQueueRows(
         job.user_id,
         slotIndex,
         post,
-        `banked-angle:${angleRow.id}`,
+        currentAngle.source_url || `banked-angle:${currentAngle.id}`,
         selectedAngle,
         draft,
-        tenant.activePlatforms
+        [platform],
+        currentAngle.id
       );
-      if (!rows.length) continue;
+      if (!rows.length) {
+        await supabaseUpdate('angle_records', { status: 'exhausted' }, {
+          filters: [
+            { column: 'id', operator: 'eq', value: currentAngle.id },
+            { column: 'user_id', operator: 'eq', value: job.user_id },
+          ],
+        });
+        continue;
+      }
 
       await supabaseInsert('queue_items', rows);
       await supabaseUpdate('angle_records', {
-        used_count: (angleRow.used_count || 0) + 1,
+        status: 'drafted',
+        used_count: (currentAngle.used_count || 0) + 1,
         last_used_at: nowIso(),
       }, {
         filters: [
-          { column: 'id', operator: 'eq', value: angleRow.id },
+          { column: 'id', operator: 'eq', value: currentAngle.id },
           { column: 'user_id', operator: 'eq', value: job.user_id },
         ],
       });
@@ -708,14 +821,22 @@ async function queueFromBankedAngles(
       await writeWorkerLog(job.user_id, 'info', 'queued_banked_angle', {
         jobId: job.id,
         slotIndex,
-        angleId: angleRow.id,
+        angleId: currentAngle.id,
         platforms: rows.map(row => row.platform),
       });
       return rows.length;
     } catch (error) {
+      await supabaseUpdate('angle_records', {
+        status: 'unused',
+      }, {
+        filters: [
+          { column: 'id', operator: 'eq', value: currentAngle.id },
+          { column: 'user_id', operator: 'eq', value: job.user_id },
+        ],
+      });
       await writeWorkerLog(job.user_id, 'warn', 'banked_angle_draft_failed', {
         jobId: job.id,
-        angleId: angleRow.id,
+        angleId: currentAngle.id,
         error: publicError(error),
       });
     }
@@ -746,32 +867,46 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
   }
 
   const occupiedSlots = await loadActiveSlotIndexes(job.user_id);
-  const existingSourceUrls = await loadExistingSourceUrls(job.user_id);
-  const redditAuthorFilter = sources
-    .find(source => source.kind === 'reddit_user')
-    ?.value
-    .split('|')[0]
-    ?.trim()
-    .replace(/^u\//i, '')
-    .toLowerCase();
-  let fetched = 0;
-  let banked = 0;
   let queued = 0;
 
-  for (const source of sources) {
+  if (firstOpenSlot(occupiedSlots) !== undefined && await hasActiveBankedAngles(job.user_id)) {
+    queued += await queueFromBankedAngles(job, tenant, occupiedSlots);
+    return { fetched: 0, banked: 0, queued, deferredFetch: true };
+  }
+
+  const existingSourceUrls = await loadExistingSourceUrls(job.user_id);
+  const { author: redditAuthorFilter, subredditSources, nonRedditSources } = tenantRedditConfig(sources);
+  if (subredditSources.length && !redditAuthorFilter) {
+    await writeWorkerLog(job.user_id, 'warn', 'reddit_author_filter_missing', {
+      jobId: job.id,
+      subredditSources: subredditSources.length,
+    });
+    throw new WorkerJobError('reddit_author_filter_missing', 'reddit_author_filter_missing');
+  }
+
+  const processingSources = [
+    ...subredditSources,
+    ...nonRedditSources,
+  ];
+  if (!processingSources.length) {
+    throw new WorkerJobError('no_processable_sources', 'no_processable_sources');
+  }
+
+  let fetched = 0;
+  let banked = 0;
+
+  for (const source of processingSources) {
     if (firstOpenSlot(occupiedSlots) === undefined) break;
-    if (source.kind === 'reddit_user') continue;
 
     try {
       const posts = await fetchTenantSourcePosts(source, job.user_id, job.id);
       const sourcePosts = source.kind === 'subreddit' && redditAuthorFilter
-        ? posts.filter(post => post.author.toLowerCase() === redditAuthorFilter)
+        ? posts.filter(post => normalizeRedditUsername(post.author) === redditAuthorFilter)
         : posts;
       fetched += sourcePosts.length;
 
       for (const post of sourcePosts) {
-        const slotIndex = firstOpenSlot(occupiedSlots);
-        if (slotIndex === undefined) break;
+        if (firstOpenSlot(occupiedSlots) === undefined) break;
 
         const sourceUrl = canonicalSourceUrl(post);
         if (existingSourceUrls.has(sourceUrl)) continue;
@@ -783,50 +918,51 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
           title: post.title || null,
           origin: source.kind,
           score: post.score || null,
+          reddit_post_id: post.id || null,
+          subreddit: post.subreddit || null,
+          reddit_author: normalizeRedditUsername(post.author) || null,
+          content_hash: contentHashForPost(post),
+          status: 'banked',
           used: false,
           fetched_at: nowIso(),
         };
-        await supabaseInsert('source_records', sourcePayload);
+        const sourceRows = await supabaseInsert<{ id: string }>('source_records', sourcePayload, true);
+        const sourceRecordId = sourceRows[0]?.id || null;
         existingSourceUrls.add(sourceUrl);
 
         const angles = extraction.angles.slice(0, 5);
         if (!angles.length) continue;
 
-        await supabaseInsert('angle_records', angles.map(angle => ({
+        const angleRows = angles.flatMap(angle => tenant.activePlatforms.map(platform => ({
           user_id: job.user_id,
+          source_record_id: sourceRecordId,
+          source_reddit_post_id: post.id,
+          subreddit: post.subreddit || null,
+          reddit_author: normalizeRedditUsername(post.author) || null,
+          source_url: sourceUrl,
           angle: `${angle.label}: ${angle.thesis}`,
+          angle_title: angle.label,
+          angle_summary: angle.thesis,
+          intended_platform: platform,
+          status: 'unused',
+          priority: angle.strength || null,
           topic: extraction.summary.topic || post.title || null,
           used_count: 0,
           last_used_at: null,
         })));
-        banked += angles.length;
 
-        const selectedAngle = angles[0];
-        const draft = await ai.draftPlatforms(
-          post,
-          extraction.summary,
-          selectedAngle,
-          tenant.activePlatforms,
-          { disableLearningMemory: true, disableImageGeneration: true }
-        );
-        const rows = toQueueRows(job.user_id, slotIndex, post, sourceUrl, selectedAngle, draft, tenant.activePlatforms);
-        if (!rows.length) continue;
+        await supabaseInsert('angle_records', angleRows);
+        banked += angleRows.length;
 
-        await supabaseInsert('queue_items', rows);
-        await supabaseUpdate('source_records', { used: true }, {
-          filters: [
-            { column: 'user_id', operator: 'eq', value: job.user_id },
-            { column: 'url', operator: 'eq', value: sourceUrl },
-          ],
-        });
-        occupiedSlots.add(slotIndex);
-        queued += rows.length;
-        await writeWorkerLog(job.user_id, 'info', 'queued_drafts', {
+        queued += await queueFromBankedAngles(job, tenant, occupiedSlots);
+        await writeWorkerLog(job.user_id, 'info', 'source_banked_angles', {
           jobId: job.id,
-          slotIndex,
-          platforms: rows.map(row => row.platform),
+          sourceId: source.id,
           sourceUrl,
+          angleCount: angleRows.length,
         });
+
+        if (queued > 0 || await hasActiveBankedAngles(job.user_id)) break;
       }
     } catch (error) {
       await writeWorkerLog(job.user_id, 'warn', 'source_fetch_or_draft_failed', {
@@ -836,6 +972,8 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
         error: publicError(error),
       });
     }
+
+    if (queued > 0 || await hasActiveBankedAngles(job.user_id)) break;
   }
 
   if (queued === 0 && firstOpenSlot(occupiedSlots) !== undefined) {
@@ -897,12 +1035,34 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<Jso
     returning: true,
   });
 
-  const current = locked[0];
+  let current = locked[0];
   if (!current) {
     throw new WorkerJobError('queue_item_not_available', 'queue_item_not_available', { queueItemId: row.id });
   }
 
   try {
+    if (current.platform === 'instagram' && !current.instagram_image_url?.trim()) {
+      const image = await ai.generateInstagramImageFromText(
+        current.source_title || current.angle || 'Instagram post',
+        current.draft_text || ''
+      );
+      const patched = await supabaseUpdate<QueueItemRow>('queue_items', {
+        instagram_image_url: image.imageUrl,
+        instagram_image_prompt: current.instagram_image_prompt || image.imagePrompt,
+      }, {
+        filters: [
+          { column: 'id', operator: 'eq', value: current.id },
+          { column: 'user_id', operator: 'eq', value: job.user_id },
+        ],
+        returning: true,
+      });
+      current = patched[0] || {
+        ...current,
+        instagram_image_url: image.imageUrl,
+        instagram_image_prompt: current.instagram_image_prompt || image.imagePrompt,
+      };
+    }
+
     const externalPostId = await publishPlatform(current);
     await supabaseUpdate('queue_items', {
       status: 'published',
@@ -921,6 +1081,17 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<Jso
       source_url: current.source_url || null,
       published_at: nowIso(),
     });
+    if (current.angle_record_id) {
+      await supabaseUpdate('angle_records', {
+        status: 'published',
+        last_used_at: nowIso(),
+      }, {
+        filters: [
+          { column: 'id', operator: 'eq', value: current.angle_record_id },
+          { column: 'user_id', operator: 'eq', value: job.user_id },
+        ],
+      });
+    }
     await writeWorkerLog(job.user_id, 'info', 'published_queue_item', {
       jobId: job.id,
       queueItemId: current.id,
@@ -1020,6 +1191,17 @@ async function handleSkipSlot(job: AgentJobRow): Promise<JsonMap> {
     filters,
     returning: true,
   });
+  for (const row of rows) {
+    if (!row.angle_record_id) continue;
+    await supabaseUpdate('angle_records', {
+      status: 'rejected',
+    }, {
+      filters: [
+        { column: 'id', operator: 'eq', value: row.angle_record_id },
+        { column: 'user_id', operator: 'eq', value: job.user_id },
+      ],
+    });
+  }
   return { skipped: rows.length };
 }
 
@@ -1046,6 +1228,17 @@ async function handleReleaseSlot(job: AgentJobRow): Promise<JsonMap> {
     filters,
     returning: true,
   });
+  for (const row of rows) {
+    if (!row.angle_record_id) continue;
+    await supabaseUpdate('angle_records', {
+      status: 'unused',
+    }, {
+      filters: [
+        { column: 'id', operator: 'eq', value: row.angle_record_id },
+        { column: 'user_id', operator: 'eq', value: job.user_id },
+      ],
+    });
+  }
   return { released: rows.length };
 }
 

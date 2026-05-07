@@ -594,14 +594,14 @@ async function buildImagePrompt(
     temperature: 0.7,
     messages: [{
       role: 'system',
-      content: `You write DALL-E image prompts for Instagram posts.
+      content: `You write GPT Image 2 prompts for Instagram posts.
 You produce vivid, specific, photorealistic scene descriptions.
 Never include text, words, logos, or letters in the image.
 Never use generic concepts like "shield", "lock", "lightbulb" or "network diagram".
 Always describe a real scene with real people, objects, environments or metaphors.`,
     }, {
       role: 'user',
-      content: `Based on this content, write a specific DALL-E 3 image prompt for an Instagram post.
+      content: `Based on this content, write a specific GPT Image 2 prompt for an Instagram post.
 
 Content:
 """
@@ -647,28 +647,35 @@ async function generateImage(
 
 async function generateImageFromPrompt(imagePrompt: string): Promise<string> {
   const body = JSON.stringify({
-    model: 'dall-e-3',
+    model: 'gpt-image-2',
     prompt: imagePrompt,
     n: 1,
     size: '1024x1024',
-    quality: 'standard',
-    style: 'natural',
+    quality: 'medium',
   });
 
-  return requestJson<ImageGenerationResponse>('https://api.openai.com/v1/images/generations', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.OPENAI_API_KEY}`,
-    },
-    body,
-    timeoutMs: config.HTTP_TIMEOUT_MS,
-  }).then(({ data }) => {
+  try {
+    const { data } = await requestJson<ImageGenerationResponse>('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.OPENAI_API_KEY}`,
+      },
+      body,
+      timeoutMs: Math.max(config.HTTP_TIMEOUT_MS, 60000),
+      retryCount: 1,
+      retryDelayMs: 500,
+    });
+
     if (data.error) {
-      throw new Error('DALL-E: ' + (data.error.message || 'Unknown error'));
+      throw new Error('GPT Image generation failed: ' + (data.error.message || 'Unknown error'));
     }
+
     return data.data?.[0]?.url || '';
-  });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`GPT Image generation failed: ${message}`);
+  }
 }
 
 async function persistInstagramImage(
@@ -688,7 +695,22 @@ async function persistInstagramImage(
 }
 
 export async function refreshInstagramImage(item: QueueItem): Promise<QueueItem> {
-  if (item.imageUrl && !cloudinary.isCloudinaryUrl(item.imageUrl) && cloudinary.isConfigured()) {
+  if (!item.imageUrl) {
+    if (!item.imagePrompt?.trim()) {
+      throw new Error('Cannot refresh Instagram image because imagePrompt is missing');
+    }
+    const imageUrl = await generateImageFromPrompt(item.imagePrompt);
+    return {
+      ...item,
+      imageUrl: await persistInstagramImage(imageUrl, item.imagePrompt, item.title),
+    };
+  }
+
+  if (cloudinary.isConfigured()) {
+    if (cloudinary.isCloudinaryUrl(item.imageUrl)) {
+      return item;
+    }
+
     try {
       return {
         ...item,
@@ -708,6 +730,24 @@ export async function refreshInstagramImage(item: QueueItem): Promise<QueueItem>
   return {
     ...item,
     imageUrl: await persistInstagramImage(imageUrl, item.imagePrompt, item.title),
+  };
+}
+
+export async function generateInstagramImageFromText(
+  title: string,
+  text: string
+): Promise<{ imagePrompt: string; imageUrl: string }> {
+  const imagePrompt = [
+    'Photorealistic editorial image for an Instagram post.',
+    'No text, words, logos, letters, UI screenshots, or generic tech icons.',
+    `Post title: ${title || 'Untitled post'}.`,
+    `Post content: ${text.substring(0, 700)}.`,
+    'Show a concrete real-world scene with people, objects, environment, lighting, mood, and perspective.',
+  ].join(' ');
+  const imageUrl = await generateImageFromPrompt(imagePrompt);
+  return {
+    imagePrompt,
+    imageUrl: await persistInstagramImage(imageUrl, imagePrompt, title || text.substring(0, 80)),
   };
 }
 

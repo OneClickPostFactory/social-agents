@@ -61,15 +61,25 @@ export async function uploadRemoteImage(imageUrl: string, publicIdHint?: string)
     params.set('signature', signUploadParams(params));
   }
 
-  const { data } = await requestJson<CloudinaryUploadResponse>(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString(),
-    timeoutMs: Math.max(config.HTTP_TIMEOUT_MS, 60000),
-  });
+  let data: CloudinaryUploadResponse;
+
+  try {
+    const response = await requestJson<CloudinaryUploadResponse>(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+      timeoutMs: Math.max(config.HTTP_TIMEOUT_MS, 120000),
+      retryCount: 1,
+      retryDelayMs: 500,
+    });
+    data = response.data;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cloudinary upload failed for image URL ${imageUrl}: ${message}`);
+  }
 
   if (data.error) {
-    throw new Error('Cloudinary: ' + (data.error.message || 'Upload failed'));
+    throw new Error('Cloudinary upload failed: ' + (data.error.message || 'Upload failed'));
   }
 
   const secureUrl = data.secure_url || data.url;
