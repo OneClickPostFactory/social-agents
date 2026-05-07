@@ -84,6 +84,15 @@ interface QueueItemRow {
   angle?: string | null;
 }
 
+interface AngleRecordRow {
+  id: string;
+  user_id: string;
+  angle: string;
+  topic?: string | null;
+  used_count?: number | null;
+  created_at?: string | null;
+}
+
 interface TenantContext {
   userId: string;
   settings: UserSettingsRow;
@@ -606,6 +615,115 @@ function toQueueRows(
     .filter(row => String(row.draft_text || '').trim());
 }
 
+function toAngleCandidateFromRecord(row: AngleRecordRow): AngleCandidate {
+  const [label, ...thesisParts] = row.angle.split(':');
+  const thesis = thesisParts.join(':').trim() || row.angle;
+  return {
+    label: label.trim() || row.topic || 'Banked angle',
+    thesis,
+    hook: thesis,
+    supportingPoints: [],
+    practicalConsequence: thesis,
+    specificExample: '',
+    audienceFit: 'builders',
+    strength: 4,
+  };
+}
+
+async function queueFromBankedAngles(
+  job: AgentJobRow,
+  tenant: TenantContext,
+  occupiedSlots: Set<number>
+): Promise<number> {
+  const slotIndex = firstOpenSlot(occupiedSlots);
+  if (slotIndex === undefined) return 0;
+
+  const angles = await supabaseSelect<AngleRecordRow>('angle_records', {
+    select: '*',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: job.user_id },
+      { column: 'used_count', operator: 'eq', value: 0 },
+    ],
+    order: 'created_at.asc',
+    limit: 5,
+  });
+
+  for (const angleRow of angles) {
+    const selectedAngle = toAngleCandidateFromRecord(angleRow);
+    const post: RedditPost = {
+      id: angleRow.id,
+      title: angleRow.topic || selectedAngle.label,
+      selftext: selectedAngle.thesis,
+      url: '',
+      score: 0,
+      comments: 0,
+      subreddit: 'banked',
+      author: 'oneclickpostfactory',
+      created: Date.parse(angleRow.created_at || '') / 1000 || Date.now() / 1000,
+    };
+    const summary: SourceSummary = {
+      source_type: 'reddit_post',
+      topic: angleRow.topic || selectedAngle.label,
+      core_claim: selectedAngle.thesis,
+      surface_problem: selectedAngle.thesis,
+      deeper_problem: selectedAngle.practicalConsequence || selectedAngle.thesis,
+      practical_consequence: selectedAngle.practicalConsequence || selectedAngle.thesis,
+      specific_example: selectedAngle.specificExample || '',
+      best_line: selectedAngle.hook || selectedAngle.thesis,
+      audience_fit: selectedAngle.audienceFit || 'builders',
+      tone_source: '',
+      cta_goal: '',
+    };
+
+    try {
+      const draft = await ai.draftPlatforms(
+        post,
+        summary,
+        selectedAngle,
+        tenant.activePlatforms,
+        { disableLearningMemory: true, disableImageGeneration: true }
+      );
+      const rows = toQueueRows(
+        job.user_id,
+        slotIndex,
+        post,
+        `banked-angle:${angleRow.id}`,
+        selectedAngle,
+        draft,
+        tenant.activePlatforms
+      );
+      if (!rows.length) continue;
+
+      await supabaseInsert('queue_items', rows);
+      await supabaseUpdate('angle_records', {
+        used_count: (angleRow.used_count || 0) + 1,
+        last_used_at: nowIso(),
+      }, {
+        filters: [
+          { column: 'id', operator: 'eq', value: angleRow.id },
+          { column: 'user_id', operator: 'eq', value: job.user_id },
+        ],
+      });
+      occupiedSlots.add(slotIndex);
+      await writeWorkerLog(job.user_id, 'info', 'queued_banked_angle', {
+        jobId: job.id,
+        slotIndex,
+        angleId: angleRow.id,
+        platforms: rows.map(row => row.platform),
+      });
+      return rows.length;
+    } catch (error) {
+      await writeWorkerLog(job.user_id, 'warn', 'banked_angle_draft_failed', {
+        jobId: job.id,
+        angleId: angleRow.id,
+        error: publicError(error),
+      });
+    }
+  }
+
+  return 0;
+}
+
 async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Promise<JsonMap> {
   if (!config.OPENAI_API_KEY) {
     throw new WorkerJobError('openai_api_key_missing', 'openai_api_key_missing');
@@ -718,6 +836,10 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
         error: publicError(error),
       });
     }
+  }
+
+  if (queued === 0 && firstOpenSlot(occupiedSlots) !== undefined) {
+    queued += await queueFromBankedAngles(job, tenant, occupiedSlots);
   }
 
   return { fetched, banked, queued };
