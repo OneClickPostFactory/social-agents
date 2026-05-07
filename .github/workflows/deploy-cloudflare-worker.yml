@@ -1,0 +1,37 @@
+name: deploy-cloudflare-worker
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'config.ts'
+      - 'content-os/**'
+      - 'package-lock.json'
+      - 'package.json'
+      - 'scripts/**'
+      - 'src/**'
+      - 'test/**'
+      - 'tsconfig.json'
+      - 'wrangler.toml'
+      - '.github/workflows/deploy-cloudflare-worker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
