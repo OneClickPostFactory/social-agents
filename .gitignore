@@ -9,5 +9,6 @@ temp/
 /scripts/*.js
 /test/*.js
 *.log
+.codex
 .DS_Store
 Thumbs.db
