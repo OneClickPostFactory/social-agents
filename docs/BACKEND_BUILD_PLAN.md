@@ -103,7 +103,7 @@ What is implemented:
 - Stripe checkout session creation supported
 - Stripe billing portal session creation supported
 - Stripe webhook updates subscription status
-- automation access is allowed only for `trialing` or `active`
+- automation access is allowed only for `active`, or `trialing` with a future trial end
 
 ## API Groups
 
@@ -149,7 +149,7 @@ For the OneClickPostFactory SaaS direction, the recommended deployment is now:
 - one owner-managed Supabase project as the SaaS source of truth
 - Lovable browser code uses only Supabase URL + anon/publishable key
 - trusted server runtimes use service-role credentials only server-side
-- one local or hosted `social-agent` worker polls Supabase `agent_jobs`
+- one Cloudflare scheduled `social-agent` worker polls Supabase `agent_jobs` in production; local worker loops are for development only
 - every worker read/write is scoped by `job.user_id`
 - Stripe subscription state is stored in Supabase `profiles` and re-checked by the worker before automation/publishing
 

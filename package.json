@@ -1,7 +1,7 @@
 {
   "name": "social-agent",
   "version": "1.0.0",
-  "description": "Reddit -> OpenAI -> LinkedIn + Threads + X + Instagram + Facebook autoposter with DALL-E images and web dashboard.",
+  "description": "Tenant-scoped Reddit -> OpenAI -> LinkedIn + Threads + X + Instagram autoposter with durable Cloudinary image persistence.",
   "main": "dist/src/agent.js",
   "scripts": {
     "build": "tsx scripts/build.ts",

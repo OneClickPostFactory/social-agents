@@ -563,19 +563,30 @@ function defaultBillingState(): BillingState {
 }
 
 function normalizeBillingState(state: BillingState): BillingState {
-  const now = Date.now();
-  if (state.status === 'trialing' && state.trialEndsAt) {
-    const trialEnds = new Date(state.trialEndsAt).getTime();
-    if (Number.isFinite(trialEnds) && now > trialEnds) {
-      return {
-        ...state,
-        status: 'canceled',
-        lockedReason: 'Trial expired without an active subscription',
-        updatedAt: nowIso(),
-      };
-    }
+  if (state.status === 'trialing' && !dateInFuture(state.trialEndsAt)) {
+    return {
+      ...state,
+      status: 'canceled',
+      lockedReason: state.trialEndsAt
+        ? 'Trial expired without an active subscription'
+        : 'Trial state is missing an expiry',
+      updatedAt: nowIso(),
+    };
   }
   return state;
+}
+
+function dateInFuture(value?: string): boolean {
+  if (!value) return false;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) && timestamp > Date.now();
+}
+
+function billingAccessActive(state: BillingState): boolean {
+  if (state.status === 'active') return true;
+  if (state.status === 'trialing') return dateInFuture(state.trialEndsAt);
+  if (state.status === 'canceled') return dateInFuture(state.currentPeriodEnd);
+  return false;
 }
 
 export function getBillingState(): PublicBillingState {
@@ -590,7 +601,7 @@ function readBillingState(options: BillingStateReadOptions = {}): PublicBillingS
     upsertBillingState(normalized);
   }
 
-  const accessActive = normalized.status === 'active' || normalized.status === 'trialing';
+  const accessActive = billingAccessActive(normalized);
   return {
     ...normalized,
     accessActive,
@@ -1234,7 +1245,7 @@ export function updateBillingFromStripeSubscription(subscription: Record<string,
 
   return {
     ...next,
-    accessActive: next.status === 'active' || next.status === 'trialing',
+    accessActive: billingAccessActive(next),
     prices: {
       monthlyGbp: 8.99,
       yearlyGbp: 89,
@@ -1251,7 +1262,7 @@ export function updateBillingCheckoutState(patch: Partial<BillingState>): Public
 
   return {
     ...next,
-    accessActive: next.status === 'active' || next.status === 'trialing',
+    accessActive: billingAccessActive(next),
     prices: {
       monthlyGbp: 8.99,
       yearlyGbp: 89,

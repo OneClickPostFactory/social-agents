@@ -3,6 +3,7 @@ import * as crypto from 'node:crypto';
 import config from '../config';
 
 import * as ai from './ai';
+import * as cloudinary from './cloudinary';
 import * as instagram from './instagram';
 import * as linkedin from './linkedin';
 import * as logger from './logger';
@@ -235,13 +236,14 @@ async function loadEntitlement(userId: string): Promise<{ canWrite: boolean; sta
 
   const status = profile?.subscription_status || 'none';
   if (status === 'active') return { canWrite: true, status, reason: 'ok' };
-  if (status === 'trialing' && (!profile?.trial_ends_at || hasDateInFuture(profile.trial_ends_at))) {
+  if (status === 'trialing' && hasDateInFuture(profile?.trial_ends_at)) {
     return { canWrite: true, status, reason: 'ok' };
   }
   if (status === 'canceled' && hasDateInFuture(profile?.current_period_end)) {
     return { canWrite: true, status, reason: 'ok' };
   }
   if (status === 'past_due') return { canWrite: false, status, reason: 'past_due' };
+  if (status === 'trialing') return { canWrite: false, status, reason: 'expired' };
   if (status === 'canceled') return { canWrite: false, status, reason: 'expired' };
   return { canWrite: false, status, reason: 'no_subscription' };
 }
@@ -295,9 +297,11 @@ function snapshotConfig(): Partial<AppConfig> {
   return {
     OPENAI_API_KEY: config.OPENAI_API_KEY,
     OPENAI_MODEL: config.OPENAI_MODEL,
+    OPENAI_IMAGE_MODEL: config.OPENAI_IMAGE_MODEL,
     REDDIT_CLIENT_ID: config.REDDIT_CLIENT_ID,
     REDDIT_CLIENT_SECRET: config.REDDIT_CLIENT_SECRET,
     REDDIT_USER_AGENT: config.REDDIT_USER_AGENT,
+    CLOUDINARY_FOLDER: config.CLOUDINARY_FOLDER,
     ENABLE_THREADS: config.ENABLE_THREADS,
     ENABLE_INSTAGRAM: config.ENABLE_INSTAGRAM,
     ENABLE_LINKEDIN: config.ENABLE_LINKEDIN,
@@ -316,6 +320,12 @@ function snapshotConfig(): Partial<AppConfig> {
     FACEBOOK_PAGE_ID: config.FACEBOOK_PAGE_ID,
     TIMEZONE: config.TIMEZONE,
   };
+}
+
+function tenantCloudinaryFolder(baseFolder: string, userId: string): string {
+  const base = (baseFolder || 'social-agent/instagram').replace(/\/+$/g, '') || 'social-agent/instagram';
+  const tenantHash = crypto.createHash('sha256').update(userId).digest('hex').slice(0, 16);
+  return `${base}/tenant-${tenantHash}`;
 }
 
 async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>): Promise<T> {
@@ -338,9 +348,11 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
   });
   config.OPENAI_API_KEY = tenant.credentials.openaiApiKey || previous.OPENAI_API_KEY || '';
   config.OPENAI_MODEL = tenant.settings.ai_model || 'gpt-4o-mini';
+  config.OPENAI_IMAGE_MODEL = previous.OPENAI_IMAGE_MODEL || config.OPENAI_IMAGE_MODEL || 'gpt-image-2';
   config.REDDIT_CLIENT_ID = tenant.credentials.redditClientId || previous.REDDIT_CLIENT_ID || '';
   config.REDDIT_CLIENT_SECRET = tenant.credentials.redditClientSecret || previous.REDDIT_CLIENT_SECRET || '';
   config.REDDIT_USER_AGENT = previous.REDDIT_USER_AGENT || config.REDDIT_USER_AGENT;
+  config.CLOUDINARY_FOLDER = tenantCloudinaryFolder(previous.CLOUDINARY_FOLDER || config.CLOUDINARY_FOLDER, tenant.userId);
   config.ENABLE_THREADS = tenant.activePlatforms.includes('threads');
   config.ENABLE_INSTAGRAM = tenant.activePlatforms.includes('instagram');
   config.ENABLE_LINKEDIN = tenant.activePlatforms.includes('linkedin');
@@ -917,8 +929,11 @@ async function queueFromBankedAngles(
         summary,
         selectedAngle,
         [platform],
-        { disableLearningMemory: true, disableImageGeneration: true }
+        { disableLearningMemory: true, disableImageGeneration: platform !== 'instagram' }
       );
+      if (platform === 'instagram' && !cloudinary.isCloudinaryUrl(draft.imageUrl)) {
+        throw new WorkerJobError('instagram_image_not_persisted', 'instagram_image_not_persisted');
+      }
       const rows = toQueueRows(
         job.user_id,
         slotIndex,
@@ -1158,6 +1173,9 @@ async function publishPlatform(row: QueueItemRow): Promise<string> {
       if (!row.instagram_image_url?.trim()) {
         throw new WorkerJobError('instagram_image_url_missing', 'instagram_image_url_missing');
       }
+      if (!cloudinary.isCloudinaryUrl(row.instagram_image_url)) {
+        throw new WorkerJobError('instagram_image_url_not_persisted', 'instagram_image_url_not_persisted');
+      }
       return instagram.publish(text, row.instagram_image_url);
     case 'facebook':
       throw new WorkerJobError('facebook_paused', 'facebook_paused');
@@ -1183,11 +1201,13 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<Jso
   }
 
   try {
-    if (current.platform === 'instagram' && !current.instagram_image_url?.trim()) {
-      const image = await ai.generateInstagramImageFromText(
-        current.source_title || current.angle || 'Instagram post',
-        current.draft_text || ''
-      );
+    if (current.platform === 'instagram' && !cloudinary.isCloudinaryUrl(current.instagram_image_url || undefined)) {
+      const image = await ai.ensurePersistentInstagramImage({
+        imageUrl: current.instagram_image_url,
+        imagePrompt: current.instagram_image_prompt,
+        title: current.source_title || current.angle || 'Instagram post',
+        text: current.draft_text || '',
+      });
       const patched = await supabaseUpdate<QueueItemRow>('queue_items', {
         instagram_image_url: image.imageUrl,
         instagram_image_prompt: current.instagram_image_prompt || image.imagePrompt,

@@ -26,6 +26,7 @@ export interface AppConfig {
   REDDIT_USER_AGENT: string;
   OPENAI_API_KEY: string;
   OPENAI_MODEL: string;
+  OPENAI_IMAGE_MODEL: string;
   AI_STYLE: string;
   CUSTOM_PROMPT: string;
   ENABLE_LINKEDIN: boolean;
@@ -141,6 +142,7 @@ function buildBaseConfig(): AppConfig {
       || `oneclickpostfactory-agent/1.0 (${IS_CLOUDFLARE_WORKER ? 'cloudflare-worker' : 'node'})`,
     OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
     OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o',
+    OPENAI_IMAGE_MODEL: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
     AI_STYLE: process.env.AI_STYLE || 'conversational',
     CUSTOM_PROMPT: process.env.CUSTOM_PROMPT || '',
     ENABLE_LINKEDIN: parseBooleanEnv(process.env.ENABLE_LINKEDIN, false),
@@ -222,6 +224,7 @@ export function applyRuntimeConfig(patch: Record<string, unknown>): AppConfig {
   if (typeof patch.REDDIT_USER_AGENT === 'string') config.REDDIT_USER_AGENT = patch.REDDIT_USER_AGENT;
   if (typeof patch.OPENAI_API_KEY === 'string') config.OPENAI_API_KEY = patch.OPENAI_API_KEY;
   if (typeof patch.OPENAI_MODEL === 'string') config.OPENAI_MODEL = patch.OPENAI_MODEL;
+  if (typeof patch.OPENAI_IMAGE_MODEL === 'string') config.OPENAI_IMAGE_MODEL = patch.OPENAI_IMAGE_MODEL;
   if (typeof patch.AI_STYLE === 'string') config.AI_STYLE = patch.AI_STYLE;
   if (typeof patch.CUSTOM_PROMPT === 'string') config.CUSTOM_PROMPT = patch.CUSTOM_PROMPT;
   if (typeof patch.ENABLE_LINKEDIN === 'boolean') config.ENABLE_LINKEDIN = patch.ENABLE_LINKEDIN;

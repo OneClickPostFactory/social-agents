@@ -12,6 +12,8 @@ Current platform surface:
 Dashboard: [http://localhost:4001](http://localhost:4001)
 
 Maintainer context for humans and coding agents lives in `AGENTS.md`.
+Production runtime notes live in `docs/PRODUCTION_RUNTIME.md`; Instagram image
+persistence details live in `docs/INSTAGRAM_IMAGE_PIPELINE.md`.
 
 ## What changed recently
 
@@ -31,7 +33,7 @@ Tracked default profile:
 ## Quick start
 
 ```bash
-git clone https://github.com/AyobamiH/social-agent.git
+git clone https://github.com/OneClickPostFactory/social-agents.git
 cd social-agent
 npm install
 cp .env.example .env
@@ -73,9 +75,14 @@ Required worker env:
 SUPABASE_URL=https://<your-owned-project-ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<sb_secret_... or legacy service_role JWT>
 CREDENTIAL_ENCRYPTION_KEY=<same-key-used-by-lovable-server-runtime>
+OPENAI_IMAGE_MODEL=gpt-image-2
 REDDIT_CLIENT_ID=<reddit-script-app-client-id>
 REDDIT_CLIENT_SECRET=<reddit-script-app-secret>
 REDDIT_USER_AGENT=oneclickpostfactory-agent/1.0 by u/<your-reddit-operator-user>
+CLOUDINARY_CLOUD_NAME=<cloudinary-cloud-name>
+CLOUDINARY_API_KEY=<cloudinary-api-key>
+CLOUDINARY_API_SECRET=<cloudinary-api-secret>
+CLOUDINARY_FOLDER=social-agent/instagram
 ```
 
 Cloudflare production uses Reddit OAuth for subreddit listing reads. The
@@ -103,6 +110,9 @@ npm run deploy:cloudflare
 ```
 
 Cloudflare runs `src/cloudflare-worker.ts` from a cron trigger every minute. Each scheduled tick claims a small batch of Supabase jobs, processes them, and exits. The local `setInterval` loop remains available for development through `npm run worker:supabase`.
+
+Set Cloudinary credentials as Cloudflare Worker secrets. `OPENAI_IMAGE_MODEL`
+and `CLOUDINARY_FOLDER` are non-secret Worker vars in `wrangler.toml`.
 
 Local SQLite remains for local admin/dev control-plane state. It is not the SaaS tenant source of truth.
 
@@ -191,7 +201,7 @@ Find the Facebook Group ID from `facebook.com/groups/GROUP_ID`.
 | LinkedIn | Text post | Concrete, professional, operational | None |
 | Threads | Text post | Punchy, direct, conversational | None |
 | X | Text post | Sharp, reply-worthy, under 280 chars | None |
-| Instagram | Caption + image | Visual, clear, save-worthy | DALL-E image persisted to Cloudinary when enabled |
+| Instagram | Caption + image | Visual, clear, save-worthy | GPT Image asset persisted to Cloudinary before queue/publish |
 | Facebook | Text post | Conversational with practical framing | None |
 
 ## Commands
@@ -229,7 +239,7 @@ Find the Facebook Group ID from `facebook.com/groups/GROUP_ID`.
 - Draft generation skips disabled platforms to protect token spend.
 - Existing queued items can auto-hydrate missing X drafts from stored source and angle memory when X is enabled later.
 - X is confirmed working with the current OAuth 2.0 user-context app; if X later rejects publishing for credits or access tier, the runtime falls back to draft-only mode for X.
-- Instagram image generation only runs when Instagram is enabled, and generated images are uploaded to Cloudinary so queued posts do not rely on temporary DALL-E URLs.
+- Instagram image generation only runs when Instagram is enabled, and generated images are uploaded to Cloudinary immediately so queued posts do not rely on temporary OpenAI provider URLs.
 - Failed platforms no longer force the whole queue item to disappear.
 - Partial success is supported, so one platform can succeed while another is retained for retry.
 - The API, CLI, and cron now share the same automation gate and SQLite-backed lock layer.

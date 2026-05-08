@@ -33,8 +33,10 @@ interface ChatCompletionResponse extends OpenAIErrorResponse {
 
 interface ImageGenerationResponse extends OpenAIErrorResponse {
   data?: Array<{
+    b64_json?: string;
     url?: string;
   }>;
+  output_format?: string;
 }
 
 interface DraftResponse {
@@ -61,6 +63,12 @@ interface DraftOptions {
   disableLearningMemory?: boolean;
   disableImageGeneration?: boolean;
   learningNotesByPlatform?: Partial<Record<PlatformKey, string[]>>;
+}
+
+interface GeneratedImageAsset {
+  b64Json?: string;
+  mimeType: string;
+  url?: string;
 }
 
 type LocalStore = typeof import('./store');
@@ -594,14 +602,14 @@ async function buildImagePrompt(
     temperature: 0.7,
     messages: [{
       role: 'system',
-      content: `You write GPT Image 2 prompts for Instagram posts.
+      content: `You write prompts for GPT Image Instagram generations.
 You produce vivid, specific, photorealistic scene descriptions.
 Never include text, words, logos, or letters in the image.
 Never use generic concepts like "shield", "lock", "lightbulb" or "network diagram".
 Always describe a real scene with real people, objects, environments or metaphors.`,
     }, {
       role: 'user',
-      content: `Based on this content, write a specific GPT Image 2 prompt for an Instagram post.
+      content: `Based on this content, write a specific GPT Image prompt for an Instagram post.
 
 Content:
 """
@@ -637,22 +645,52 @@ async function generateImage(
   angle: AngleCandidate
 ): Promise<{ imagePrompt: string; imageUrl: string }> {
   const imagePrompt = await buildImagePrompt(source, summary, angle);
-  const imageUrl = await generateImageFromPrompt(imagePrompt);
+  const image = await generateImageFromPrompt(imagePrompt);
 
   return {
     imagePrompt,
-    imageUrl: await persistInstagramImage(imageUrl, imagePrompt, source.title),
+    imageUrl: await persistInstagramImage(image, imagePrompt, source.title),
   };
 }
 
-async function generateImageFromPrompt(imagePrompt: string): Promise<string> {
-  const body = JSON.stringify({
-    model: 'gpt-image-2',
+function imageMimeType(outputFormat: string | undefined): string {
+  switch ((outputFormat || 'png').toLowerCase()) {
+    case 'jpeg':
+    case 'jpg':
+      return 'image/jpeg';
+    case 'webp':
+      return 'image/webp';
+    default:
+      return 'image/png';
+  }
+}
+
+function imageGenerationBody(imagePrompt: string): Record<string, unknown> {
+  const model = config.OPENAI_IMAGE_MODEL || 'gpt-image-2';
+  const body: Record<string, unknown> = {
+    model,
     prompt: imagePrompt,
     n: 1,
     size: '1024x1024',
-    quality: 'medium',
-  });
+  };
+
+  if (model.startsWith('gpt-image') || model === 'chatgpt-image-latest') {
+    body.quality = 'medium';
+    body.output_format = 'png';
+    body.background = 'auto';
+  } else {
+    body.response_format = 'b64_json';
+    if (model === 'dall-e-3') {
+      body.quality = 'standard';
+      body.style = 'natural';
+    }
+  }
+
+  return body;
+}
+
+async function generateImageFromPrompt(imagePrompt: string): Promise<GeneratedImageAsset> {
+  const body = JSON.stringify(imageGenerationBody(imagePrompt));
 
   try {
     const { data } = await requestJson<ImageGenerationResponse>('https://api.openai.com/v1/images/generations', {
@@ -671,7 +709,21 @@ async function generateImageFromPrompt(imagePrompt: string): Promise<string> {
       throw new Error('GPT Image generation failed: ' + (data.error.message || 'Unknown error'));
     }
 
-    return data.data?.[0]?.url || '';
+    const image = data.data?.[0];
+    if (image?.b64_json) {
+      return {
+        b64Json: image.b64_json,
+        mimeType: imageMimeType(data.output_format),
+      };
+    }
+    if (image?.url) {
+      return {
+        url: image.url,
+        mimeType: imageMimeType(data.output_format),
+      };
+    }
+
+    throw new Error('OpenAI image response did not include image data');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`GPT Image generation failed: ${message}`);
@@ -679,19 +731,30 @@ async function generateImageFromPrompt(imagePrompt: string): Promise<string> {
 }
 
 async function persistInstagramImage(
-  imageUrl: string,
+  image: GeneratedImageAsset,
   imagePrompt: string,
   publicIdHint?: string
 ): Promise<string> {
-  if (!imageUrl || cloudinary.isCloudinaryUrl(imageUrl)) {
-    return imageUrl;
+  if (image.url && cloudinary.isCloudinaryUrl(image.url)) {
+    return image.url;
   }
 
   if (!cloudinary.isConfigured()) {
-    return imageUrl;
+    throw new Error('cloudinary_not_configured_for_instagram_image_persistence');
   }
 
-  return cloudinary.uploadRemoteImage(imageUrl, publicIdHint || imagePrompt);
+  if (image.b64Json) {
+    return cloudinary.uploadImageAsset(
+      `data:${image.mimeType};base64,${image.b64Json}`,
+      publicIdHint || imagePrompt
+    );
+  }
+
+  if (image.url) {
+    return cloudinary.uploadRemoteImage(image.url, publicIdHint || imagePrompt);
+  }
+
+  throw new Error('generated_instagram_image_missing');
 }
 
 export async function refreshInstagramImage(item: QueueItem): Promise<QueueItem> {
@@ -699,38 +762,76 @@ export async function refreshInstagramImage(item: QueueItem): Promise<QueueItem>
     if (!item.imagePrompt?.trim()) {
       throw new Error('Cannot refresh Instagram image because imagePrompt is missing');
     }
-    const imageUrl = await generateImageFromPrompt(item.imagePrompt);
+    const image = await generateImageFromPrompt(item.imagePrompt);
     return {
       ...item,
-      imageUrl: await persistInstagramImage(imageUrl, item.imagePrompt, item.title),
+      imageUrl: await persistInstagramImage(image, item.imagePrompt, item.title),
     };
   }
 
-  if (cloudinary.isConfigured()) {
-    if (cloudinary.isCloudinaryUrl(item.imageUrl)) {
-      return item;
-    }
+  if (cloudinary.isCloudinaryUrl(item.imageUrl)) {
+    return item;
+  }
 
-    try {
-      return {
-        ...item,
-        imageUrl: await cloudinary.uploadRemoteImage(item.imageUrl, item.title),
-      };
-    } catch {
-      // The original DALL-E URL may already be expired; regenerate below from the stored prompt.
-    }
+  if (!cloudinary.isConfigured()) {
+    throw new Error('cloudinary_not_configured_for_instagram_image_persistence');
+  }
+
+  try {
+    return {
+      ...item,
+      imageUrl: await cloudinary.uploadRemoteImage(item.imageUrl, item.title),
+    };
+  } catch {
+    // The original provider URL may already be expired; regenerate below from the stored prompt.
   }
 
   if (!item.imagePrompt?.trim()) {
     throw new Error('Cannot refresh Instagram image because imagePrompt is missing');
   }
 
-  const imageUrl = await generateImageFromPrompt(item.imagePrompt);
+  const image = await generateImageFromPrompt(item.imagePrompt);
 
   return {
     ...item,
-    imageUrl: await persistInstagramImage(imageUrl, item.imagePrompt, item.title),
+    imageUrl: await persistInstagramImage(image, item.imagePrompt, item.title),
   };
+}
+
+export async function ensurePersistentInstagramImage(input: {
+  imageUrl?: string | null;
+  imagePrompt?: string | null;
+  title?: string | null;
+  text?: string | null;
+}): Promise<{ imagePrompt: string; imageUrl: string }> {
+  const imageUrl = input.imageUrl?.trim();
+  const imagePrompt = input.imagePrompt?.trim();
+  const title = input.title?.trim() || 'Instagram post';
+
+  if (imageUrl && cloudinary.isCloudinaryUrl(imageUrl)) {
+    return { imagePrompt: imagePrompt || '', imageUrl };
+  }
+
+  if (imageUrl && cloudinary.isConfigured()) {
+    try {
+      return {
+        imagePrompt: imagePrompt || '',
+        imageUrl: await cloudinary.uploadRemoteImage(imageUrl, title),
+      };
+    } catch {
+      // Expired provider URLs are regenerated from the stored prompt or text below.
+    }
+  }
+
+  if (imagePrompt) {
+    const image = await generateImageFromPrompt(imagePrompt);
+    return {
+      imagePrompt,
+      imageUrl: await persistInstagramImage(image, imagePrompt, title),
+    };
+  }
+
+  return generateInstagramImageFromText(title, input.text || '');
 }
 
 export async function generateInstagramImageFromText(
@@ -744,10 +845,10 @@ export async function generateInstagramImageFromText(
     `Post content: ${text.substring(0, 700)}.`,
     'Show a concrete real-world scene with people, objects, environment, lighting, mood, and perspective.',
   ].join(' ');
-  const imageUrl = await generateImageFromPrompt(imagePrompt);
+  const image = await generateImageFromPrompt(imagePrompt);
   return {
     imagePrompt,
-    imageUrl: await persistInstagramImage(imageUrl, imagePrompt, title || text.substring(0, 80)),
+    imageUrl: await persistInstagramImage(image, imagePrompt, title || text.substring(0, 80)),
   };
 }
 

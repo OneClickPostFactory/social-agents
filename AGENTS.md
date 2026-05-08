@@ -8,8 +8,8 @@ This file is the fast-start context for LLMs and human maintainers working in th
 
 Current content flow:
 1. Fetch posts from allowed subreddits.
-2. Filter to posts by `REDDIT_USER`.
-3. Bank each Reddit source into multiple reusable angles.
+2. Filter to posts by the tenant's configured Reddit author setting.
+3. Bank each tenant-scoped Reddit source into multiple reusable angles.
 4. Draft only one saved angle at a time into enabled platforms.
 5. Generate an Instagram image only when Instagram is enabled.
 6. Copy generated Instagram images into Cloudinary so queued posts use stable delivery URLs.
@@ -32,7 +32,7 @@ Current content flow:
 - `src/runtime-policy.ts`: runtime readiness checks, platform readiness, and automation gating.
 - `src/control-plane.ts`: single-install users, sessions, MFA/RBAC, billing state, runtime settings/secrets, and audit logs.
 - `src/validators.ts`: API request validation for auth, settings, and queue mutations.
-- `src/cloudinary.ts`: copies temporary remote image URLs to stable Cloudinary delivery URLs.
+- `src/cloudinary.ts`: uploads generated Instagram image assets to stable Cloudinary delivery URLs.
 - `src/http-client.ts`: shared HTTP helper with timeout/error handling.
 - `src/linkedin.ts`: LinkedIn publisher using the UGC Posts API.
 - `src/x.ts`: X/Twitter publisher using OAuth 1.0a or OAuth 2.0 user-context auth depending on configured credentials.
@@ -42,7 +42,7 @@ Current content flow:
 - `src/test-meta.ts`: Meta diagnostics for identity, Page, Instagram linkage, Group access, and Threads account checks.
 - `src/test-x.ts`: X diagnostics for the configured auth mode and optional live-post smoke tests.
 - `src/store.ts`: SQLite-backed queue/history/source/angle/platform-state persistence with one-time legacy JSON import from the `data/` directory.
-- `src/ai.ts`: source extraction, angle drafting, lightweight learning memory, and DALL-E image generation.
+- `src/ai.ts`: source extraction, angle drafting, lightweight learning memory, GPT Image generation, and Cloudinary persistence handoff.
 - `src/reddit.ts`: Reddit fetcher for allowed subreddits.
 - `content-os/`: repo-ready prompt pack that defines source extraction, platform rules, quality checks, and banned phrasing.
 
@@ -83,7 +83,7 @@ This repo is authored in TypeScript with a split execution model: `tsx` for sour
 
 ## Current Platform State
 
-As of April 29, 2026:
+As of May 8, 2026:
 
 - Threads posting is confirmed working.
 - Instagram posting is confirmed working against the currently accessible Page-linked account.
@@ -95,8 +95,8 @@ As of April 29, 2026:
 - Threads uses `/me`, `/me/threads`, and `/me/threads_publish` on `graph.threads.net`.
 - Facebook/Instagram Graph defaults were bumped to `v25.0`.
 - Instagram can now auto-discover the page-linked `instagram_business_account` and derive a Page access token from `FACEBOOK_PAGE_ID` + `META_ACCESS_TOKEN`.
-- Instagram generated images are persisted to Cloudinary when Cloudinary config is present; this avoids expired temporary DALL-E URLs in queued slots.
-- Automation readiness currently requires Cloudinary configuration when Instagram is enabled, even though lower-level image generation can still return the original DALL-E URL if Cloudinary is absent.
+- Instagram generated images must be persisted to Cloudinary before an Instagram queue row is considered publishable; this avoids expiring OpenAI provider URLs in scheduled slots.
+- Automation readiness requires Cloudinary configuration when Instagram is enabled. The worker fails closed instead of queueing Instagram rows with temporary image URLs.
 - Queue retry behavior is safe: failed platforms no longer delete queued items.
 - Partial success is supported: one platform can succeed without forcing the whole slot to fail.
 - Source reuse is supported: a Reddit post is only exhausted when no banked angles remain.
@@ -133,14 +133,7 @@ Do not mix these IDs up:
 - `THREADS_USER_ID`: the Threads account ID returned by `graph.threads.net/me`
 - `FACEBOOK_GROUP_ID`: the Group object ID used for `/feed`
 
-Current known live values discovered during diagnostics:
-
-- `FACEBOOK_USER_ID=1483119573444544`
-- `FACEBOOK_PAGE_ID=123393450677299`
-- `INSTAGRAM_ACCOUNT_ID=17841453638630920`
-- `THREADS_USER_ID=25914281681582868`
-
-Do not commit real secrets from `.env`.
+Do not commit real platform IDs, tenant IDs, account IDs, email addresses, or secrets from `.env`.
 
 ## X Config Notes
 
@@ -237,8 +230,8 @@ These files are local runtime state, not source code, and not the source of trut
 - LinkedIn posting still needs a live validation run from this repo even though the publish slice was ported from a working standalone project.
 - X posting is confirmed for the current OAuth 2.0 user-context app, but future failures can still happen if credentials expire, the X app permissions change, or credits/access tier are removed.
 - Facebook Group posting still depends on app/token/group permissions that are not fixed in code.
-- DALL-E image URLs are temporary. If an Instagram slot sits too long before posting, the image URL may expire.
-- Cloudinary should be configured for Instagram queues so DALL-E URLs are copied to a stable delivery URL immediately after generation.
+- OpenAI image outputs can be temporary or base64-only depending on model/API path. Instagram queue rows must store Cloudinary URLs, not provider URLs.
+- Cloudinary must be configured for Instagram queues so generated image assets are copied to a stable delivery URL immediately after generation.
 - Compiled output can go stale if `npm run build` is skipped before `npm start` or `npm run start:pm2`.
 
 ## Good First Checks When Something Breaks

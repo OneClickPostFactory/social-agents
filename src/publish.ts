@@ -72,6 +72,9 @@ function getPlatformAvailability(step: PlatformStep, item: QueueItem): PlatformA
 
     case 'instagram':
       if (!config.ENABLE_INSTAGRAM) return { enabled: false, reason: 'disabled via ENABLE_INSTAGRAM=false' };
+      if (!cloudinary.isConfigured()) {
+        return { enabled: false, reason: 'Cloudinary is required for durable Instagram images' };
+      }
       if (!config.FACEBOOK_PAGE_ACCESS_TOKEN && !config.META_ACCESS_TOKEN) {
         return { enabled: false, reason: 'FACEBOOK_PAGE_ACCESS_TOKEN or META_ACCESS_TOKEN not set' };
       }
@@ -125,7 +128,7 @@ export async function publishQueuedItem(item: QueueItem, logger?: Logger): Promi
     }
 
     try {
-      if (step.key === 'instagram' && cloudinary.isConfigured() && !cloudinary.isCloudinaryUrl(nextItem.imageUrl)) {
+      if (step.key === 'instagram' && !cloudinary.isCloudinaryUrl(nextItem.imageUrl)) {
         logger?.info('[Instagram] Refreshing image through Cloudinary before publish');
         Object.assign(nextItem, await ai.refreshInstagramImage(nextItem));
       }

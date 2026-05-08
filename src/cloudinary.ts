@@ -33,7 +33,7 @@ export function isCloudinaryUrl(value: string | undefined): boolean {
   }
 }
 
-export async function uploadRemoteImage(imageUrl: string, publicIdHint?: string): Promise<string> {
+export async function uploadImageAsset(file: string, publicIdHint?: string): Promise<string> {
   if (!isConfigured()) {
     throw new Error(
       'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME plus CLOUDINARY_UPLOAD_PRESET or CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET.'
@@ -42,7 +42,7 @@ export async function uploadRemoteImage(imageUrl: string, publicIdHint?: string)
 
   const endpoint = `https://api.cloudinary.com/v1_1/${encodeURIComponent(config.CLOUDINARY_CLOUD_NAME)}/image/upload`;
   const params = new URLSearchParams();
-  params.set('file', imageUrl);
+  params.set('file', file);
 
   if (config.CLOUDINARY_FOLDER) {
     params.set('folder', config.CLOUDINARY_FOLDER);
@@ -75,7 +75,7 @@ export async function uploadRemoteImage(imageUrl: string, publicIdHint?: string)
     data = response.data;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Cloudinary upload failed for image URL ${imageUrl}: ${message}`);
+    throw new Error(`Cloudinary upload failed for generated Instagram image: ${message}`);
   }
 
   if (data.error) {
@@ -88,6 +88,10 @@ export async function uploadRemoteImage(imageUrl: string, publicIdHint?: string)
   }
 
   return secureUrl;
+}
+
+export async function uploadRemoteImage(imageUrl: string, publicIdHint?: string): Promise<string> {
+  return uploadImageAsset(imageUrl, publicIdHint);
 }
 
 function signUploadParams(params: URLSearchParams): string {

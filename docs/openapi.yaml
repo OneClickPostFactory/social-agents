@@ -289,6 +289,8 @@ components:
           type: integer
         OPENAI_MODEL:
           type: string
+        OPENAI_IMAGE_MODEL:
+          type: string
         AI_STYLE:
           type: string
         CUSTOM_PROMPT:

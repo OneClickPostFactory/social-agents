@@ -11,6 +11,11 @@ interface Env {
   REDDIT_CLIENT_SECRET?: string;
   REDDIT_USER_AGENT?: string;
   OPENAI_MODEL?: string;
+  OPENAI_IMAGE_MODEL?: string;
+  CLOUDINARY_CLOUD_NAME?: string;
+  CLOUDINARY_API_KEY?: string;
+  CLOUDINARY_API_SECRET?: string;
+  CLOUDINARY_UPLOAD_PRESET?: string;
   META_GRAPH_VERSION?: string;
   THREADS_GRAPH_VERSION?: string;
   CLOUDINARY_FOLDER?: string;

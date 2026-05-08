@@ -83,7 +83,7 @@ SaaS worker state:
 5. Automation routes are available only when:
    - an owner session is present
    - CSRF passes for writes
-   - billing status is `trialing` or `active`
+   - billing status is `active`, or `trialing` with a future trial end
    - runtime readiness checks pass
 6. The content engine fills slots from saved angles first, then fresh Reddit extraction.
 7. Scheduled or manual publish uses the existing platform adapters.
@@ -162,7 +162,7 @@ Global behavior:
   - `password: string` minimum 12 chars
 - behavior:
   - returns `409` if owner already exists
-  - starts billing state in `trialing`
+  - starts billing state in `trialing` with a trial expiry
   - sets session cookie
 
 #### `POST /api/auth/login`
