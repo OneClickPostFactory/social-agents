@@ -115,6 +115,74 @@ interface TenantContext {
   activePlatforms: PlatformKey[];
 }
 
+interface PipelineSummary {
+  outcome: 'queued' | 'blocked' | 'empty' | 'deferred';
+  message: string;
+  nextAction: string;
+  access: {
+    status: string;
+    canWrite: boolean;
+    reason: string;
+  };
+  platforms: {
+    enabled: PlatformKey[];
+    missingCredentials: string[];
+    warnings: string[];
+  };
+  sources: {
+    configured: number;
+    enabled: number;
+    checked: number;
+    subredditSources: number;
+    redditAuthorFilters: number;
+    rssSources: number;
+    postsFetched: number;
+    postsAccepted: number;
+    rejectedByAuthor: number;
+    duplicatesSkipped: number;
+    recordsCreated: number;
+    recordsUpdated: number;
+    withoutAngles: number;
+    fetchFailures: number;
+    fetchFailureReasons: Record<string, number>;
+  };
+  angles: {
+    activeAtStart: number;
+    draftableAtStart: number;
+    created: number;
+    alreadyExisting: number;
+    legacyRejected: number;
+    disabledPlatformRejected: number;
+    missingMetadataRejected: number;
+    unusedAvailable: number;
+    inProgressAvailable: number;
+    statusCounts: Record<string, number>;
+    rejectionReasons: Record<string, number>;
+  };
+  drafts: {
+    attempted: number;
+    created: number;
+    skipped: number;
+    failures: number;
+    skipReasons: Record<string, number>;
+    failureReasons: Record<string, number>;
+  };
+  queue: {
+    openSlotsAtStart: number;
+    activeSlotsAtStart: number;
+    created: number;
+    ready: number;
+  };
+  errors: string[];
+}
+
+interface QueueFromAnglesResult {
+  queued: number;
+  draftableSeen: number;
+  failures: number;
+  rejected: number;
+}
+
 interface WorkerStats {
   claimed: number;
   completed: number;
@@ -200,6 +268,18 @@ function hasDateInFuture(value: string | null | undefined): boolean {
   if (!value) return false;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && timestamp > Date.now();
+}
+
+function incrementCounter(counter: Record<string, number>, key: string | undefined): void {
+  const normalized = String(key || 'unknown').trim() || 'unknown';
+  counter[normalized] = (counter[normalized] || 0) + 1;
+}
+
+function addSummaryError(summary: PipelineSummary, error: unknown): void {
+  const message = publicError(error);
+  if (!summary.errors.includes(message)) {
+    summary.errors.push(message);
+  }
 }
 
 async function writeWorkerLog(
@@ -290,6 +370,144 @@ async function loadTenantContext(userId: string): Promise<TenantContext> {
     settings,
     credentials,
     activePlatforms,
+  };
+}
+
+function missingPlatformCredentials(tenant: TenantContext): string[] {
+  const missing = new Set<string>();
+
+  if (!config.OPENAI_API_KEY) {
+    missing.add('OpenAI API key');
+  }
+
+  for (const platform of tenant.activePlatforms) {
+    if (platform === 'threads' && !tenant.credentials.threadsToken) {
+      missing.add('Threads access token');
+    }
+    if (platform === 'instagram') {
+      const hasMetaToken = Boolean(
+        tenant.credentials.metaAccessToken
+        || tenant.credentials.facebookPageAccessToken
+        || tenant.credentials.instagramToken
+      );
+      const hasInstagramIdentity = Boolean(
+        tenant.credentials.instagramAccountId
+        || tenant.credentials.facebookPageId
+      );
+      if (!hasMetaToken) missing.add('Instagram / Meta access token');
+      if (!hasInstagramIdentity) missing.add('Instagram account ID or Facebook Page ID');
+    }
+    if (platform === 'linkedin') {
+      if (!tenant.credentials.linkedinToken) missing.add('LinkedIn access token');
+      if (!tenant.credentials.linkedinPersonUrn) missing.add('LinkedIn person URN');
+    }
+    if (platform === 'x') {
+      if (!tenant.credentials.xClientId) missing.add('X OAuth client ID');
+      if (!tenant.credentials.xClientSecret) missing.add('X OAuth client secret');
+      if (!tenant.credentials.xOAuth2AccessToken) missing.add('X OAuth access token');
+      if (!tenant.credentials.xOAuth2RefreshToken) missing.add('X OAuth refresh token');
+    }
+  }
+
+  return [...missing];
+}
+
+function platformWarnings(tenant: TenantContext): string[] {
+  const warnings: string[] = [];
+  if (tenant.activePlatforms.includes('instagram')) {
+    const hasCloudinary = Boolean(
+      config.CLOUDINARY_CLOUD_NAME
+      && config.CLOUDINARY_API_KEY
+      && config.CLOUDINARY_API_SECRET
+    );
+    if (!hasCloudinary) {
+      warnings.push('Instagram drafts need Cloudinary configured so generated images are durable.');
+    }
+  }
+  return warnings;
+}
+
+async function createPipelineSummary(
+  job: AgentJobRow,
+  tenant: TenantContext,
+  sources: UserSourceRow[],
+  occupiedSlots: Set<number>
+): Promise<PipelineSummary> {
+  const entitlement = await loadEntitlement(job.user_id);
+  const enabledSources = sources.filter(source => source.enabled);
+  const activeAngles = await supabaseSelect<AngleRecordRow>('angle_records', {
+    select: 'id,status,intended_platform,source_reddit_post_id,source_url,subreddit,reddit_author',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: job.user_id },
+      { column: 'status', operator: 'in', value: ACTIVE_ANGLE_STATUSES },
+    ],
+    order: 'created_at.asc',
+    limit: 1000,
+  });
+  const statusCounts: Record<string, number> = {};
+  for (const row of activeAngles) {
+    incrementCounter(statusCounts, row.status || 'unknown');
+  }
+
+  return {
+    outcome: 'empty',
+    message: 'No queue items were created yet.',
+    nextAction: 'Review the setup details and run Fetch sources again.',
+    access: {
+      status: entitlement.status,
+      canWrite: entitlement.canWrite,
+      reason: entitlement.reason,
+    },
+    platforms: {
+      enabled: tenant.activePlatforms,
+      missingCredentials: missingPlatformCredentials(tenant),
+      warnings: platformWarnings(tenant),
+    },
+    sources: {
+      configured: sources.length,
+      enabled: enabledSources.length,
+      checked: 0,
+      subredditSources: enabledSources.filter(source => source.kind === 'subreddit').length,
+      redditAuthorFilters: enabledSources.filter(source => source.kind === 'reddit_user').length,
+      rssSources: enabledSources.filter(source => source.kind === 'rss').length,
+      postsFetched: 0,
+      postsAccepted: 0,
+      rejectedByAuthor: 0,
+      duplicatesSkipped: 0,
+      recordsCreated: 0,
+      recordsUpdated: 0,
+      withoutAngles: 0,
+      fetchFailures: 0,
+      fetchFailureReasons: {},
+    },
+    angles: {
+      activeAtStart: activeAngles.length,
+      draftableAtStart: activeAngles.filter(row => anglePlatform(row, tenant) && isDraftableAngle(row)).length,
+      created: 0,
+      alreadyExisting: 0,
+      legacyRejected: 0,
+      disabledPlatformRejected: 0,
+      missingMetadataRejected: 0,
+      unusedAvailable: activeAngles.filter(row => row.status === 'unused').length,
+      inProgressAvailable: activeAngles.filter(row => row.status === 'in_progress').length,
+      statusCounts,
+      rejectionReasons: {},
+    },
+    drafts: {
+      attempted: 0,
+      created: 0,
+      skipped: 0,
+      failures: 0,
+      skipReasons: {},
+      failureReasons: {},
+    },
+    queue: {
+      openSlotsAtStart: Math.max(0, 4 - occupiedSlots.size),
+      activeSlotsAtStart: occupiedSlots.size,
+      created: 0,
+      ready: 0,
+    },
+    errors: [],
   };
 }
 
@@ -427,6 +645,13 @@ async function completeJob(job: AgentJobRow, result: JsonMap): Promise<void> {
 
 async function failJob(job: AgentJobRow, error: unknown): Promise<void> {
   const message = publicError(error);
+  const result = {
+    outcome: 'blocked',
+    message,
+    nextAction: 'Open Logs, fix the reported blocker, then retry the job.',
+    error: message,
+    context: error instanceof WorkerJobError ? error.context || null : null,
+  };
   await writeWorkerLog(job.user_id, 'error', message, {
     jobId: job.id,
     kind: job.kind,
@@ -435,6 +660,7 @@ async function failJob(job: AgentJobRow, error: unknown): Promise<void> {
     status: 'failed',
     completed_at: nowIso(),
     error: message,
+    result,
   }, {
     filters: [
       { column: 'id', operator: 'eq', value: job.id },
@@ -767,6 +993,147 @@ async function hasActiveBankedAngles(userId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+async function refreshPipelineInventory(job: AgentJobRow, summary: PipelineSummary): Promise<void> {
+  const [angles, queue] = await Promise.all([
+    supabaseSelect<{ status?: string | null }>('angle_records', {
+      select: 'status',
+      filters: [{ column: 'user_id', operator: 'eq', value: job.user_id }],
+      limit: 1000,
+    }),
+    supabaseSelect<{ status?: string | null }>('queue_items', {
+      select: 'status',
+      filters: [
+        { column: 'user_id', operator: 'eq', value: job.user_id },
+        { column: 'status', operator: 'in', value: ACTIVE_QUEUE_STATUSES },
+      ],
+      limit: 100,
+    }),
+  ]);
+
+  const statusCounts: Record<string, number> = {};
+  for (const angle of angles) {
+    incrementCounter(statusCounts, angle.status || 'unknown');
+  }
+  summary.angles.statusCounts = statusCounts;
+  summary.angles.unusedAvailable = statusCounts.unused || 0;
+  summary.angles.inProgressAvailable = statusCounts.in_progress || 0;
+  summary.queue.ready = queue.filter(row => row.status === 'ready' || row.status === 'pending').length;
+}
+
+function primaryFailureReason(reasons: Record<string, number>): string {
+  const [first] = Object.entries(reasons).sort((a, b) => b[1] - a[1]);
+  return first?.[0] || 'unknown';
+}
+
+function finalizePipelineSummary(summary: PipelineSummary): void {
+  if (!summary.access.canWrite) {
+    summary.outcome = 'blocked';
+    summary.message = 'Trial or subscription access blocked drafting.';
+    summary.nextAction = 'Open Billing and restore write access.';
+    return;
+  }
+
+  if (!summary.platforms.enabled.length) {
+    summary.outcome = 'blocked';
+    summary.message = 'No publishing platforms are enabled.';
+    summary.nextAction = 'Enable at least one platform in Settings before drafting.';
+    return;
+  }
+
+  if (summary.queue.openSlotsAtStart === 0) {
+    summary.outcome = 'deferred';
+    summary.message = 'The queue already had active items, so the worker did not create another draft.';
+    summary.nextAction = 'Publish, skip, or release an existing queue item to open a slot.';
+    return;
+  }
+
+  if (summary.queue.created > 0) {
+    summary.outcome = 'queued';
+    summary.message = `${summary.queue.created} queue item${summary.queue.created === 1 ? '' : 's'} created.`;
+    summary.nextAction = 'Review the ready queue items, then publish or edit them.';
+    return;
+  }
+
+  if (summary.drafts.failures > 0) {
+    const reason = primaryFailureReason(summary.drafts.failureReasons);
+    summary.outcome = 'blocked';
+    summary.message = `Drafting was attempted but failed: ${reason}.`;
+    summary.nextAction = reason === 'instagram_image_not_persisted'
+      ? 'Check Cloudinary and Instagram image generation configuration.'
+      : 'Open Logs for the failed draft reason, then retry Fetch sources.';
+    return;
+  }
+
+  if (summary.sources.fetchFailures > 0 && summary.sources.postsAccepted === 0) {
+    const reason = primaryFailureReason(summary.sources.fetchFailureReasons);
+    summary.outcome = 'blocked';
+    summary.message = `Source fetching failed closed: ${reason}.`;
+    summary.nextAction = reason.includes('Reddit')
+      ? 'Check Reddit API credentials and retry Fetch sources.'
+      : 'Open Logs, fix the source connection, and retry Fetch sources.';
+    return;
+  }
+
+  if (summary.sources.configured === 0 || summary.sources.enabled === 0) {
+    summary.outcome = 'blocked';
+    summary.message = 'No enabled sources are configured.';
+    summary.nextAction = 'Add a Reddit author filter plus allowed subreddits, or add an RSS source.';
+    return;
+  }
+
+  if (summary.sources.subredditSources > 0 && summary.sources.redditAuthorFilters === 0) {
+    summary.outcome = 'blocked';
+    summary.message = 'Subreddit sources are configured, but no Reddit username filter is enabled.';
+    summary.nextAction = 'Add a Reddit author filter so only that user enters the workflow.';
+    return;
+  }
+
+  if (summary.sources.postsFetched > 0 && summary.sources.postsAccepted === 0) {
+    summary.outcome = 'empty';
+    summary.message = 'Fetch completed, but no Reddit posts matched the configured Reddit username.';
+    summary.nextAction = 'Check the Reddit author filter and allowed subreddits.';
+    return;
+  }
+
+  if (summary.sources.postsAccepted > 0 && summary.angles.created === 0) {
+    summary.outcome = 'empty';
+    summary.message = 'Sources were accepted, but no usable angles were created.';
+    summary.nextAction = 'Open Logs to inspect source extraction results, then retry with a stronger source.';
+    return;
+  }
+
+  if (summary.angles.created > 0) {
+    summary.outcome = 'deferred';
+    summary.message = `${summary.angles.created} angle${summary.angles.created === 1 ? '' : 's'} were banked, but no draft was queued yet.`;
+    summary.nextAction = 'Run Fetch sources again or wait for the next worker tick to draft unused angles.';
+    return;
+  }
+
+  if (summary.angles.legacyRejected > 0) {
+    summary.outcome = 'empty';
+    summary.message = 'Legacy Angle Bank rows were quarantined because they were missing required source or platform metadata.';
+    summary.nextAction = 'Run Fetch sources again so the worker can fetch fresh tenant-scoped source material.';
+    return;
+  }
+
+  summary.outcome = 'empty';
+  summary.message = 'Fetch completed, but no queue item was created.';
+  summary.nextAction = 'Open Logs for the worker summary, then verify sources, credentials, and enabled platforms.';
+}
+
+async function finishRefreshResult(
+  job: AgentJobRow,
+  summary: PipelineSummary,
+  result: JsonMap
+): Promise<JsonMap> {
+  await refreshPipelineInventory(job, summary);
+  finalizePipelineSummary(summary);
+  return {
+    ...result,
+    summary,
+  };
+}
+
 function tenantRedditConfig(sources: UserSourceRow[]): {
   author: string;
   subredditSources: UserSourceRow[];
@@ -850,10 +1217,23 @@ function isDraftableAngle(row: AngleRecordRow): boolean {
 async function queueFromBankedAngles(
   job: AgentJobRow,
   tenant: TenantContext,
-  occupiedSlots: Set<number>
-): Promise<number> {
+  occupiedSlots: Set<number>,
+  summary?: PipelineSummary
+): Promise<QueueFromAnglesResult> {
+  const result: QueueFromAnglesResult = {
+    queued: 0,
+    draftableSeen: 0,
+    failures: 0,
+    rejected: 0,
+  };
   const slotIndex = firstOpenSlot(occupiedSlots);
-  if (slotIndex === undefined) return 0;
+  if (slotIndex === undefined) {
+    if (summary) {
+      summary.drafts.skipped++;
+      incrementCounter(summary.drafts.skipReasons, 'no_open_queue_slot');
+    }
+    return result;
+  }
 
   const angles = await supabaseSelect<AngleRecordRow>('angle_records', {
     select: '*',
@@ -868,6 +1248,7 @@ async function queueFromBankedAngles(
   for (const angleRow of angles) {
     const platform = anglePlatform(angleRow, tenant);
     if (!platform || !isDraftableAngle(angleRow)) {
+      const reason = !platform ? 'disabled_or_missing_platform' : 'missing_source_metadata';
       await supabaseUpdate('angle_records', {
         status: 'rejected',
       }, {
@@ -876,13 +1257,23 @@ async function queueFromBankedAngles(
           { column: 'user_id', operator: 'eq', value: job.user_id },
         ],
       });
+      result.rejected++;
+      if (summary) {
+        summary.angles.legacyRejected++;
+        if (!platform) summary.angles.disabledPlatformRejected++;
+        else summary.angles.missingMetadataRejected++;
+        incrementCounter(summary.angles.rejectionReasons, reason);
+      }
       await writeWorkerLog(job.user_id, 'warn', 'legacy_angle_quarantined', {
         jobId: job.id,
         angleId: angleRow.id,
-        reason: !platform ? 'disabled_or_missing_platform' : 'missing_source_metadata',
+        reason,
       });
       continue;
     }
+
+    result.draftableSeen++;
+    if (summary) summary.drafts.attempted++;
 
     const locked = await supabaseUpdate<AngleRecordRow>('angle_records', {
       status: 'in_progress',
@@ -895,7 +1286,13 @@ async function queueFromBankedAngles(
       returning: true,
     });
     const currentAngle = locked[0];
-    if (!currentAngle) continue;
+    if (!currentAngle) {
+      if (summary) {
+        summary.drafts.skipped++;
+        incrementCounter(summary.drafts.skipReasons, 'angle_lock_not_acquired');
+      }
+      continue;
+    }
 
     const selectedAngle = toAngleCandidateFromRecord(currentAngle);
     const post: RedditPost = {
@@ -909,7 +1306,7 @@ async function queueFromBankedAngles(
       author: currentAngle.reddit_author || '',
       created: Date.parse(currentAngle.created_at || '') / 1000 || Date.now() / 1000,
     };
-    const summary: SourceSummary = {
+    const sourceSummary: SourceSummary = {
       source_type: 'reddit_post',
       topic: currentAngle.topic || selectedAngle.label,
       core_claim: selectedAngle.thesis,
@@ -926,7 +1323,7 @@ async function queueFromBankedAngles(
     try {
       const draft = await ai.draftPlatforms(
         post,
-        summary,
+        sourceSummary,
         selectedAngle,
         [platform],
         { disableLearningMemory: true, disableImageGeneration: platform !== 'instagram' }
@@ -951,6 +1348,10 @@ async function queueFromBankedAngles(
             { column: 'user_id', operator: 'eq', value: job.user_id },
           ],
         });
+        if (summary) {
+          summary.drafts.skipped++;
+          incrementCounter(summary.drafts.skipReasons, 'no_draft_text_created');
+        }
         continue;
       }
 
@@ -966,14 +1367,25 @@ async function queueFromBankedAngles(
         ],
       });
       occupiedSlots.add(slotIndex);
+      result.queued = rows.length;
+      if (summary) {
+        summary.queue.created += rows.length;
+        summary.drafts.created += rows.length;
+      }
       await writeWorkerLog(job.user_id, 'info', 'queued_banked_angle', {
         jobId: job.id,
         slotIndex,
         angleId: currentAngle.id,
         platforms: rows.map(row => row.platform),
       });
-      return rows.length;
+      return result;
     } catch (error) {
+      result.failures++;
+      if (summary) {
+        summary.drafts.failures++;
+        incrementCounter(summary.drafts.failureReasons, publicError(error));
+        addSummaryError(summary, error);
+      }
       await supabaseUpdate('angle_records', {
         status: 'unused',
       }, {
@@ -990,46 +1402,63 @@ async function queueFromBankedAngles(
     }
   }
 
-  return 0;
+  return result;
 }
 
 async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Promise<JsonMap> {
-  if (!config.OPENAI_API_KEY) {
-    throw new WorkerJobError('openai_api_key_missing', 'openai_api_key_missing');
-  }
-  if (!tenant.activePlatforms.length) {
-    throw new WorkerJobError('no_enabled_platforms', 'no_enabled_platforms');
-  }
-
   const sources = await supabaseSelect<UserSourceRow>('user_sources', {
     select: '*',
-    filters: [
-      { column: 'user_id', operator: 'eq', value: job.user_id },
-      { column: 'enabled', operator: 'eq', value: true },
-    ],
+    filters: [{ column: 'user_id', operator: 'eq', value: job.user_id }],
     order: 'created_at.asc',
     limit: 100,
   });
-  if (!sources.length) {
-    throw new WorkerJobError('no_enabled_sources', 'no_enabled_sources');
+  const occupiedSlots = await loadActiveSlotIndexes(job.user_id);
+  const summary = await createPipelineSummary(job, tenant, sources, occupiedSlots);
+
+  if (!config.OPENAI_API_KEY) {
+    summary.drafts.skipped++;
+    incrementCounter(summary.drafts.skipReasons, 'openai_api_key_missing');
+    return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0 });
+  }
+  if (!tenant.activePlatforms.length) {
+    summary.drafts.skipped++;
+    incrementCounter(summary.drafts.skipReasons, 'no_enabled_platforms');
+    return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0 });
   }
 
-  const occupiedSlots = await loadActiveSlotIndexes(job.user_id);
+  const enabledSources = sources.filter(source => source.enabled);
+  if (!enabledSources.length) {
+    return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0 });
+  }
+
+  if (firstOpenSlot(occupiedSlots) === undefined) {
+    return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0, deferredFetch: true });
+  }
+
   let queued = 0;
 
-  if (firstOpenSlot(occupiedSlots) !== undefined && await hasActiveBankedAngles(job.user_id)) {
-    queued += await queueFromBankedAngles(job, tenant, occupiedSlots);
-    return { fetched: 0, banked: 0, queued, deferredFetch: true };
+  if (summary.angles.activeAtStart > 0) {
+    const bankedResult = await queueFromBankedAngles(job, tenant, occupiedSlots, summary);
+    queued += bankedResult.queued;
+    if (queued > 0) {
+      return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued, deferredFetch: true });
+    }
+
+    if (bankedResult.draftableSeen > 0 && await hasActiveBankedAngles(job.user_id)) {
+      return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued, deferredFetch: true });
+    }
   }
 
   const existingSourceUrls = await loadExistingSourceUrls(job.user_id);
-  const { author: redditAuthorFilter, subredditSources, nonRedditSources } = tenantRedditConfig(sources);
+  const { author: redditAuthorFilter, subredditSources, nonRedditSources } = tenantRedditConfig(enabledSources);
   if (subredditSources.length && !redditAuthorFilter) {
     await writeWorkerLog(job.user_id, 'warn', 'reddit_author_filter_missing', {
       jobId: job.id,
       subredditSources: subredditSources.length,
     });
-    throw new WorkerJobError('reddit_author_filter_missing', 'reddit_author_filter_missing');
+    summary.drafts.skipped++;
+    incrementCounter(summary.drafts.skipReasons, 'reddit_author_filter_missing');
+    return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0 });
   }
 
   const processingSources = [
@@ -1037,7 +1466,9 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     ...nonRedditSources,
   ];
   if (!processingSources.length) {
-    throw new WorkerJobError('no_processable_sources', 'no_processable_sources');
+    summary.drafts.skipped++;
+    incrementCounter(summary.drafts.skipReasons, 'no_processable_sources');
+    return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0 });
   }
 
   let fetched = 0;
@@ -1045,99 +1476,149 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
 
   for (const source of processingSources) {
     if (firstOpenSlot(occupiedSlots) === undefined) break;
+    summary.sources.checked++;
 
+    let posts: RedditPost[];
     try {
-      const posts = await fetchTenantSourcePosts(source, job.user_id, job.id);
-      const sourcePosts = source.kind === 'subreddit' && redditAuthorFilter
-        ? posts.filter(post => normalizeRedditUsername(post.author) === redditAuthorFilter)
-        : posts;
-      fetched += sourcePosts.length;
-
-      for (const post of sourcePosts) {
-        if (firstOpenSlot(occupiedSlots) === undefined) break;
-
-        const sourceUrl = canonicalSourceUrl(post);
-        if (existingSourceUrls.has(sourceUrl)) continue;
-
-        const extraction = await ai.extractSourceBank(post);
-        const sourcePayload = {
-          user_id: job.user_id,
-          url: sourceUrl,
-          title: post.title || null,
-          origin: source.kind,
-          score: post.score || null,
-          reddit_post_id: post.id || null,
-          subreddit: post.subreddit || null,
-          reddit_author: normalizeRedditUsername(post.author) || null,
-          content_hash: contentHashForPost(post),
-          status: 'banked',
-          used: false,
-          fetched_at: nowIso(),
-        };
-        const existingSource = await loadExistingSourceRecord(job.user_id, sourceUrl);
-        const sourceRows = existingSource?.status === 'rejected'
-          ? await supabaseUpdate<{ id: string }>('source_records', sourcePayload, {
-              filters: [
-                { column: 'id', operator: 'eq', value: existingSource.id },
-                { column: 'user_id', operator: 'eq', value: job.user_id },
-              ],
-              returning: true,
-            })
-          : await supabaseInsert<{ id: string }>('source_records', sourcePayload, true);
-        const sourceRecordId = sourceRows[0]?.id || null;
-        existingSourceUrls.add(sourceUrl);
-
-        const angles = extraction.angles.slice(0, 5);
-        if (!angles.length) continue;
-
-        const angleRows = angles.flatMap(angle => tenant.activePlatforms.map(platform => ({
-          user_id: job.user_id,
-          source_record_id: sourceRecordId,
-          source_reddit_post_id: post.id,
-          subreddit: post.subreddit || null,
-          reddit_author: normalizeRedditUsername(post.author) || null,
-          source_url: sourceUrl,
-          angle: `${angle.label}: ${angle.thesis}`,
-          angle_title: angle.label,
-          angle_summary: angle.thesis,
-          intended_platform: platform,
-          status: 'unused',
-          priority: angle.strength || null,
-          topic: extraction.summary.topic || post.title || null,
-          used_count: 0,
-          last_used_at: null,
-        })));
-
-        await supabaseInsert('angle_records', angleRows);
-        banked += angleRows.length;
-
-        queued += await queueFromBankedAngles(job, tenant, occupiedSlots);
-        await writeWorkerLog(job.user_id, 'info', 'source_banked_angles', {
-          jobId: job.id,
-          sourceId: source.id,
-          sourceUrl,
-          angleCount: angleRows.length,
-        });
-
-        if (queued > 0 || await hasActiveBankedAngles(job.user_id)) break;
-      }
+      posts = await fetchTenantSourcePosts(source, job.user_id, job.id);
     } catch (error) {
-      await writeWorkerLog(job.user_id, 'warn', 'source_fetch_or_draft_failed', {
+      const reason = publicError(error);
+      summary.sources.fetchFailures++;
+      incrementCounter(summary.sources.fetchFailureReasons, reason);
+      addSummaryError(summary, error);
+      await writeWorkerLog(job.user_id, 'warn', 'source_fetch_failed', {
         jobId: job.id,
         sourceId: source.id,
         kind: source.kind,
-        error: publicError(error),
+        error: reason,
       });
+      continue;
+    }
+
+    summary.sources.postsFetched += posts.length;
+    const sourcePosts = source.kind === 'subreddit' && redditAuthorFilter
+      ? posts.filter(post => normalizeRedditUsername(post.author) === redditAuthorFilter)
+      : posts;
+    if (source.kind === 'subreddit' && redditAuthorFilter) {
+      summary.sources.rejectedByAuthor += Math.max(0, posts.length - sourcePosts.length);
+    }
+    summary.sources.postsAccepted += sourcePosts.length;
+    fetched += sourcePosts.length;
+
+    for (const post of sourcePosts) {
+      if (firstOpenSlot(occupiedSlots) === undefined) break;
+
+      const sourceUrl = canonicalSourceUrl(post);
+      if (existingSourceUrls.has(sourceUrl)) {
+        summary.sources.duplicatesSkipped++;
+        summary.angles.alreadyExisting++;
+        continue;
+      }
+
+      let extraction: Awaited<ReturnType<typeof ai.extractSourceBank>>;
+      try {
+        extraction = await ai.extractSourceBank(post);
+      } catch (error) {
+        summary.sources.withoutAngles++;
+        addSummaryError(summary, error);
+        await writeWorkerLog(job.user_id, 'warn', 'source_angle_extraction_failed', {
+          jobId: job.id,
+          sourceId: source.id,
+          sourceUrl,
+          error: publicError(error),
+        });
+        continue;
+      }
+
+      const sourcePayload = {
+        user_id: job.user_id,
+        url: sourceUrl,
+        title: post.title || null,
+        origin: source.kind,
+        score: post.score || null,
+        reddit_post_id: post.id || null,
+        subreddit: post.subreddit || null,
+        reddit_author: normalizeRedditUsername(post.author) || null,
+        content_hash: contentHashForPost(post),
+        status: 'banked',
+        used: false,
+        fetched_at: nowIso(),
+      };
+      const existingSource = await loadExistingSourceRecord(job.user_id, sourceUrl);
+      const sourceRows = existingSource?.status === 'rejected'
+        ? await supabaseUpdate<{ id: string }>('source_records', sourcePayload, {
+            filters: [
+              { column: 'id', operator: 'eq', value: existingSource.id },
+              { column: 'user_id', operator: 'eq', value: job.user_id },
+            ],
+            returning: true,
+          })
+        : await supabaseInsert<{ id: string }>('source_records', sourcePayload, true);
+      const sourceRecordId = sourceRows[0]?.id || null;
+      if (existingSource?.status === 'rejected') summary.sources.recordsUpdated++;
+      else summary.sources.recordsCreated++;
+      existingSourceUrls.add(sourceUrl);
+
+      const angles = extraction.angles.slice(0, 5);
+      if (!angles.length) {
+        summary.sources.withoutAngles++;
+        continue;
+      }
+
+      const angleRows = angles.flatMap(angle => tenant.activePlatforms.map(platform => ({
+        user_id: job.user_id,
+        source_record_id: sourceRecordId,
+        source_reddit_post_id: post.id,
+        subreddit: post.subreddit || null,
+        reddit_author: normalizeRedditUsername(post.author) || null,
+        source_url: sourceUrl,
+        angle: `${angle.label}: ${angle.thesis}`,
+        angle_title: angle.label,
+        angle_summary: angle.thesis,
+        intended_platform: platform,
+        status: 'unused',
+        priority: angle.strength || null,
+        topic: extraction.summary.topic || post.title || null,
+        used_count: 0,
+        last_used_at: null,
+      })));
+
+      try {
+        await supabaseInsert('angle_records', angleRows);
+      } catch (error) {
+        addSummaryError(summary, error);
+        await writeWorkerLog(job.user_id, 'warn', 'angle_insert_failed', {
+          jobId: job.id,
+          sourceId: source.id,
+          sourceUrl,
+          error: publicError(error),
+        });
+        continue;
+      }
+      banked += angleRows.length;
+      summary.angles.created += angleRows.length;
+
+      const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, summary);
+      queued += queuedFromAngles.queued;
+      await writeWorkerLog(job.user_id, 'info', 'source_banked_angles', {
+        jobId: job.id,
+        sourceId: source.id,
+        sourceUrl,
+        angleCount: angleRows.length,
+      });
+
+      if (queued > 0 || await hasActiveBankedAngles(job.user_id)) break;
     }
 
     if (queued > 0 || await hasActiveBankedAngles(job.user_id)) break;
   }
 
   if (queued === 0 && firstOpenSlot(occupiedSlots) !== undefined) {
-    queued += await queueFromBankedAngles(job, tenant, occupiedSlots);
+    const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, summary);
+    queued += queuedFromAngles.queued;
   }
 
-  return { fetched, banked, queued };
+  return finishRefreshResult(job, summary, { fetched, banked, queued });
 }
 
 function requirePayloadId(payload: JsonMap | null, key: string): string {

@@ -52,6 +52,41 @@ The worker drains existing `unused` or `in_progress` angles before fetching new
 Reddit posts. This prevents wasting OpenAI calls on new sources while usable
 banked angles remain.
 
+If the only active angles are legacy/incomplete rows that cannot be proven to
+have source URL, subreddit, author, and intended platform metadata, the worker
+quarantines those rows as `rejected` and then continues to the fresh source
+fetch stage. Valid unused or in-progress angles still block fresh fetching until
+they are drafted, published, rejected, or exhausted.
+
+## Job Result Summaries
+
+`fetch_sources` and `refresh_queue` jobs must write a tenant-scoped summary into
+`agent_jobs.result.summary`. The summary is what the frontend uses to explain why
+a queue did or did not fill. A completed job with no queue rows is acceptable
+only when the result says what happened.
+
+The summary includes:
+
+- source counts: configured, enabled, checked, fetched, author-rejected,
+  accepted, duplicate, no-angle, and fetch failure counts
+- angle counts: active at start, draftable at start, created, existing,
+  quarantined legacy rows, unused, in-progress, and status totals
+- draft counts: attempted, created, skipped, failures, and grouped reasons
+- queue counts: active slots at start, open slots at start, ready rows, and rows
+  created by the job
+- access, enabled platform, missing credential, warning, error, message, outcome,
+  and next-action fields
+
+Common empty outcomes:
+
+- no Reddit posts matched the configured author filter
+- Reddit/API access failed closed
+- no usable angles were extracted
+- draft generation failed
+- Instagram image persistence failed
+- no source, platform, credential, or billing access was available
+- legacy Angle Bank rows were quarantined before fresh fetching
+
 ## Angle Statuses
 
 Supabase angle statuses are:
