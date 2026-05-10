@@ -79,6 +79,7 @@ interface UserSourceRow {
 type SourceProvider = 'reddit' | 'generic_rss' | 'manual';
 type AcquisitionMode = 'oauth' | 'rss' | 'devvit' | 'manual';
 type SourceScope = 'reddit_user' | 'subreddit' | 'reddit_search' | 'generic_rss';
+type SourceFetchAdapter = 'reddit_oauth' | 'reddit_public_json' | 'reddit_rss' | 'generic_rss';
 
 interface SourceIntent {
   provider: SourceProvider;
@@ -207,6 +208,11 @@ interface QueueFromAnglesResult {
   rejected: number;
 }
 
+interface SourceFetchResult {
+  posts: RedditPost[];
+  adapter: SourceFetchAdapter;
+}
+
 interface WorkerStats {
   claimed: number;
   completed: number;
@@ -230,6 +236,16 @@ class WorkerJobError extends Error {
     public readonly code: string,
     message = code,
     public readonly context?: JsonMap
+  ) {
+    super(message);
+  }
+}
+
+class SourceFetchError extends Error {
+  constructor(
+    public readonly adapter: SourceFetchAdapter,
+    public readonly code: string,
+    message = code
   ) {
     super(message);
   }
@@ -447,8 +463,13 @@ function contentHashForPost(post: RedditPost): string {
 
 function publicError(error: unknown): string {
   if (error instanceof WorkerJobError) return error.code;
+  if (error instanceof SourceFetchError) return error.code;
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function sourceFetchAdapterFromError(error: unknown): SourceFetchAdapter | undefined {
+  return error instanceof SourceFetchError ? error.adapter : undefined;
 }
 
 function hasDateInFuture(value: string | null | undefined): boolean {
@@ -949,14 +970,20 @@ function parseRedditListing(payload: RedditListingPayload): RedditPost[] {
     }));
 }
 
-async function redditResponseError(response: Response, prefix: string): Promise<Error> {
+async function redditResponseError(response: Response, adapter: SourceFetchAdapter): Promise<SourceFetchError> {
   let body = '';
   try {
     body = (await response.text()).replace(/\s+/g, ' ').slice(0, 220);
   } catch {
     body = '';
   }
-  return new Error(body ? `${prefix} ${response.status}: ${body}` : `${prefix} ${response.status}`);
+  let code = `${adapter}_http_${response.status}`;
+  if (response.status === 403) code = adapter === 'reddit_public_json'
+    ? 'reddit_public_json_blocked_403'
+    : `${adapter}_forbidden_403`;
+  if (response.status === 404) code = `${adapter}_not_found_404`;
+  if (response.status === 429) code = `${adapter}_rate_limited_429`;
+  return new SourceFetchError(adapter, code, body ? `${code}: ${body}` : code);
 }
 
 async function getRedditAccessToken(): Promise<string> {
@@ -983,7 +1010,7 @@ async function getRedditAccessToken(): Promise<string> {
     signal: AbortSignal.timeout(config.HTTP_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw await redditResponseError(response, 'Reddit OAuth HTTP');
+    throw await redditResponseError(response, 'reddit_oauth');
   }
 
   const token = await response.json() as RedditAccessToken;
@@ -999,7 +1026,31 @@ async function getRedditAccessToken(): Promise<string> {
   return token.access_token;
 }
 
-async function fetchRedditListing(url: string): Promise<RedditPost[]> {
+async function readRedditListingJson(
+  url: string,
+  adapter: SourceFetchAdapter,
+  headers: Record<string, string>
+): Promise<SourceFetchResult> {
+  const response = await fetch(url, {
+    headers,
+    redirect: 'follow',
+    signal: AbortSignal.timeout(config.HTTP_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw await redditResponseError(response, adapter);
+  }
+
+  try {
+    return {
+      posts: parseRedditListing(await response.json() as RedditListingPayload),
+      adapter,
+    };
+  } catch (error) {
+    throw new SourceFetchError(adapter, `${adapter}_json_parse_failed`, `Failed to parse Reddit response: ${publicError(error)}`);
+  }
+}
+
+async function fetchRedditListing(url: string): Promise<SourceFetchResult> {
   const headers: Record<string, string> = {
     'User-Agent': redditUserAgent(),
     Accept: 'application/json, text/plain, */*',
@@ -1009,29 +1060,28 @@ async function fetchRedditListing(url: string): Promise<RedditPost[]> {
 
   let requestUrl = url;
   if (config.REDDIT_CLIENT_ID.trim() && config.REDDIT_CLIENT_SECRET.trim()) {
-    headers.Authorization = `Bearer ${await getRedditAccessToken()}`;
-    requestUrl = redditOauthListingUrl(url);
-  } else if (process.env.CF_WORKER_RUNTIME === 'true') {
-    throw new Error('reddit_oauth_credentials_missing');
+    try {
+      headers.Authorization = `Bearer ${await getRedditAccessToken()}`;
+      requestUrl = redditOauthListingUrl(url);
+      return readRedditListingJson(requestUrl, 'reddit_oauth', headers);
+    } catch (error) {
+      delete headers.Authorization;
+      if (error instanceof SourceFetchError && error.adapter !== 'reddit_oauth') {
+        throw error;
+      }
+    }
   }
 
-  const response = await fetch(requestUrl, {
-    headers,
-    signal: AbortSignal.timeout(config.HTTP_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw await redditResponseError(response, 'Reddit HTTP');
-  }
-  return parseRedditListing(await response.json() as RedditListingPayload);
+  return readRedditListingJson(url, 'reddit_public_json', headers);
 }
 
-async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jobId?: string): Promise<RedditPost[]> {
+async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jobId?: string): Promise<SourceFetchResult> {
   const value = source.value.trim();
-  if (!value) return [];
+  if (!value) return { posts: [], adapter: source.kind === 'rss' ? 'generic_rss' : 'reddit_public_json' };
 
   if (source.kind === 'subreddit') {
     const sub = normalizeSubreddit(value);
-    if (!sub) return [];
+    if (!sub) return { posts: [], adapter: 'reddit_public_json' };
     return fetchRedditListing(`https://www.reddit.com/r/${encodeURIComponent(sub)}/new.json?limit=20&raw_json=1`);
   }
 
@@ -1039,40 +1089,45 @@ async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jo
     const { author: user, subreddits: subs } = redditUserValueParts(source);
 
     if (subs.length) {
-      const listings: RedditPost[][] = [];
+      const listings: RedditPost[] = [];
+      let adapter: SourceFetchAdapter | undefined;
       for (const sub of subs) {
         try {
-          const posts = await fetchRedditListing(`https://www.reddit.com/r/${encodeURIComponent(sub)}/new.json?limit=50&raw_json=1`);
-          listings.push(posts);
+          const result = await fetchRedditListing(`https://www.reddit.com/r/${encodeURIComponent(sub)}/new.json?limit=50&raw_json=1`);
+          adapter = result.adapter;
+          listings.push(...result.posts);
           if (userId && jobId) {
             await writeWorkerLog(userId, 'info', 'reddit_subreddit_fetched', {
               jobId,
               sourceId: source.id,
               subreddit: sub,
-              posts: posts.length,
+              adapter: result.adapter,
+              posts: result.posts.length,
             });
           }
         } catch (error) {
-          listings.push([]);
           if (userId && jobId) {
             await writeWorkerLog(userId, 'warn', 'reddit_subreddit_fetch_failed', {
               jobId,
               sourceId: source.id,
               subreddit: sub,
+              adapter: sourceFetchAdapterFromError(error) || 'reddit_public_json',
               error: publicError(error),
             });
           }
         }
       }
       const seen = new Set<string>();
-      return listings
-        .flat()
+      return {
+        adapter: adapter || 'reddit_public_json',
+        posts: listings
         .sort((a, b) => b.created - a.created)
         .filter(post => {
           if (seen.has(post.id)) return false;
           seen.add(post.id);
           return true;
-        });
+        }),
+      };
     }
 
     if (!user) {
@@ -1080,19 +1135,21 @@ async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jo
         jobId,
         sourceId: source.id,
       });
-      return [];
+      return { posts: [], adapter: 'reddit_public_json' };
     }
 
-    const posts = await fetchRedditListing(`https://www.reddit.com/user/${encodeURIComponent(user)}/submitted.json?limit=50&raw_json=1`);
+    const result = await fetchRedditListing(`https://www.reddit.com/user/${encodeURIComponent(user)}/submitted/new.json?limit=50&raw_json=1`);
     await writeWorkerLog(userId || source.user_id, 'info', 'reddit_author_listing_fetched', {
       jobId,
       sourceId: source.id,
       author: user,
-      posts: posts.length,
+      adapter: result.adapter,
+      posts: result.posts.length,
     });
-    return posts;
+    return result;
   }
 
+  const adapter: SourceFetchAdapter = sourceScopeFor(source) === 'generic_rss' ? 'generic_rss' : 'reddit_rss';
   const response = await fetch(value, {
     headers: {
       'User-Agent': 'oneclickpostfactory-supabase-worker/1.0',
@@ -1101,9 +1158,10 @@ async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jo
     signal: AbortSignal.timeout(config.HTTP_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new Error(`RSS HTTP ${response.status}`);
+    const code = adapter === 'reddit_rss' ? `reddit_rss_http_${response.status}` : `generic_rss_http_${response.status}`;
+    throw new SourceFetchError(adapter, code, code);
   }
-  return parseRss(await response.text(), value);
+  return { posts: parseRss(await response.text(), value), adapter };
 }
 
 function canonicalSourceUrl(post: RedditPost): string {
@@ -1270,7 +1328,9 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     const reason = primaryFailureReason(summary.sources.fetchFailureReasons);
     summary.outcome = 'blocked';
     summary.message = `Source fetching failed closed: ${reason}.`;
-    summary.nextAction = reason.includes('Reddit')
+    summary.nextAction = reason === 'reddit_public_json_blocked_403'
+      ? 'Reddit blocked public JSON from this runtime. Configure Reddit OAuth, use an author RSS feed, Devvit, or manual import.'
+      : reason.toLowerCase().includes('reddit')
       ? 'Check Reddit API credentials and retry Fetch sources.'
       : 'Open Logs, fix the source connection, and retry Fetch sources.';
     return;
@@ -1302,10 +1362,29 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     return;
   }
 
+  if (summary.sources.checked > 0 && summary.sources.postsFetched === 0 && summary.sources.fetchFailures === 0) {
+    summary.outcome = 'empty';
+    summary.message = 'Fetch completed, but Reddit returned no posts for the configured sources.';
+    summary.nextAction = 'Check the Reddit user, allowed subreddits, and source activity, then retry.';
+    return;
+  }
+
   if (summary.sources.rejectedUnfilteredRss > 0 && summary.sources.postsAccepted === 0) {
     summary.outcome = 'blocked';
     summary.message = 'This RSS feed is unfiltered. Enable Discovery Feed mode if you want posts from any author.';
     summary.nextAction = 'Open Memory and explicitly enable Discovery Feed mode for that RSS source.';
+    return;
+  }
+
+  if (
+    summary.sources.postsAccepted > 0
+    && summary.sources.duplicatesSkipped >= summary.sources.postsAccepted
+    && summary.sources.recordsCreated === 0
+    && summary.angles.created === 0
+  ) {
+    summary.outcome = 'empty';
+    summary.message = 'Fetch completed, but every accepted post was already in source memory.';
+    summary.nextAction = 'Work through existing banked angles or wait for newer Reddit posts.';
     return;
   }
 
@@ -1699,8 +1778,11 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     }
 
     let posts: RedditPost[];
+    let adapter: SourceFetchAdapter | undefined;
     try {
-      posts = await fetchTenantSourcePosts(source, job.user_id, job.id);
+      const fetchResult = await fetchTenantSourcePosts(source, job.user_id, job.id);
+      posts = fetchResult.posts;
+      adapter = fetchResult.adapter;
     } catch (error) {
       const reason = publicError(error);
       summary.sources.fetchFailures++;
@@ -1710,6 +1792,9 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
         jobId: job.id,
         sourceId: source.id,
         kind: source.kind,
+        adapter: sourceFetchAdapterFromError(error)
+          || (source.kind === 'rss' && sourceScopeFor(source) === 'generic_rss' ? 'generic_rss' : undefined)
+          || (source.kind === 'rss' ? 'reddit_rss' : 'reddit_public_json'),
         error: reason,
       });
       continue;
@@ -1740,6 +1825,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
       jobId: job.id,
       sourceId: source.id,
       kind: source.kind,
+      adapter,
       provider: intent.provider,
       acquisition_mode: intent.acquisitionMode,
       source_scope: intent.sourceScope,
