@@ -68,6 +68,25 @@ interface UserSourceRow {
   kind: 'subreddit' | 'rss' | 'reddit_user';
   value: string;
   enabled: boolean;
+  provider?: SourceProvider | null;
+  acquisition_mode?: AcquisitionMode | null;
+  source_scope?: SourceScope | null;
+  target_author?: string | null;
+  allowed_subreddits?: string[] | null;
+  allow_unfiltered_rss?: boolean | null;
+}
+
+type SourceProvider = 'reddit' | 'generic_rss' | 'manual';
+type AcquisitionMode = 'oauth' | 'rss' | 'devvit' | 'manual';
+type SourceScope = 'reddit_user' | 'subreddit' | 'reddit_search' | 'generic_rss';
+
+interface SourceIntent {
+  provider: SourceProvider;
+  acquisitionMode: AcquisitionMode;
+  sourceScope: SourceScope;
+  targetAuthor: string;
+  allowedSubreddits: string[];
+  allowUnfilteredRss: boolean;
 }
 
 interface QueueItemRow {
@@ -139,12 +158,17 @@ interface PipelineSummary {
     postsFetched: number;
     postsAccepted: number;
     rejectedByAuthor: number;
+    rejectedBySubreddit: number;
+    rejectedUnfilteredRss: number;
+    rejected: number;
+    accepted: number;
     duplicatesSkipped: number;
     recordsCreated: number;
     recordsUpdated: number;
     withoutAngles: number;
     fetchFailures: number;
     fetchFailureReasons: Record<string, number>;
+    rejectionReasons: Record<string, number>;
   };
   angles: {
     activeAtStart: number;
@@ -249,6 +273,169 @@ function normalizeSubreddit(value: string | null | undefined): string {
     .split(/[/?#|]/)[0]
     .trim()
     .toLowerCase();
+}
+
+function redditUrlMetadata(url: string | null | undefined): {
+  subreddit: string;
+  postId: string;
+  author: string;
+} {
+  try {
+    const parsed = new URL(String(url || ''));
+    if (!parsed.hostname.toLowerCase().endsWith('reddit.com')) {
+      return { subreddit: '', postId: '', author: '' };
+    }
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const subredditIndex = parts.findIndex(part => part.toLowerCase() === 'r');
+    const userIndex = parts.findIndex(part => ['user', 'u'].includes(part.toLowerCase()));
+    return {
+      subreddit: subredditIndex >= 0 ? normalizeSubreddit(parts[subredditIndex + 1]) : '',
+      postId: subredditIndex >= 0 && parts[subredditIndex + 2]?.toLowerCase() === 'comments'
+        ? String(parts[subredditIndex + 3] || '').trim().toLowerCase()
+        : '',
+      author: userIndex >= 0 ? normalizeRedditUsername(parts[userIndex + 1]) : '',
+    };
+  } catch {
+    return { subreddit: '', postId: '', author: '' };
+  }
+}
+
+function validSourceProvider(value: string | null | undefined): SourceProvider | '' {
+  return value === 'reddit' || value === 'generic_rss' || value === 'manual' ? value : '';
+}
+
+function validAcquisitionMode(value: string | null | undefined): AcquisitionMode | '' {
+  return value === 'oauth' || value === 'rss' || value === 'devvit' || value === 'manual' ? value : '';
+}
+
+function validSourceScope(value: string | null | undefined): SourceScope | '' {
+  return value === 'reddit_user' || value === 'subreddit' || value === 'reddit_search' || value === 'generic_rss'
+    ? value
+    : '';
+}
+
+function sourceScopeFor(source: UserSourceRow): SourceScope {
+  const explicit = validSourceScope(source.source_scope);
+  if (explicit) return explicit;
+  if (source.kind === 'reddit_user') return 'reddit_user';
+  if (source.kind === 'subreddit') return 'subreddit';
+  return 'generic_rss';
+}
+
+function acquisitionModeFor(source: UserSourceRow): AcquisitionMode {
+  const explicit = validAcquisitionMode(source.acquisition_mode);
+  if (explicit) return explicit;
+  return source.kind === 'rss' ? 'rss' : 'oauth';
+}
+
+function providerFor(source: UserSourceRow, sourceScope = sourceScopeFor(source)): SourceProvider {
+  const explicit = validSourceProvider(source.provider);
+  if (explicit) return explicit;
+  if (sourceScope === 'generic_rss') return 'generic_rss';
+  return source.kind === 'rss' ? 'reddit' : 'reddit';
+}
+
+function redditUserValueParts(source: UserSourceRow): { author: string; subreddits: string[] } {
+  const [rawUser, rawSubs] = source.value.split('|').map(part => part.trim());
+  return {
+    author: normalizeRedditUsername(rawUser),
+    subreddits: (rawSubs || '')
+      .split(',')
+      .map(sub => normalizeSubreddit(sub))
+      .filter(Boolean),
+  };
+}
+
+function arrayFromSourceSubreddits(value: string[] | null | undefined): string[] {
+  return (Array.isArray(value) ? value : [])
+    .map(sub => normalizeSubreddit(sub))
+    .filter(Boolean);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function explicitSourceAuthor(source: UserSourceRow): string {
+  return normalizeRedditUsername(source.target_author)
+    || (source.kind === 'reddit_user' ? redditUserValueParts(source).author : '');
+}
+
+function explicitSourceSubreddits(source: UserSourceRow): string[] {
+  const configured = arrayFromSourceSubreddits(source.allowed_subreddits);
+  const fromKind = source.kind === 'subreddit'
+    ? [normalizeSubreddit(source.value)].filter(Boolean)
+    : source.kind === 'reddit_user'
+      ? redditUserValueParts(source).subreddits
+      : [];
+  return uniqueStrings([...configured, ...fromKind]);
+}
+
+function sourceIntentFor(
+  source: UserSourceRow,
+  tenantAuthor: string,
+  tenantAllowedSubreddits: string[]
+): SourceIntent {
+  const sourceScope = sourceScopeFor(source);
+  const acquisitionMode = acquisitionModeFor(source);
+  const explicitAllowed = explicitSourceSubreddits(source);
+  const allowedSubreddits = sourceScope === 'generic_rss'
+    ? explicitAllowed
+    : uniqueStrings(explicitAllowed.length ? explicitAllowed : tenantAllowedSubreddits);
+  const targetAuthor = sourceScope === 'generic_rss'
+    ? explicitSourceAuthor(source)
+    : explicitSourceAuthor(source) || tenantAuthor;
+
+  return {
+    provider: providerFor(source, sourceScope),
+    acquisitionMode,
+    sourceScope,
+    targetAuthor,
+    allowedSubreddits,
+    allowUnfilteredRss: source.allow_unfiltered_rss === true,
+  };
+}
+
+function preflightSourceIntentRejectReason(intent: SourceIntent): string {
+  if (intent.sourceScope === 'generic_rss' && intent.acquisitionMode === 'rss' && !intent.allowUnfilteredRss) {
+    return 'rejected_unfiltered_rss_not_allowed';
+  }
+  if (intent.sourceScope === 'reddit_user' && !intent.targetAuthor) {
+    return 'rejected_author_mismatch';
+  }
+  if (intent.sourceScope === 'subreddit' && intent.allowedSubreddits.length === 0) {
+    return 'rejected_subreddit_mismatch';
+  }
+  return '';
+}
+
+function sourceIntentRejectReasons(post: RedditPost, intent: SourceIntent): string[] {
+  if (intent.sourceScope === 'generic_rss') {
+    return intent.allowUnfilteredRss ? [] : ['rejected_unfiltered_rss_not_allowed'];
+  }
+
+  const reasons: string[] = [];
+  const author = normalizeRedditUsername(post.author);
+  const subreddit = normalizeSubreddit(post.subreddit) || redditUrlMetadata(post.url).subreddit;
+  if (intent.allowedSubreddits.length > 0 && !intent.allowedSubreddits.includes(subreddit)) {
+    reasons.push('rejected_subreddit_mismatch');
+  }
+  if (intent.targetAuthor && author !== intent.targetAuthor) {
+    reasons.push('rejected_author_mismatch');
+  }
+  if (intent.sourceScope === 'reddit_user' && !intent.targetAuthor) {
+    reasons.push('rejected_author_mismatch');
+  }
+  return reasons;
+}
+
+function summarizeRejectedSource(summary: PipelineSummary, reason: string, count = 1): void {
+  if (!reason || count <= 0) return;
+  summary.sources.rejected += count;
+  incrementCounter(summary.sources.rejectionReasons, reason);
+  if (reason === 'rejected_author_mismatch') summary.sources.rejectedByAuthor += count;
+  if (reason === 'rejected_subreddit_mismatch') summary.sources.rejectedBySubreddit += count;
+  if (reason === 'rejected_unfiltered_rss_not_allowed') summary.sources.rejectedUnfilteredRss += count;
 }
 
 function contentHashForPost(post: RedditPost): string {
@@ -467,18 +654,23 @@ async function createPipelineSummary(
       configured: sources.length,
       enabled: enabledSources.length,
       checked: 0,
-      subredditSources: enabledSources.filter(source => source.kind === 'subreddit').length,
-      redditAuthorFilters: enabledSources.filter(source => source.kind === 'reddit_user').length,
+      subredditSources: enabledSources.filter(source => sourceScopeFor(source) === 'subreddit').length,
+      redditAuthorFilters: enabledSources.filter(source => sourceScopeFor(source) === 'reddit_user').length,
       rssSources: enabledSources.filter(source => source.kind === 'rss').length,
       postsFetched: 0,
       postsAccepted: 0,
       rejectedByAuthor: 0,
+      rejectedBySubreddit: 0,
+      rejectedUnfilteredRss: 0,
+      rejected: 0,
+      accepted: 0,
       duplicatesSkipped: 0,
       recordsCreated: 0,
       recordsUpdated: 0,
       withoutAngles: 0,
       fetchFailures: 0,
       fetchFailureReasons: {},
+      rejectionReasons: {},
     },
     angles: {
       activeAtStart: activeAngles.length,
@@ -691,6 +883,13 @@ function firstXmlTag(block: string, tag: string): string {
   return decodeXml(match?.[1] || '');
 }
 
+function firstXmlLink(block: string): string {
+  const textLink = firstXmlTag(block, 'link');
+  if (textLink) return textLink;
+  const href = block.match(/<link[^>]+href=["']([^"']+)["'][^>]*>/i)?.[1];
+  return decodeXml(href || '');
+}
+
 function parseRss(xml: string, sourceUrl: string): RedditPost[] {
   const itemBlocks = [...xml.matchAll(/<item[\s\S]*?<\/item>|<entry[\s\S]*?<\/entry>/gi)]
     .map(match => match[0])
@@ -698,18 +897,26 @@ function parseRss(xml: string, sourceUrl: string): RedditPost[] {
 
   return itemBlocks.map(block => {
     const title = firstXmlTag(block, 'title') || 'Untitled RSS item';
-    const link = firstXmlTag(block, 'link') || sourceUrl;
+    const link = firstXmlLink(block) || sourceUrl;
     const description = firstXmlTag(block, 'description') || firstXmlTag(block, 'summary') || '';
     const published = firstXmlTag(block, 'pubDate') || firstXmlTag(block, 'published') || firstXmlTag(block, 'updated');
+    const metadata = redditUrlMetadata(link);
+    const fallbackAuthor = metadata.author || redditUrlMetadata(sourceUrl).author;
+    const author = normalizeRedditUsername(
+      firstXmlTag(block, 'author')
+      || firstXmlTag(block, 'dc:creator')
+      || firstXmlTag(block, 'creator')
+      || fallbackAuthor
+    );
     return {
-      id: hashId(`${sourceUrl}:${link}:${title}`),
+      id: metadata.postId || hashId(`${sourceUrl}:${link}:${title}`),
       title,
       selftext: description,
       url: link,
       score: 0,
       comments: 0,
-      subreddit: 'rss',
-      author: sourceUrl,
+      subreddit: metadata.subreddit || '',
+      author,
       created: published ? Date.parse(published) / 1000 || Date.now() / 1000 : Date.now() / 1000,
     };
   });
@@ -829,12 +1036,7 @@ async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jo
   }
 
   if (source.kind === 'reddit_user') {
-    const [rawUser, rawSubs] = value.split('|').map(part => part.trim());
-    const user = normalizeRedditUsername(rawUser);
-    const subs = (rawSubs || '')
-      .split(',')
-      .map(sub => normalizeSubreddit(sub))
-      .filter(Boolean);
+    const { author: user, subreddits: subs } = redditUserValueParts(source);
 
     if (subs.length) {
       const listings: RedditPost[][] = [];
@@ -863,32 +1065,32 @@ async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jo
         }
       }
       const seen = new Set<string>();
-      const filtered = listings
+      return listings
         .flat()
-        .filter(post => post.author.toLowerCase() === user)
         .sort((a, b) => b.created - a.created)
         .filter(post => {
           if (seen.has(post.id)) return false;
           seen.add(post.id);
           return true;
         });
-      if (userId && jobId) {
-        await writeWorkerLog(userId, 'info', 'reddit_author_filter_applied', {
-          jobId,
-          sourceId: source.id,
-          author: user,
-          subreddits: subs,
-          matches: filtered.length,
-        });
-      }
-      return filtered;
     }
 
-    await writeWorkerLog(userId || source.user_id, 'warn', 'reddit_author_source_missing_subreddits', {
+    if (!user) {
+      await writeWorkerLog(userId || source.user_id, 'warn', 'reddit_author_source_missing_target', {
+        jobId,
+        sourceId: source.id,
+      });
+      return [];
+    }
+
+    const posts = await fetchRedditListing(`https://www.reddit.com/user/${encodeURIComponent(user)}/submitted.json?limit=50&raw_json=1`);
+    await writeWorkerLog(userId || source.user_id, 'info', 'reddit_author_listing_fetched', {
       jobId,
       sourceId: source.id,
+      author: user,
+      posts: posts.length,
     });
-    return [];
+    return posts;
   }
 
   const response = await fetch(value, {
@@ -1081,17 +1283,29 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     return;
   }
 
-  if (summary.sources.subredditSources > 0 && summary.sources.redditAuthorFilters === 0) {
-    summary.outcome = 'blocked';
-    summary.message = 'Subreddit sources are configured, but no Reddit username filter is enabled.';
-    summary.nextAction = 'Add a Reddit author filter so only that user enters the workflow.';
-    return;
-  }
-
   if (summary.sources.postsFetched > 0 && summary.sources.postsAccepted === 0) {
+    if (summary.sources.rejectedByAuthor > 0) {
+      summary.outcome = 'empty';
+      summary.message = 'RSS source fetched posts, but none matched your selected Reddit user.';
+      summary.nextAction = 'Check the source author filter or use Discovery Feed mode for broad RSS.';
+      return;
+    }
+    if (summary.sources.rejectedBySubreddit > 0) {
+      summary.outcome = 'empty';
+      summary.message = 'RSS source fetched posts, but none matched your allowed subreddit list.';
+      summary.nextAction = 'Review allowed subreddits or update the source scope.';
+      return;
+    }
     summary.outcome = 'empty';
     summary.message = 'Fetch completed, but no Reddit posts matched the configured Reddit username.';
     summary.nextAction = 'Check the Reddit author filter and allowed subreddits.';
+    return;
+  }
+
+  if (summary.sources.rejectedUnfilteredRss > 0 && summary.sources.postsAccepted === 0) {
+    summary.outcome = 'blocked';
+    summary.message = 'This RSS feed is unfiltered. Enable Discovery Feed mode if you want posts from any author.';
+    summary.nextAction = 'Open Memory and explicitly enable Discovery Feed mode for that RSS source.';
     return;
   }
 
@@ -1136,19 +1350,22 @@ async function finishRefreshResult(
 
 function tenantRedditConfig(sources: UserSourceRow[]): {
   author: string;
-  subredditSources: UserSourceRow[];
-  nonRedditSources: UserSourceRow[];
+  allowedSubreddits: string[];
+  processingSources: UserSourceRow[];
 } {
-  const author = normalizeRedditUsername(
-    sources.find(source => source.kind === 'reddit_user')?.value.split('|')[0]
+  const author = sources
+    .map(source => sourceScopeFor(source) === 'generic_rss' ? '' : explicitSourceAuthor(source))
+    .find(Boolean) || '';
+  const allowedSubreddits = uniqueStrings(
+    sources
+      .filter(source => sourceScopeFor(source) !== 'generic_rss')
+      .flatMap(source => explicitSourceSubreddits(source))
   );
-  const subredditSources = sources
-    .filter(source => source.kind === 'subreddit')
-    .map(source => ({ ...source, value: normalizeSubreddit(source.value) }))
-    .filter(source => source.value);
-  const nonRedditSources = sources.filter(source => source.kind === 'rss');
-
-  return { author, subredditSources, nonRedditSources };
+  return {
+    author,
+    allowedSubreddits,
+    processingSources: sources.filter(source => source.enabled),
+  };
 }
 
 function toQueueRows(
@@ -1450,21 +1667,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
   }
 
   const existingSourceUrls = await loadExistingSourceUrls(job.user_id);
-  const { author: redditAuthorFilter, subredditSources, nonRedditSources } = tenantRedditConfig(enabledSources);
-  if (subredditSources.length && !redditAuthorFilter) {
-    await writeWorkerLog(job.user_id, 'warn', 'reddit_author_filter_missing', {
-      jobId: job.id,
-      subredditSources: subredditSources.length,
-    });
-    summary.drafts.skipped++;
-    incrementCounter(summary.drafts.skipReasons, 'reddit_author_filter_missing');
-    return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0 });
-  }
-
-  const processingSources = [
-    ...subredditSources,
-    ...nonRedditSources,
-  ];
+  const { author: tenantAuthor, allowedSubreddits: tenantAllowedSubreddits, processingSources } = tenantRedditConfig(enabledSources);
   if (!processingSources.length) {
     summary.drafts.skipped++;
     incrementCounter(summary.drafts.skipReasons, 'no_processable_sources');
@@ -1477,6 +1680,23 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
   for (const source of processingSources) {
     if (firstOpenSlot(occupiedSlots) === undefined) break;
     summary.sources.checked++;
+    const intent = sourceIntentFor(source, tenantAuthor, tenantAllowedSubreddits);
+    const preflightRejectReason = preflightSourceIntentRejectReason(intent);
+    if (preflightRejectReason) {
+      summarizeRejectedSource(summary, preflightRejectReason);
+      await writeWorkerLog(job.user_id, 'warn', 'source_intent_rejected', {
+        jobId: job.id,
+        sourceId: source.id,
+        kind: source.kind,
+        provider: intent.provider,
+        acquisition_mode: intent.acquisitionMode,
+        source_scope: intent.sourceScope,
+        accepted_count: 0,
+        rejected_count: 1,
+        rejection_reasons: { [preflightRejectReason]: 1 },
+      });
+      continue;
+    }
 
     let posts: RedditPost[];
     try {
@@ -1496,14 +1716,41 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     }
 
     summary.sources.postsFetched += posts.length;
-    const sourcePosts = source.kind === 'subreddit' && redditAuthorFilter
-      ? posts.filter(post => normalizeRedditUsername(post.author) === redditAuthorFilter)
-      : posts;
-    if (source.kind === 'subreddit' && redditAuthorFilter) {
-      summary.sources.rejectedByAuthor += Math.max(0, posts.length - sourcePosts.length);
+    const sourcePosts: RedditPost[] = [];
+    const rejectionReasons: Record<string, number> = {};
+    for (const post of posts) {
+      const postRejectReasons = sourceIntentRejectReasons(post, intent);
+      if (!postRejectReasons.length) {
+        sourcePosts.push(post);
+        continue;
+      }
+      summary.sources.rejected++;
+      for (const reason of postRejectReasons) {
+        incrementCounter(rejectionReasons, reason);
+        incrementCounter(summary.sources.rejectionReasons, reason);
+        if (reason === 'rejected_author_mismatch') summary.sources.rejectedByAuthor++;
+        if (reason === 'rejected_subreddit_mismatch') summary.sources.rejectedBySubreddit++;
+        if (reason === 'rejected_unfiltered_rss_not_allowed') summary.sources.rejectedUnfilteredRss++;
+      }
     }
     summary.sources.postsAccepted += sourcePosts.length;
+    summary.sources.accepted += sourcePosts.length;
     fetched += sourcePosts.length;
+    await writeWorkerLog(job.user_id, sourcePosts.length ? 'info' : 'warn', 'source_intent_filter_applied', {
+      jobId: job.id,
+      sourceId: source.id,
+      kind: source.kind,
+      provider: intent.provider,
+      acquisition_mode: intent.acquisitionMode,
+      source_scope: intent.sourceScope,
+      target_author_configured: Boolean(intent.targetAuthor),
+      allowed_subreddits_count: intent.allowedSubreddits.length,
+      allow_unfiltered_rss: intent.allowUnfilteredRss,
+      fetched_count: posts.length,
+      accepted_count: sourcePosts.length,
+      rejected_count: Math.max(0, posts.length - sourcePosts.length),
+      rejection_reasons: rejectionReasons,
+    });
 
     for (const post of sourcePosts) {
       if (firstOpenSlot(occupiedSlots) === undefined) break;

@@ -7,9 +7,10 @@ This file is the fast-start context for LLMs and human maintainers working in th
 `social-agent` turns selected Reddit posts into platform-specific social posts, queues them into four daily slots, and publishes them to enabled social platforms.
 
 Current content flow:
-1. Fetch posts from allowed subreddits.
-2. Filter to posts by the tenant's configured Reddit author setting.
-3. Bank each tenant-scoped Reddit source into multiple reusable angles.
+1. Load tenant-scoped `user_sources` from Supabase.
+2. Enforce each source's declared intent before ingestion: Reddit author,
+   allowed subreddit, or explicit generic RSS discovery.
+3. Bank each accepted tenant-scoped Reddit source into multiple reusable angles.
 4. Draft only one saved angle at a time into enabled platforms.
 5. Generate an Instagram image only when Instagram is enabled.
 6. Copy generated Instagram images into Cloudinary so queued posts use stable delivery URLs.
@@ -63,6 +64,7 @@ This codebase now has two runtime boundaries:
 - `SUPABASE_URL` must point to the owner-managed OneClickPostFactory Supabase project that Lovable also uses; do not point the worker at a hidden managed project whose secret/service-role key and credential encryption key are unavailable.
 - Every SaaS job is processed by `job.user_id`.
 - SaaS reads/writes for `profiles`, `user_credentials`, `user_sources`, `user_settings`, `queue_items`, `publish_history`, `source_records`, `angle_records`, and `worker_logs` are scoped by `job.user_id`.
+- SaaS source ingestion also enforces source intent. `user_sources` rows declare `provider`, `acquisition_mode`, `source_scope`, `target_author`, `allowed_subreddits`, and `allow_unfiltered_rss`. RSS is blocked by default unless it is an author RSS feed with a matching Reddit author or the user explicitly enables Discovery Feed mode.
 - SaaS credential values are decrypted with `CREDENTIAL_ENCRYPTION_KEY`.
 - SaaS billing entitlement is checked from Supabase `profiles`; the local SQLite billing state and local billing bypass do not grant SaaS worker entitlement.
 - Local SQLite remains acceptable for local admin/dev state, but it is not the SaaS tenant source of truth.
