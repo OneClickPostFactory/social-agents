@@ -85,6 +85,32 @@ function hasOAuth2RefreshConfig(): boolean {
   return Boolean(config.X_CLIENT_ID && config.X_CLIENT_SECRET && config.X_OAUTH2_REFRESH_TOKEN);
 }
 
+function maybeBase64Decode(value: string): string | null {
+  try {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    return Buffer.from(padded, 'base64').toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+function assertRawOAuth2ClientId(): void {
+  const clientId = config.X_CLIENT_ID || '';
+  const decoded = maybeBase64Decode(clientId);
+  if (!clientId.includes(':1:ci') && decoded?.includes(':1:ci')) {
+    console.warn('x_client_id_looks_base64_wrapped');
+    throw new PlatformPublishError({
+      platform: 'x',
+      stage: 'credential_check',
+      code: 'stored_not_verified',
+      userMessage: 'X OAuth Client ID appears to be base64-wrapped. Use the raw OAuth2 Client ID from X Developer Console.',
+      nextAction: 'Replace the X OAuth2 client ID in Credentials with the raw value from X Developer Console.',
+      authMode: safeAuthMode('oauth2-user'),
+    });
+  }
+}
+
 export function getConfiguredAuthMode(): XAuthMode {
   if (hasOAuth2RefreshConfig()) return 'oauth2-user';
   if (hasOAuth2Config()) return 'oauth2-user';
@@ -146,6 +172,7 @@ function getOAuth2ClientBasicAuth(): string {
   if (!config.X_CLIENT_ID || !config.X_CLIENT_SECRET) {
     throw new Error('X_CLIENT_ID and X_CLIENT_SECRET are required for X OAuth 2.0 token exchange');
   }
+  assertRawOAuth2ClientId();
 
   return 'Basic ' + Buffer
     .from(`${config.X_CLIENT_ID}:${config.X_CLIENT_SECRET}`)
@@ -406,6 +433,7 @@ export function buildOAuth2AuthorizationUrl(state: string, codeChallenge: string
   if (!config.X_CLIENT_ID) {
     throw new Error('X_CLIENT_ID not set');
   }
+  assertRawOAuth2ClientId();
 
   const params = new URLSearchParams({
     response_type: 'code',
@@ -440,7 +468,6 @@ export async function exchangeOAuth2Code(
     code,
     redirect_uri: redirectUri,
     code_verifier: codeVerifier,
-    client_id: config.X_CLIENT_ID,
   });
 
   return requestOAuth2Token(body);
@@ -450,27 +477,14 @@ export async function refreshOAuth2AccessToken(refreshToken: string): Promise<XO
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
-    client_id: config.X_CLIENT_ID,
   });
 
   return requestOAuth2Token(body);
 }
 
 async function requestOAuth2Token(body: URLSearchParams): Promise<XOAuth2TokenSet> {
-  let { status, data } = await requestOAuth2TokenRequest(body, true);
-  let message = getErrorMessage(data, status);
-
-  if ((status >= 400 || data.errors || data.error || data.detail || !data.access_token) && message === 'unauthorized_client') {
-    ({ status, data } = await requestOAuth2TokenRequest(body, false));
-    message = getErrorMessage(data, status);
-  }
-
-  if ((status >= 400 || data.errors || data.error || data.detail || !data.access_token) && message === 'unauthorized_client') {
-    const bodyWithSecret = new URLSearchParams(body);
-    bodyWithSecret.set('client_secret', config.X_CLIENT_SECRET);
-    ({ status, data } = await requestOAuth2TokenRequest(bodyWithSecret, false));
-    message = getErrorMessage(data, status);
-  }
+  const { status, data } = await requestOAuth2TokenRequest(body);
+  const message = getErrorMessage(data, status);
 
   if (status === 401 || classifyXError(message) === 'auth') {
     const unauthorizedClient = message === 'unauthorized_client' || data.error === 'unauthorized_client';
@@ -503,13 +517,12 @@ async function requestOAuth2Token(body: URLSearchParams): Promise<XOAuth2TokenSe
 }
 
 function requestOAuth2TokenRequest(
-  body: URLSearchParams,
-  useClientSecret: boolean
+  body: URLSearchParams
 ): Promise<{ status: number; data: XOAuth2TokenResponse }> {
   return requestJson<XOAuth2TokenResponse>('https://api.x.com/2/oauth2/token', {
     method: 'POST',
     headers: {
-      ...(useClientSecret ? { 'Authorization': getOAuth2ClientBasicAuth() } : {}),
+      'Authorization': getOAuth2ClientBasicAuth(),
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: body.toString(),
