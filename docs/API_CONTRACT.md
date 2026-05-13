@@ -427,10 +427,8 @@ These live in the SQLite-backed automation store, with legacy JSON files retaine
 - first bootstrap creates a live owner account and starts a live trial state
 - Stripe checkout and portal routes require valid Stripe env config
 - readiness can be satisfied by env-backed config even when no secrets are stored in SQLite yet
-- X readiness requires `ENABLE_X=true` plus either:
-  - `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, and `X_ACCESS_TOKEN_SECRET`
-  - or `X_OAUTH2_ACCESS_TOKEN`
-- The preferred X path is OAuth 2.0 user-context credentials. Portal-generated tokens can be imported with `npm run import-x-oauth2`; dashboard OAuth still starts at `/auth/x/start`.
+- Local X readiness requires `ENABLE_X=true` plus OAuth 2.0 user-context credentials. SaaS X publishing reads tenant-encrypted OAuth 2.0 fields from Supabase and does not treat old local `.env` tokens as production fallbacks.
+- The X read-only verification path is `/2/users/me`; `401 Unauthorized` and OAuth refresh `unauthorized_client` mean the tenant must reconnect X. The worker records safe auth mode as `x_oauth2_user_context` and must fail jobs cleanly instead of leaving them `running`.
 - Even when X auth is valid, live publish can still fail at the provider due to credits or access tier changes. The runtime can temporarily mark X as draft-only in the SQLite platform-state store.
 
 ## 7. Build-Ready Summary

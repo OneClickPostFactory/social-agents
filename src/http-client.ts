@@ -13,6 +13,7 @@ export interface HttpJsonResponse<T> {
   status: number;
   headers: Headers;
   data: T;
+  rawText: string;
 }
 
 const DEFAULT_TIMEOUT_MS = Number.parseInt(process.env.HTTP_TIMEOUT_MS || '15000', 10);
@@ -53,7 +54,11 @@ export async function requestJson<T>(url: string, options: HttpJsonOptions = {})
       try {
         data = (text ? JSON.parse(text) : {}) as T;
       } catch (error) {
-        upstreamFailure(`Upstream response parse failed: ${String(error)}`, 'UPSTREAM_PARSE_ERROR');
+        upstreamFailure(`Upstream response parse failed: ${String(error)}`, 'UPSTREAM_PARSE_ERROR', {
+          status: response.status,
+          contentType: response.headers.get('content-type'),
+          bodySnippet: text.slice(0, 500),
+        });
       }
 
       if (!response.ok && attempt < retryCount && isRetryable(response.status)) {
@@ -65,6 +70,7 @@ export async function requestJson<T>(url: string, options: HttpJsonOptions = {})
         status: response.status,
         headers: response.headers,
         data,
+        rawText: text,
       };
     } catch (error) {
       if (attempt < retryCount) {

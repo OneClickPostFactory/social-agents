@@ -85,12 +85,16 @@ This repo is authored in TypeScript with a split execution model: `tsx` for sour
 
 ## Current Platform State
 
-As of May 8, 2026:
+As of May 13, 2026:
 
-- Threads posting is confirmed working.
-- Instagram posting is confirmed working against the currently accessible Page-linked account.
-- LinkedIn code has been merged from `linkedin-agent-v4`, but this repo has not yet live-posted to LinkedIn.
-- X is implemented as a first-class text-only platform and live posting is confirmed working with OAuth 2.0 user-context credentials.
+- Production SaaS publishing uses tenant-encrypted credentials from Supabase, not the old global `.env` platform tokens that were used by the local worker during early testing.
+- Stored encrypted credential fields only prove that a user saved values. They do not prove the platform token still works. UI and docs must say `Stored, not verified` until there is a recent read check, successful publish, or explicit verification result.
+- Meta/Threads auth failures such as OAuth code `190` / `Failed to decode`, LinkedIn `INVALID_ACCESS_TOKEN` or `401`, and X `401 Unauthorized` / `unauthorized_client` mean the tenant must reconnect that platform. Do not rewrite publisher payloads when read-only token checks already fail.
+- Failed publish rows should store a user-facing reconnect/payload message in `queue_items.error_message` and log safe diagnostics in `worker_logs` without tokens, full headers, or full response bodies.
+- Threads posting was confirmed working earlier with the old local/global credential path.
+- Instagram posting was confirmed working earlier against the accessible Page-linked account.
+- LinkedIn code has been merged from `linkedin-agent-v4`, but SaaS tenants must provide valid encrypted LinkedIn credentials before live-posting.
+- X is implemented as a first-class text-only platform. Production SaaS currently uses tenant-scoped OAuth 2.0 user-context credentials, verifies them with `/2/users/me`, and logs the safe auth mode as `x_oauth2_user_context`.
 - X OAuth 2.0 connect, callback, token persistence, refresh-token support, and portal-token import are implemented in `src/x.ts`, `src/server.ts`, and `src/cli.ts`.
 - X live-post smoke test succeeded as `@JohnWOE15` on April 29, 2026: `https://x.com/i/web/status/2049570569494958455`.
 - Threads now uses its own token path through `THREADS_ACCESS_TOKEN`.
@@ -106,6 +110,7 @@ As of May 8, 2026:
 - Existing queued items can auto-hydrate missing drafts from stored source and angle memory when a platform is enabled later, including X.
 - CLI commands, local API routes, and local cron publishing all go through `src/automation-service.ts`, which applies the local automation gate and uses SQLite locks.
 - The SaaS worker path goes through `src/supabase-worker.ts`, uses Supabase `agent_jobs`, and does not use local SQLite for tenant queue/history/log/source state.
+- For SaaS publish regressions, first verify tenant credential decryption and read-only platform identity checks. If a tenant token is invalid but a global `.env` token still works, the fix is tenant reconnection and clearer error handling, not changing platform endpoint or payload contracts.
 
 Current tracked operational mode in `.env.example`:
 
@@ -139,15 +144,15 @@ Do not commit real platform IDs, tenant IDs, account IDs, email addresses, or se
 
 ## X Config Notes
 
-- Prefer OAuth 2.0 user-context credentials for X publishing: `X_OAUTH2_ACCESS_TOKEN`, `X_OAUTH2_REFRESH_TOKEN`, and either `X_CLIENT_ID`/`X_CLIENT_SECRET` or the X-portal label aliases `X_OAUTH2_CLIENT_ID`/`X_OAUTH2_CLIENT_SECRET`.
-- `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, and `X_ACCESS_TOKEN_SECRET` remain supported for OAuth 1.0a user-context auth.
+- Production SaaS X publishing uses OAuth 2.0 user-context tenant credentials: `x_client_id_enc`, `x_client_secret_enc`, `x_oauth2_access_token_enc`, and `x_oauth2_refresh_token_enc`.
+- Do not add OAuth 1.0a tenant support unless it becomes an explicit product decision. A working old local `.env` token does not prove a SaaS tenant credential is valid.
 - `X_CLIENT_ID`, `X_CLIENT_SECRET`, and `X_REDIRECT_URI` support the OAuth 2.0 user-context connect flow. `X_OAUTH2_CLIENT_ID` and `X_OAUTH2_CLIENT_SECRET` are accepted aliases for the labels used in the X developer portal.
 - `X_OAUTH2_ACCESS_TOKEN` and `X_OAUTH2_REFRESH_TOKEN` are supported for v2 posting after OAuth connect.
 - Do not use app-only bearer tokens for posting.
 - X publishing is text-only.
-- Auth mode priority in `src/x.ts` is OAuth 2.0 refresh-token config, then a static OAuth 2.0 access token, then OAuth 1.0a credentials.
-- The OAuth 1.0a path authenticates with `account/verify_credentials` and posts through `/2/tweets`.
+- Auth mode priority in `src/x.ts` is OAuth 2.0 refresh-token config, then a static OAuth 2.0 access token, then OAuth 1.0a credentials for local/global runtime compatibility only.
 - The OAuth 2.0 path authenticates with `/2/users/me` and posts through `/2/tweets`.
+- SaaS publish jobs must fail cleanly with `needs_reconnect` if `/2/users/me` returns `401 Unauthorized` or refresh returns `unauthorized_client`; do not leave X jobs in `running`.
 - The dashboard owner route `/auth/x/start` begins the OAuth 2.0 flow, and `/auth/x/callback` persists the returned access and refresh tokens into runtime secrets.
 - `npm run import-x-oauth2` imports user-context OAuth 2.0 access/refresh tokens generated directly in the X developer portal, saves them into encrypted runtime secrets, validates `/2/users/me`, and only then clears X draft-only mode.
 - Queued publishing in `src/publish.ts` only attempts X when OAuth 1.0a credentials or `X_OAUTH2_ACCESS_TOKEN` are present. After OAuth 2.0 connect succeeds, the persisted access token satisfies this requirement.

@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
 import config from '../config';
 import { requestJson } from './http-client';
+import { PlatformPublishError, safeBodySnippet } from './platform-errors';
 
 interface XApiErrorDetail {
   message?: string;
@@ -12,6 +13,8 @@ interface XApiErrorResponse {
   error?: string;
   detail?: string;
   title?: string;
+  status?: number;
+  type?: string;
 }
 
 interface XMeResponse extends XApiErrorResponse {
@@ -55,6 +58,7 @@ interface XOAuth2TokenResponse extends XApiErrorResponse {
 }
 
 export type XAuthMode = 'oauth1-user' | 'oauth2-user' | 'unconfigured';
+export type XSafeAuthMode = 'x_oauth1_user_context' | 'x_oauth2_user_context' | 'unconfigured';
 export type XErrorKind = 'publish-access-tier' | 'project-required' | 'auth' | 'other';
 
 let persistOAuth2TokensHandler: XOAuth2TokenPersistence = persistOAuth2TokensToLocalRuntime;
@@ -85,6 +89,12 @@ export function getConfiguredAuthMode(): XAuthMode {
   if (hasOAuth2RefreshConfig()) return 'oauth2-user';
   if (hasOAuth2Config()) return 'oauth2-user';
   if (hasOAuth1Config()) return 'oauth1-user';
+  return 'unconfigured';
+}
+
+export function safeAuthMode(mode: XAuthMode = getConfiguredAuthMode()): XSafeAuthMode {
+  if (mode === 'oauth1-user') return 'x_oauth1_user_context';
+  if (mode === 'oauth2-user') return 'x_oauth2_user_context';
   return 'unconfigured';
 }
 
@@ -221,7 +231,14 @@ async function apiRequest<T>(
   const authMode = getConfiguredAuthMode();
 
   if (authMode === 'unconfigured') {
-    throw new Error('X auth not configured');
+    throw new PlatformPublishError({
+      platform: 'x',
+      stage: 'credential_check',
+      code: 'not_connected',
+      userMessage: 'X credentials are not connected. Add OAuth2 credentials and try again.',
+      nextAction: 'Connect X in Credentials, then retry publish.',
+      authMode: safeAuthMode(authMode),
+    });
   }
 
   return apiRequestWithAuth<T>(method, path, authMode, payload);
@@ -234,7 +251,14 @@ async function apiRequestWithAuth<T>(
   payload?: string
 ): Promise<T> {
   if (authMode === 'unconfigured') {
-    throw new Error('X auth not configured');
+    throw new PlatformPublishError({
+      platform: 'x',
+      stage: 'credential_check',
+      code: 'not_connected',
+      userMessage: 'X credentials are not connected. Add OAuth2 credentials and try again.',
+      nextAction: 'Connect X in Credentials, then retry publish.',
+      authMode: safeAuthMode(authMode),
+    });
   }
 
   let token = authMode === 'oauth2-user'
@@ -251,6 +275,21 @@ async function apiRequestWithAuth<T>(
     response = await sendApiRequest<T>(method, path, authMode, payload, token);
   }
 
+  if (response.status === 401 || classifyXError(response.message) === 'auth') {
+    throw new PlatformPublishError({
+      platform: 'x',
+      stage: payload ? 'post' : 'credential_check',
+      code: 'needs_reconnect',
+      userMessage: 'X credentials are invalid or expired. Reconnect X and try again.',
+      nextAction: 'Reconnect X. The stored OAuth2 token cannot be used or refreshed.',
+      authMode: safeAuthMode(authMode),
+      status: response.status,
+      contentType: response.contentType,
+      providerCode: response.data.error || response.data.status || response.data.type || response.data.title || null,
+      bodySnippet: safeBodySnippet(response.rawText),
+    });
+  }
+
   if (response.status >= 400 || response.data.errors || response.data.error || response.data.detail) {
     throw new Error('X API: ' + response.message);
   }
@@ -264,8 +303,8 @@ async function sendApiRequest<T>(
   authMode: Exclude<XAuthMode, 'unconfigured'>,
   payload?: string,
   token?: string
-): Promise<{ status: number; data: T & XApiErrorResponse; message: string }> {
-  const { status, data } = await requestJson<T & XApiErrorResponse>(`https://api.x.com${path}`, {
+): Promise<{ status: number; data: T & XApiErrorResponse; message: string; contentType: string | null; rawText: string }> {
+  const { status, headers, data, rawText } = await requestJson<T & XApiErrorResponse>(`https://api.x.com${path}`, {
     method,
     headers: {
       'Authorization': authMode === 'oauth1-user'
@@ -281,6 +320,8 @@ async function sendApiRequest<T>(
     status,
     data,
     message: getErrorMessage(data, status),
+    contentType: headers.get('content-type'),
+    rawText,
   };
 }
 
@@ -326,6 +367,22 @@ export async function getAuthenticatedUser(): Promise<{ id: string; username?: s
   }
 
   return response.data;
+}
+
+export async function verifyCredentials(): Promise<{
+  authMode: XSafeAuthMode;
+  accountId: string;
+  username?: string;
+  name?: string;
+}> {
+  const authMode = getConfiguredAuthMode();
+  const user = await getAuthenticatedUser();
+  return {
+    authMode: safeAuthMode(authMode),
+    accountId: user.id,
+    username: user.username,
+    name: user.name,
+  };
 }
 
 export async function publish(text: string): Promise<string> {
@@ -413,6 +470,23 @@ async function requestOAuth2Token(body: URLSearchParams): Promise<XOAuth2TokenSe
     bodyWithSecret.set('client_secret', config.X_CLIENT_SECRET);
     ({ status, data } = await requestOAuth2TokenRequest(bodyWithSecret, false));
     message = getErrorMessage(data, status);
+  }
+
+  if (status === 401 || classifyXError(message) === 'auth') {
+    const unauthorizedClient = message === 'unauthorized_client' || data.error === 'unauthorized_client';
+    throw new PlatformPublishError({
+      platform: 'x',
+      stage: 'oauth_refresh',
+      code: 'needs_reconnect',
+      userMessage: unauthorizedClient
+        ? 'X OAuth2 refresh failed because the client/token pair is invalid. Reconnect X.'
+        : 'X credentials are invalid or expired. Reconnect X and try again.',
+      nextAction: 'Reconnect X. The stored OAuth2 token cannot be used or refreshed.',
+      authMode: safeAuthMode('oauth2-user'),
+      status,
+      providerCode: data.error || data.status || data.type || data.title || null,
+      bodySnippet: safeBodySnippet(data),
+    });
   }
 
   if (status >= 400 || data.errors || data.error || data.detail || !data.access_token) {

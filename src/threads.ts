@@ -1,5 +1,11 @@
 import config from '../config';
+import { isHttpError } from './errors';
 import { requestJson } from './http-client';
+import {
+  isPlatformPublishError,
+  PlatformPublishError,
+  safeBodySnippet,
+} from './platform-errors';
 
 interface GraphSuccess {
   id: string;
@@ -8,6 +14,10 @@ interface GraphSuccess {
 interface GraphErrorResponse {
   error?: {
     message?: string;
+    type?: string;
+    code?: number;
+    error_subcode?: number;
+    fbtrace_id?: string;
   };
   id?: string;
 }
@@ -24,6 +34,7 @@ export async function publish(text: string): Promise<string> {
   }
 
   const containerId = await apiPost(
+    'container_create',
     '/me/threads',
     { media_type: 'TEXT', text, access_token: token }
   );
@@ -31,30 +42,110 @@ export async function publish(text: string): Promise<string> {
   await sleep(2000);
 
   return apiPost(
+    'publish',
     '/me/threads_publish',
     { creation_id: containerId, access_token: token }
   );
 }
 
-function apiPost(pathname: string, params: Record<string, string>): Promise<string> {
+async function apiPost(stage: string, pathname: string, params: Record<string, string>): Promise<string> {
   const token = params.access_token;
   const body = new URLSearchParams(
     Object.fromEntries(Object.entries(params).filter(([key]) => key !== 'access_token'))
   ).toString();
 
-  return requestJson<GraphErrorResponse & GraphSuccess>(`https://graph.threads.net${pathname}`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body,
-    timeoutMs: config.HTTP_TIMEOUT_MS,
-  }).then(({ data }) => {
+  try {
+    const { status, headers, data, rawText } = await requestJson<GraphErrorResponse & GraphSuccess>(
+      `https://graph.threads.net${pathname}`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body,
+        timeoutMs: config.HTTP_TIMEOUT_MS,
+      }
+    );
+
     if (data.error) {
-      throw new Error('Threads API: ' + (data.error.message || 'Unknown error'));
+      throw normalizeThreadsError(stage, status, headers.get('content-type'), rawText, data.error);
+    }
+    if (status >= 400 || !data.id) {
+      throw unexpectedThreadsResponse(stage, status, headers.get('content-type'), rawText);
     }
     return data.id;
+  } catch (error) {
+    if (isPlatformPublishError(error)) throw error;
+    if (isHttpError(error) && error.code === 'UPSTREAM_PARSE_ERROR') {
+      throw unexpectedThreadsResponse(
+        stage,
+        typeof error.details?.status === 'number' ? error.details.status : error.status,
+        typeof error.details?.contentType === 'string' ? error.details.contentType : null,
+        typeof error.details?.bodySnippet === 'string' ? error.details.bodySnippet : ''
+      );
+    }
+    throw error;
+  }
+}
+
+function normalizeThreadsError(
+  stage: string,
+  status: number,
+  contentType: string | null,
+  rawText: string,
+  error: NonNullable<GraphErrorResponse['error']>
+): PlatformPublishError {
+  const message = error.message || 'Unknown error';
+  const normalized = message.toLowerCase();
+  const providerCode = error.code ?? error.error_subcode ?? null;
+  if (
+    error.code === 190
+    || normalized.includes('failed to decode')
+    || normalized.includes('invalid')
+    || normalized.includes('expired')
+    || error.type === 'OAuthException'
+  ) {
+    return new PlatformPublishError({
+      platform: 'threads',
+      stage,
+      code: 'needs_reconnect',
+      userMessage: 'Threads credentials are invalid or expired. Reconnect Threads and try again.',
+      nextAction: 'Reconnect Threads in Credentials, then retry publish.',
+      status,
+      contentType,
+      providerCode,
+      bodySnippet: safeBodySnippet(rawText),
+    });
+  }
+
+  return new PlatformPublishError({
+    platform: 'threads',
+    stage,
+    code: status === 400 ? 'payload_rejected' : 'platform_api_error',
+    userMessage: status === 400
+      ? 'Threads rejected the draft payload. Check text, media URL, and account permissions.'
+      : `Threads API error: ${message}`,
+    nextAction: status === 400
+      ? 'Review the draft and account permissions, then retry publish.'
+      : 'Open Logs for the Threads API details, then retry after fixing the account.',
+    status,
+    contentType,
+    providerCode,
+    bodySnippet: safeBodySnippet(rawText),
+  });
+}
+
+function unexpectedThreadsResponse(stage: string, status: number, contentType: string | null, rawText: string): PlatformPublishError {
+  return new PlatformPublishError({
+    platform: 'threads',
+    stage,
+    code: 'unexpected_response',
+    userMessage: 'Threads returned an unexpected response. Check token validity, permissions, and payload format.',
+    nextAction: 'Reconnect Threads or inspect Logs for the safe response details, then retry publish.',
+    status,
+    contentType,
+    bodySnippet: safeBodySnippet(rawText),
   });
 }
 

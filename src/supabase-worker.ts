@@ -22,6 +22,10 @@ import {
   type TenantCredentialRow,
   type TenantCredentials,
 } from './tenant-credentials';
+import {
+  isPlatformPublishError,
+  platformErrorContext,
+} from './platform-errors';
 
 import type { AppConfig } from '../config';
 import type { AngleCandidate, PlatformKey, RedditPost, SourceSummary } from './types';
@@ -270,6 +274,11 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function secondsFromNowIso(seconds: number | undefined): string | null {
+  if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return null;
+  return new Date(Date.now() + seconds * 1000).toISOString();
+}
+
 function normalizeRedditUsername(value: string | null | undefined): string {
   return String(value || '')
     .trim()
@@ -462,6 +471,7 @@ function contentHashForPost(post: RedditPost): string {
 }
 
 function publicError(error: unknown): string {
+  if (isPlatformPublishError(error)) return error.userMessage;
   if (error instanceof WorkerJobError) return error.code;
   if (error instanceof SourceFetchError) return error.code;
   if (error instanceof Error) return error.message;
@@ -610,10 +620,7 @@ function missingPlatformCredentials(tenant: TenantContext): string[] {
       if (!tenant.credentials.linkedinPersonUrn) missing.add('LinkedIn person URN');
     }
     if (platform === 'x') {
-      if (!tenant.credentials.xClientId) missing.add('X OAuth client ID');
-      if (!tenant.credentials.xClientSecret) missing.add('X OAuth client secret');
       if (!tenant.credentials.xOAuth2AccessToken) missing.add('X OAuth access token');
-      if (!tenant.credentials.xOAuth2RefreshToken) missing.add('X OAuth refresh token');
     }
   }
 
@@ -632,7 +639,67 @@ function platformWarnings(tenant: TenantContext): string[] {
       warnings.push('Instagram drafts need Cloudinary configured so generated images are durable.');
     }
   }
+  if (
+    tenant.activePlatforms.includes('x')
+    && tenant.credentials.xOAuth2AccessToken
+    && (!tenant.credentials.xOAuth2RefreshToken || !tenant.credentials.xClientId || !tenant.credentials.xClientSecret)
+  ) {
+    warnings.push('X OAuth2 credentials are stored but not refreshable. Reconnect X with client credentials and a refresh token.');
+  }
   return warnings;
+}
+
+async function markXCredentialVerified(
+  userId: string,
+  verification: Awaited<ReturnType<typeof x.verifyCredentials>>
+): Promise<void> {
+  await supabaseUpdate('user_credentials', {
+    x_verified_at: nowIso(),
+    x_last_verification_failed_at: null,
+    x_verification_status: 'verified',
+    x_auth_mode: verification.authMode,
+    x_account_id: verification.accountId,
+    x_verification_error: null,
+  }, {
+    filters: [{ column: 'user_id', operator: 'eq', value: userId }],
+  });
+  await writeWorkerLog(userId, 'info', 'x_credentials_verified', {
+    platform: 'x',
+    auth_mode: verification.authMode,
+    accountIdHash: hashId(verification.accountId),
+  });
+}
+
+async function markXCredentialFailure(userId: string, error: unknown): Promise<void> {
+  const context = isPlatformPublishError(error)
+    ? platformErrorContext(error)
+    : { normalized_error_code: 'verification_failed', user_message: publicError(error) };
+  const code = typeof context.normalized_error_code === 'string'
+    ? context.normalized_error_code
+    : 'verification_failed';
+  const status = code === 'not_connected' ? 'not_connected' : 'needs_reconnect';
+  await supabaseUpdate('user_credentials', {
+    x_last_verification_failed_at: nowIso(),
+    x_verification_status: status,
+    x_verification_error: publicError(error),
+  }, {
+    filters: [{ column: 'user_id', operator: 'eq', value: userId }],
+  });
+  await writeWorkerLog(userId, 'warn', 'x_credentials_verification_failed', {
+    platform: 'x',
+    ...context,
+  });
+}
+
+async function verifyXCredentialForPublish(userId: string): Promise<x.XSafeAuthMode> {
+  try {
+    const verification = await x.verifyCredentials();
+    await markXCredentialVerified(userId, verification);
+    return verification.authMode;
+  } catch (error) {
+    await markXCredentialFailure(userId, error);
+    throw error;
+  }
 }
 
 async function createPipelineSummary(
@@ -768,6 +835,13 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
     if (tokens.refreshToken) {
       patch.x_oauth2_refresh_token_enc = encryptCredential(tokens.refreshToken);
     }
+    if (tokens.scope) {
+      patch.x_scopes = tokens.scope;
+    }
+    const expiresAt = secondsFromNowIso(tokens.expiresIn);
+    if (expiresAt) {
+      patch.x_expires_at = expiresAt;
+    }
 
     await supabaseUpdate('user_credentials', patch, {
       filters: [{ column: 'user_id', operator: 'eq', value: tenant.userId }],
@@ -775,6 +849,8 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
     await writeWorkerLog(tenant.userId, 'info', 'x_oauth2_tokens_refreshed', {
       accessTokenUpdated: true,
       refreshTokenUpdated: Boolean(tokens.refreshToken),
+      scopeUpdated: Boolean(tokens.scope),
+      expiresAtUpdated: Boolean(expiresAt),
     });
   });
   config.OPENAI_API_KEY = tenant.credentials.openaiApiKey || previous.OPENAI_API_KEY || '';
@@ -858,16 +934,24 @@ async function completeJob(job: AgentJobRow, result: JsonMap): Promise<void> {
 
 async function failJob(job: AgentJobRow, error: unknown): Promise<void> {
   const message = publicError(error);
+  const context = error instanceof WorkerJobError
+    ? error.context || null
+    : isPlatformPublishError(error)
+      ? platformErrorContext(error)
+      : null;
   const result = {
     outcome: 'blocked',
     message,
-    nextAction: 'Open Logs, fix the reported blocker, then retry the job.',
+    nextAction: isPlatformPublishError(error)
+      ? error.nextAction
+      : 'Open Logs, fix the reported blocker, then retry the job.',
     error: message,
-    context: error instanceof WorkerJobError ? error.context || null : null,
+    context,
   };
   await writeWorkerLog(job.user_id, 'error', message, {
     jobId: job.id,
     kind: job.kind,
+    ...(context ? { context } : {}),
   });
   await supabaseUpdate('agent_jobs', {
     status: 'failed',
@@ -2039,6 +2123,9 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<Jso
       };
     }
 
+    const authMode = current.platform === 'x'
+      ? await verifyXCredentialForPublish(job.user_id)
+      : undefined;
     const externalPostId = await publishPlatform(current);
     await supabaseUpdate('queue_items', {
       status: 'published',
@@ -2072,11 +2159,19 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<Jso
       jobId: job.id,
       queueItemId: current.id,
       platform: current.platform,
+      ...(authMode ? { auth_mode: authMode } : {}),
       externalPostId,
     });
-    return { queueItemId: current.id, platform: current.platform, externalPostId };
+    return { queueItemId: current.id, platform: current.platform, ...(authMode ? { authMode } : {}), externalPostId };
   } catch (error) {
     const message = publicError(error);
+    if (isPlatformPublishError(error)) {
+      await writeWorkerLog(job.user_id, 'warn', 'platform_publish_failed', {
+        jobId: job.id,
+        queueItemId: current.id,
+        ...platformErrorContext(error),
+      });
+    }
     await supabaseUpdate('queue_items', {
       status: 'failed',
       error_message: message,

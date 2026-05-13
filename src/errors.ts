@@ -54,8 +54,12 @@ export function serviceUnavailable(message: string, code?: string, details?: Rec
   throw new HttpError(503, message, { code, details });
 }
 
-export function upstreamFailure(message = 'Upstream provider request failed', code = 'UPSTREAM_FAILURE'): never {
-  throw new HttpError(502, message, { code });
+export function upstreamFailure(
+  message = 'Upstream provider request failed',
+  code = 'UPSTREAM_FAILURE',
+  details?: Record<string, unknown>
+): never {
+  throw new HttpError(502, message, { code, details });
 }
 
 export function isHttpError(value: unknown): value is HttpError {
