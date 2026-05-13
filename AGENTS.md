@@ -148,6 +148,7 @@ Do not commit real platform IDs, tenant IDs, account IDs, email addresses, or se
 - The OAuth2 Client ID must be the raw Client ID from X Developer Console. Do not base64-wrap it before building the authorize URL, do not decode it, and do not use the API Key / Consumer Key in its place.
 - The production OAuth callback is `https://oneclickpostfactory.woeinvests.workers.dev/auth/x/callback`; `/auth/x/start` must create state + PKCE and `/auth/x/callback` must exchange the code immediately.
 - The authorize URL uses raw `client_id` through `URLSearchParams`; the token and refresh endpoints use `Authorization: Basic base64(raw_client_id + ":" + raw_client_secret)` and form bodies without `client_secret`.
+- Supabase stores credential ciphertext, which can look base64-like. X Client ID shape checks must run only after tenant credential decryption; never classify the raw database column as the OAuth client ID.
 - Do not add OAuth 1.0a tenant support unless it becomes an explicit product decision. A working old local `.env` token does not prove a SaaS tenant credential is valid.
 - `X_CLIENT_ID`, `X_CLIENT_SECRET`, and `X_REDIRECT_URI` support the OAuth 2.0 user-context connect flow. `X_OAUTH2_CLIENT_ID` and `X_OAUTH2_CLIENT_SECRET` are accepted aliases for the labels used in the X developer portal.
 - `X_OAUTH2_ACCESS_TOKEN` and `X_OAUTH2_REFRESH_TOKEN` are supported for v2 posting after OAuth connect.

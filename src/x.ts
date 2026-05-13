@@ -95,11 +95,25 @@ function maybeBase64Decode(value: string): string | null {
   }
 }
 
+function decryptedClientIdShape(value: string): 'missing' | 'raw' | 'base64_wrapped' | 'unknown' {
+  const clientId = value.trim();
+  if (!clientId) return 'missing';
+  const decoded = maybeBase64Decode(clientId);
+  if (clientId.includes(':1:ci')) return 'raw';
+  if (decoded?.includes(':1:ci')) return 'base64_wrapped';
+  return 'unknown';
+}
+
 function assertRawOAuth2ClientId(): void {
   const clientId = config.X_CLIENT_ID || '';
+  const diagnostics = {
+    stored_value_shape: 'not_applicable_runtime_config',
+    decrypted_client_id_shape: decryptedClientIdShape(clientId),
+    auth_mode: 'x_oauth2_user_context',
+  };
   const decoded = maybeBase64Decode(clientId);
   if (!clientId.includes(':1:ci') && decoded?.includes(':1:ci')) {
-    console.warn('x_client_id_looks_base64_wrapped');
+    console.warn('x_client_id_looks_base64_wrapped', JSON.stringify(diagnostics));
     throw new PlatformPublishError({
       platform: 'x',
       stage: 'credential_check',
