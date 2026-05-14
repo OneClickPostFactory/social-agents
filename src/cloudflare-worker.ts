@@ -9,6 +9,7 @@ interface Env {
   HTTP_TIMEOUT_MS?: string;
   REDDIT_CLIENT_ID?: string;
   REDDIT_CLIENT_SECRET?: string;
+  REDDIT_PUBLIC_JSON_TRANSPORT?: string;
   REDDIT_USER_AGENT?: string;
   OPENAI_MODEL?: string;
   OPENAI_IMAGE_MODEL?: string;

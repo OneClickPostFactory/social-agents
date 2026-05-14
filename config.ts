@@ -23,6 +23,7 @@ export interface AppConfig {
   REDDIT_LIMIT: number;
   REDDIT_CLIENT_ID: string;
   REDDIT_CLIENT_SECRET: string;
+  REDDIT_PUBLIC_JSON_TRANSPORT: 'auto' | 'fetch' | 'node_https';
   REDDIT_USER_AGENT: string;
   OPENAI_API_KEY: string;
   OPENAI_MODEL: string;
@@ -112,6 +113,18 @@ function parseBootstrapMode(value: string | undefined): 'disabled' | 'token' | '
   }
 }
 
+function parseRedditPublicJsonTransport(value: string | undefined): 'auto' | 'fetch' | 'node_https' {
+  switch ((value || 'auto').trim().toLowerCase()) {
+    case 'fetch':
+      return 'fetch';
+    case 'node_https':
+      return 'node_https';
+    case 'auto':
+    default:
+      return 'auto';
+  }
+}
+
 function toSubSet(value: string | string[] | Set<string> | undefined, fallback: string): Set<string> {
   if (value instanceof Set) return new Set(value);
   const entries = Array.isArray(value)
@@ -137,6 +150,7 @@ function buildBaseConfig(): AppConfig {
     REDDIT_LIMIT: Number.parseInt(process.env.REDDIT_LIMIT || '50', 10),
     REDDIT_CLIENT_ID: process.env.REDDIT_CLIENT_ID || '',
     REDDIT_CLIENT_SECRET: process.env.REDDIT_CLIENT_SECRET || '',
+    REDDIT_PUBLIC_JSON_TRANSPORT: parseRedditPublicJsonTransport(process.env.REDDIT_PUBLIC_JSON_TRANSPORT),
     REDDIT_USER_AGENT:
       process.env.REDDIT_USER_AGENT
       || `oneclickpostfactory-agent/1.0 (${IS_CLOUDFLARE_WORKER ? 'cloudflare-worker' : 'node'})`,
@@ -221,6 +235,9 @@ export function applyRuntimeConfig(patch: Record<string, unknown>): AppConfig {
   if (typeof patch.REDDIT_LIMIT === 'number' && Number.isFinite(patch.REDDIT_LIMIT)) config.REDDIT_LIMIT = patch.REDDIT_LIMIT;
   if (typeof patch.REDDIT_CLIENT_ID === 'string') config.REDDIT_CLIENT_ID = patch.REDDIT_CLIENT_ID;
   if (typeof patch.REDDIT_CLIENT_SECRET === 'string') config.REDDIT_CLIENT_SECRET = patch.REDDIT_CLIENT_SECRET;
+  if (typeof patch.REDDIT_PUBLIC_JSON_TRANSPORT === 'string') {
+    config.REDDIT_PUBLIC_JSON_TRANSPORT = parseRedditPublicJsonTransport(patch.REDDIT_PUBLIC_JSON_TRANSPORT);
+  }
   if (typeof patch.REDDIT_USER_AGENT === 'string') config.REDDIT_USER_AGENT = patch.REDDIT_USER_AGENT;
   if (typeof patch.OPENAI_API_KEY === 'string') config.OPENAI_API_KEY = patch.OPENAI_API_KEY;
   if (typeof patch.OPENAI_MODEL === 'string') config.OPENAI_MODEL = patch.OPENAI_MODEL;

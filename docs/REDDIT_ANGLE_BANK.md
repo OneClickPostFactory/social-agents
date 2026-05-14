@@ -45,18 +45,26 @@ canonical names.
 
 ## Reddit API Access
 
-Local SQLite mode can still use the older public Reddit JSON listing fetch for
-developer runs. Cloudflare production fails closed unless Reddit OAuth client
-credentials are available from either tenant credentials or Worker secrets:
+The worker supports Reddit OAuth when credentials are available, then falls back
+to public Reddit JSON for `reddit_user` and `subreddit` sources. Public JSON uses
+the old local request shape as closely as each runtime allows. Node/local can use
+`node:https`; Cloudflare Workers use runtime `fetch`.
 
 - `REDDIT_CLIENT_ID`
 - `REDDIT_CLIENT_SECRET`
 - `REDDIT_USER_AGENT`
+- `REDDIT_PUBLIC_JSON_TRANSPORT=auto|fetch|node_https`
 
 Those values authenticate the Reddit API client only. They are not tenant
 settings and they do not provide a global Reddit author or subreddit fallback.
 The tenant's source intent rows remain the only inputs that decide which Reddit
 posts may enter that tenant's workflow.
+
+`REDDIT_PUBLIC_JSON_TRANSPORT=auto` uses `node:https` in local Node and `fetch`
+in Cloudflare. Forcing `node_https` in a runtime that cannot use it fails clearly
+with `reddit_node_https_unavailable_in_runtime`. If Reddit returns `429`, the
+worker records `reddit_public_json_rate_limited_429` with transport, runtime,
+endpoint kind, status, and a safe body snippet.
 
 ## Source To Angle Flow
 
