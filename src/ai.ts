@@ -19,7 +19,9 @@ import type {
 
 interface OpenAIErrorResponse {
   error?: {
+    code?: string;
     message?: string;
+    type?: string;
   };
 }
 
@@ -69,6 +71,38 @@ interface GeneratedImageAsset {
   b64Json?: string;
   mimeType: string;
   url?: string;
+}
+
+export const OPENAI_IMAGE_BILLING_BLOCKED_CODE = 'openai_image_billing_blocked';
+export const OPENAI_IMAGE_BILLING_BLOCKED_MESSAGE =
+  'Instagram image generation is blocked by OpenAI billing/quota. Add credits or raise your OpenAI billing hard limit, then retry.';
+export const OPENAI_IMAGE_BILLING_BLOCKED_NEXT_ACTION =
+  'Add OpenAI image-generation credits or raise the billing hard limit, then retry the Instagram item.';
+export const OPENAI_IMAGE_GENERATION_STAGE = 'instagram_image_generation';
+
+export interface OpenAIImageErrorDetails {
+  code: string;
+  nextAction: string;
+  rawMessage: string;
+  stage: typeof OPENAI_IMAGE_GENERATION_STAGE;
+  userMessage: string;
+}
+
+export class OpenAIImageGenerationError extends Error {
+  public readonly code: string;
+  public readonly nextAction: string;
+  public readonly rawMessage: string;
+  public readonly stage = OPENAI_IMAGE_GENERATION_STAGE;
+  public readonly userMessage: string;
+
+  constructor(details: OpenAIImageErrorDetails) {
+    super(details.userMessage);
+    this.name = 'OpenAIImageGenerationError';
+    this.code = details.code;
+    this.nextAction = details.nextAction;
+    this.rawMessage = details.rawMessage;
+    this.userMessage = details.userMessage;
+  }
 }
 
 type LocalStore = typeof import('./store');
@@ -689,6 +723,65 @@ function imageGenerationBody(imagePrompt: string): Record<string, unknown> {
   return body;
 }
 
+function isOpenAIImageBillingBlocked(rawMessage: string): boolean {
+  const normalized = rawMessage.toLowerCase();
+  return (
+    normalized.includes('billing hard limit')
+    || normalized.includes('billing_hard_limit')
+    || normalized.includes('insufficient_quota')
+    || normalized.includes('exceeded your current quota')
+    || normalized.includes('quota')
+  );
+}
+
+function createOpenAIImageGenerationError(rawMessage: string): OpenAIImageGenerationError {
+  const message = rawMessage.trim() || 'Unknown error';
+  if (isOpenAIImageBillingBlocked(message)) {
+    return new OpenAIImageGenerationError({
+      code: OPENAI_IMAGE_BILLING_BLOCKED_CODE,
+      nextAction: OPENAI_IMAGE_BILLING_BLOCKED_NEXT_ACTION,
+      rawMessage: message,
+      stage: OPENAI_IMAGE_GENERATION_STAGE,
+      userMessage: OPENAI_IMAGE_BILLING_BLOCKED_MESSAGE,
+    });
+  }
+
+  const userMessage = message.startsWith('GPT Image generation failed:')
+    ? message
+    : `GPT Image generation failed: ${message}`;
+  return new OpenAIImageGenerationError({
+    code: 'openai_image_generation_failed',
+    nextAction: 'Open Logs for the failed image-generation reason, then retry the Instagram item.',
+    rawMessage: message,
+    stage: OPENAI_IMAGE_GENERATION_STAGE,
+    userMessage,
+  });
+}
+
+export function openAIImageErrorDetails(error: unknown): OpenAIImageErrorDetails | undefined {
+  if (error instanceof OpenAIImageGenerationError) {
+    return {
+      code: error.code,
+      nextAction: error.nextAction,
+      rawMessage: error.rawMessage,
+      stage: error.stage,
+      userMessage: error.userMessage,
+    };
+  }
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (!message.includes('GPT Image generation failed')) {
+    return undefined;
+  }
+  const normalized = createOpenAIImageGenerationError(message);
+  return {
+    code: normalized.code,
+    nextAction: normalized.nextAction,
+    rawMessage: normalized.rawMessage,
+    stage: normalized.stage,
+    userMessage: normalized.userMessage,
+  };
+}
+
 async function generateImageFromPrompt(imagePrompt: string): Promise<GeneratedImageAsset> {
   const body = JSON.stringify(imageGenerationBody(imagePrompt));
 
@@ -706,7 +799,9 @@ async function generateImageFromPrompt(imagePrompt: string): Promise<GeneratedIm
     });
 
     if (data.error) {
-      throw new Error('GPT Image generation failed: ' + (data.error.message || 'Unknown error'));
+      throw createOpenAIImageGenerationError(
+        [data.error.message, data.error.code, data.error.type].filter(Boolean).join(' ') || 'Unknown error'
+      );
     }
 
     const image = data.data?.[0];
@@ -723,10 +818,13 @@ async function generateImageFromPrompt(imagePrompt: string): Promise<GeneratedIm
       };
     }
 
-    throw new Error('OpenAI image response did not include image data');
+    throw createOpenAIImageGenerationError('OpenAI image response did not include image data');
   } catch (error) {
+    if (error instanceof OpenAIImageGenerationError) {
+      throw error;
+    }
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`GPT Image generation failed: ${message}`);
+    throw createOpenAIImageGenerationError(message);
   }
 }
 

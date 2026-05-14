@@ -27,6 +27,10 @@ The production runtime now fails closed:
 - If Cloudinary is not configured, Instagram image persistence fails.
 - If a generated image cannot be uploaded to Cloudinary, the Instagram row is
   not queued as publishable.
+- If OpenAI image generation is blocked by quota or a billing hard limit, the
+  worker records `openai_image_billing_blocked`, keeps Instagram failed/blocked,
+  and tells the user to add image-generation credits or raise the OpenAI billing
+  hard limit before retrying.
 - If an existing queue row has a non-Cloudinary image URL, publishing tries to
   persist or regenerate the image first. If that fails, the row is marked failed
   with a tenant-scoped error.

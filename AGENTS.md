@@ -103,6 +103,7 @@ As of May 13, 2026:
 - Instagram can now auto-discover the page-linked `instagram_business_account` and derive a Page access token from `FACEBOOK_PAGE_ID` + `META_ACCESS_TOKEN`.
 - Instagram generated images must be persisted to Cloudinary before an Instagram queue row is considered publishable; this avoids expiring OpenAI provider URLs in scheduled slots.
 - Automation readiness requires Cloudinary configuration when Instagram is enabled. The worker fails closed instead of queueing Instagram rows with temporary image URLs.
+- OpenAI image quota or billing hard-limit failures are normalized as `openai_image_billing_blocked` with stage `instagram_image_generation`; this is an Instagram media blocker, not a platform credential or publisher payload failure.
 - Queue retry behavior is safe: failed platforms no longer delete queued items.
 - Partial success is supported: one platform can succeed without forcing the whole slot to fail.
 - Source reuse is supported: a Reddit post is only exhausted when no banked angles remain.

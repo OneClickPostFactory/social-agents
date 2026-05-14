@@ -203,6 +203,8 @@ interface PipelineSummary {
     ready: number;
   };
   errors: string[];
+  failedStage?: string;
+  failureCode?: string;
 }
 
 interface QueueFromAnglesResult {
@@ -471,11 +473,41 @@ function contentHashForPost(post: RedditPost): string {
 }
 
 function publicError(error: unknown): string {
+  const imageError = ai.openAIImageErrorDetails(error);
+  if (imageError) return imageError.userMessage;
   if (isPlatformPublishError(error)) return error.userMessage;
   if (error instanceof WorkerJobError) return error.code;
   if (error instanceof SourceFetchError) return error.code;
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function errorFailureReason(error: unknown): string {
+  const imageError = ai.openAIImageErrorDetails(error);
+  if (imageError) return imageError.code;
+  return publicError(error);
+}
+
+function errorNextAction(error: unknown): string {
+  const imageError = ai.openAIImageErrorDetails(error);
+  if (imageError) return imageError.nextAction;
+  if (isPlatformPublishError(error)) return error.nextAction;
+  return 'Open Logs, fix the reported blocker, then retry the job.';
+}
+
+function safeErrorContext(error: unknown): JsonMap | null {
+  const imageError = ai.openAIImageErrorDetails(error);
+  if (imageError) {
+    return {
+      stage: imageError.stage,
+      normalized_error_code: imageError.code,
+      user_message: imageError.userMessage,
+      next_action: imageError.nextAction,
+    };
+  }
+  if (error instanceof WorkerJobError) return error.context || null;
+  if (isPlatformPublishError(error)) return platformErrorContext(error);
+  return null;
 }
 
 function sourceFetchAdapterFromError(error: unknown): SourceFetchAdapter | undefined {
@@ -497,6 +529,11 @@ function addSummaryError(summary: PipelineSummary, error: unknown): void {
   const message = publicError(error);
   if (!summary.errors.includes(message)) {
     summary.errors.push(message);
+  }
+  const imageError = ai.openAIImageErrorDetails(error);
+  if (imageError) {
+    summary.failedStage ||= imageError.stage;
+    summary.failureCode ||= imageError.code;
   }
 }
 
@@ -934,17 +971,11 @@ async function completeJob(job: AgentJobRow, result: JsonMap): Promise<void> {
 
 async function failJob(job: AgentJobRow, error: unknown): Promise<void> {
   const message = publicError(error);
-  const context = error instanceof WorkerJobError
-    ? error.context || null
-    : isPlatformPublishError(error)
-      ? platformErrorContext(error)
-      : null;
+  const context = safeErrorContext(error);
   const result = {
     outcome: 'blocked',
     message,
-    nextAction: isPlatformPublishError(error)
-      ? error.nextAction
-      : 'Open Logs, fix the reported blocker, then retry the job.',
+    nextAction: errorNextAction(error),
     error: message,
     context,
   };
@@ -1391,6 +1422,15 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     return;
   }
 
+  if (summary.queue.created > 0 && summary.drafts.failureReasons[ai.OPENAI_IMAGE_BILLING_BLOCKED_CODE]) {
+    summary.outcome = 'queued';
+    summary.message = 'Other platform drafts were created, but Instagram image generation failed because OpenAI billing/quota blocked image generation.';
+    summary.nextAction = ai.OPENAI_IMAGE_BILLING_BLOCKED_NEXT_ACTION;
+    summary.failedStage ||= ai.OPENAI_IMAGE_GENERATION_STAGE;
+    summary.failureCode ||= ai.OPENAI_IMAGE_BILLING_BLOCKED_CODE;
+    return;
+  }
+
   if (summary.queue.created > 0) {
     summary.outcome = 'queued';
     summary.message = `${summary.queue.created} queue item${summary.queue.created === 1 ? '' : 's'} created.`;
@@ -1401,6 +1441,13 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
   if (summary.drafts.failures > 0) {
     const reason = primaryFailureReason(summary.drafts.failureReasons);
     summary.outcome = 'blocked';
+    if (reason === ai.OPENAI_IMAGE_BILLING_BLOCKED_CODE) {
+      summary.message = ai.OPENAI_IMAGE_BILLING_BLOCKED_MESSAGE;
+      summary.nextAction = ai.OPENAI_IMAGE_BILLING_BLOCKED_NEXT_ACTION;
+      summary.failedStage ||= ai.OPENAI_IMAGE_GENERATION_STAGE;
+      summary.failureCode ||= ai.OPENAI_IMAGE_BILLING_BLOCKED_CODE;
+      return;
+    }
     summary.message = `Drafting was attempted but failed: ${reason}.`;
     summary.nextAction = reason === 'instagram_image_not_persisted'
       ? 'Check Cloudinary and Instagram image generation configuration.'
@@ -1763,7 +1810,7 @@ async function queueFromBankedAngles(
       result.failures++;
       if (summary) {
         summary.drafts.failures++;
-        incrementCounter(summary.drafts.failureReasons, publicError(error));
+        incrementCounter(summary.drafts.failureReasons, errorFailureReason(error));
         addSummaryError(summary, error);
       }
       await supabaseUpdate('angle_records', {
@@ -1774,10 +1821,12 @@ async function queueFromBankedAngles(
           { column: 'user_id', operator: 'eq', value: job.user_id },
         ],
       });
+      const draftErrorContext = safeErrorContext(error);
       await writeWorkerLog(job.user_id, 'warn', 'banked_angle_draft_failed', {
         jobId: job.id,
         angleId: currentAngle.id,
         error: publicError(error),
+        ...(draftErrorContext || {}),
       });
     }
   }
@@ -2165,6 +2214,15 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<Jso
     return { queueItemId: current.id, platform: current.platform, ...(authMode ? { authMode } : {}), externalPostId };
   } catch (error) {
     const message = publicError(error);
+    const imageErrorContext = safeErrorContext(error);
+    if (current.platform === 'instagram' && imageErrorContext?.stage === ai.OPENAI_IMAGE_GENERATION_STAGE) {
+      await writeWorkerLog(job.user_id, 'warn', 'instagram_image_generation_failed', {
+        jobId: job.id,
+        queueItemId: current.id,
+        platform: current.platform,
+        ...imageErrorContext,
+      });
+    }
     if (isPlatformPublishError(error)) {
       await writeWorkerLog(job.user_id, 'warn', 'platform_publish_failed', {
         jobId: job.id,
