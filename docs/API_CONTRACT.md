@@ -428,8 +428,8 @@ These live in the SQLite-backed automation store, with legacy JSON files retaine
 - Stripe checkout and portal routes require valid Stripe env config
 - readiness can be satisfied by env-backed config even when no secrets are stored in SQLite yet
 - Local X readiness requires `ENABLE_X=true` plus OAuth 2.0 user-context credentials. SaaS X publishing reads tenant-encrypted OAuth 2.0 fields from Supabase and does not treat old local `.env` tokens as production fallbacks.
-- X OAuth2 must use the raw Client ID from X Developer Console in the authorize URL. Do not base64-wrap the Client ID, do not decode it, and do not use the API Key / API Secret pair. Production callback is `https://oneclickpostfactory.woeinvests.workers.dev/auth/x/callback`.
-- The X token and refresh endpoints use `Authorization: Basic base64(raw_client_id + ":" + raw_client_secret)`. The auth code is exchanged immediately by `/auth/x/callback`.
+- X OAuth2 must use the Client ID exactly as shown in X Developer Console in the authorize URL. The ID may look encoded or decode to a value containing `:1:ci`; do not decode it, transform it, or reject it for that reason. Do not use the API Key / API Secret pair.
+- The X token and refresh endpoints are the only place base64 encoding is required: `Authorization: Basic base64(client_id + ":" + client_secret)`. The auth code is exchanged immediately by `/auth/x/callback`.
 - The X read-only verification path is `/2/users/me`; `401 Unauthorized` and OAuth refresh `unauthorized_client` mean the tenant must reconnect X. The worker records safe auth mode as `x_oauth2_user_context` and must fail jobs cleanly instead of leaving them `running`.
 - Even when X auth is valid, live publish can still fail at the provider due to credits or access tier changes. The runtime can temporarily mark X as draft-only in the SQLite platform-state store.
 

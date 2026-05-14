@@ -85,43 +85,18 @@ function hasOAuth2RefreshConfig(): boolean {
   return Boolean(config.X_CLIENT_ID && config.X_CLIENT_SECRET && config.X_OAUTH2_REFRESH_TOKEN);
 }
 
-function maybeBase64Decode(value: string): string | null {
-  try {
-    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-    return Buffer.from(padded, 'base64').toString('utf8');
-  } catch {
-    return null;
-  }
-}
-
-function decryptedClientIdShape(value: string): 'missing' | 'raw' | 'base64_wrapped' | 'unknown' {
-  const clientId = value.trim();
-  if (!clientId) return 'missing';
-  const decoded = maybeBase64Decode(clientId);
-  if (clientId.includes(':1:ci')) return 'raw';
-  if (decoded?.includes(':1:ci')) return 'base64_wrapped';
-  return 'unknown';
-}
-
-function assertRawOAuth2ClientId(): void {
+function validateOAuth2ClientId(): void {
   const clientId = config.X_CLIENT_ID || '';
-  const diagnostics = {
-    stored_value_shape: 'not_applicable_runtime_config',
-    decrypted_client_id_shape: decryptedClientIdShape(clientId),
-    auth_mode: 'x_oauth2_user_context',
-  };
-  const decoded = maybeBase64Decode(clientId);
-  if (!clientId.includes(':1:ci') && decoded?.includes(':1:ci')) {
-    console.warn('x_client_id_looks_base64_wrapped', JSON.stringify(diagnostics));
-    throw new PlatformPublishError({
-      platform: 'x',
-      stage: 'credential_check',
-      code: 'stored_not_verified',
-      userMessage: 'X OAuth Client ID appears to be base64-wrapped. Use the raw OAuth2 Client ID from X Developer Console.',
-      nextAction: 'Replace the X OAuth2 client ID in Credentials with the raw value from X Developer Console.',
-      authMode: safeAuthMode('oauth2-user'),
-    });
+  if (!clientId.trim()) {
+    throw new Error('X_CLIENT_ID is required for X OAuth 2.0');
+  }
+  if (clientId !== clientId.trim() || /\s/.test(clientId)) {
+    console.warn('x_client_id_contains_whitespace', JSON.stringify({
+      x_client_id_present: true,
+      x_client_id_length: clientId.length,
+      x_client_id_contains_colon: clientId.includes(':'),
+      auth_mode: 'x_oauth2_user_context',
+    }));
   }
 }
 
@@ -186,7 +161,7 @@ function getOAuth2ClientBasicAuth(): string {
   if (!config.X_CLIENT_ID || !config.X_CLIENT_SECRET) {
     throw new Error('X_CLIENT_ID and X_CLIENT_SECRET are required for X OAuth 2.0 token exchange');
   }
-  assertRawOAuth2ClientId();
+  validateOAuth2ClientId();
 
   return 'Basic ' + Buffer
     .from(`${config.X_CLIENT_ID}:${config.X_CLIENT_SECRET}`)
@@ -447,7 +422,7 @@ export function buildOAuth2AuthorizationUrl(state: string, codeChallenge: string
   if (!config.X_CLIENT_ID) {
     throw new Error('X_CLIENT_ID not set');
   }
-  assertRawOAuth2ClientId();
+  validateOAuth2ClientId();
 
   const params = new URLSearchParams({
     response_type: 'code',
