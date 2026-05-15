@@ -104,6 +104,9 @@ As of May 13, 2026:
 - Instagram generated images must be persisted to Cloudinary before an Instagram queue row is considered publishable; this avoids expiring OpenAI provider URLs in scheduled slots.
 - Automation readiness requires Cloudinary configuration when Instagram is enabled. The worker fails closed instead of queueing Instagram rows with temporary image URLs.
 - OpenAI image quota or billing hard-limit failures are normalized as `openai_image_billing_blocked` with stage `instagram_image_generation`; this is an Instagram media blocker, not a platform credential or publisher payload failure.
+- Reddit fetch success and OpenAI text angle-extraction failure are separate stages. If accepted Reddit posts are fetched but OpenAI text quota/billing/rate/model access blocks `extractSourceBank`, normalize the failure as `openai_text_*`, set stage `angle_extraction`, stop further extraction attempts for systemic failures, and finalize the job.
+- Accepted source records must be preserved before angle extraction. A `source_records` row without matching `angle_records` is not "done" and must not block future angle extraction after OpenAI billing/quota is fixed.
+- SaaS jobs must never stay `running` after terminal OpenAI text extraction failures. `agent_jobs.result.summary` must say Reddit succeeded, angle extraction failed, queue rows were not created, and what the next action is.
 - Queue retry behavior is safe: failed platforms no longer delete queued items.
 - Partial success is supported: one platform can succeed without forcing the whole slot to fail.
 - Source reuse is supported: a Reddit post is only exhausted when no banked angles remain.

@@ -79,6 +79,16 @@ export const OPENAI_IMAGE_BILLING_BLOCKED_MESSAGE =
 export const OPENAI_IMAGE_BILLING_BLOCKED_NEXT_ACTION =
   'Add OpenAI image-generation credits or raise the billing hard limit, then retry the Instagram item.';
 export const OPENAI_IMAGE_GENERATION_STAGE = 'instagram_image_generation';
+export const OPENAI_TEXT_QUOTA_EXCEEDED_CODE = 'openai_text_quota_exceeded';
+export const OPENAI_TEXT_BILLING_BLOCKED_CODE = 'openai_text_billing_blocked';
+export const OPENAI_TEXT_RATE_LIMITED_CODE = 'openai_text_rate_limited';
+export const OPENAI_TEXT_MODEL_UNAVAILABLE_CODE = 'openai_text_model_unavailable';
+export const OPENAI_TEXT_GENERATION_FAILED_CODE = 'openai_text_generation_failed';
+export const OPENAI_TEXT_ANGLE_EXTRACTION_STAGE = 'angle_extraction';
+export const OPENAI_TEXT_ANGLE_EXTRACTION_MESSAGE =
+  'Reddit fetch succeeded, but OpenAI angle extraction failed. Add OpenAI credits, fix billing, or retry later, then run Fetch Sources again.';
+export const OPENAI_TEXT_ANGLE_EXTRACTION_NEXT_ACTION =
+  'Fix OpenAI billing/quota or wait for rate limits to reset, then rerun Fetch Sources.';
 
 export interface OpenAIImageErrorDetails {
   code: string;
@@ -103,6 +113,15 @@ export class OpenAIImageGenerationError extends Error {
     this.rawMessage = details.rawMessage;
     this.userMessage = details.userMessage;
   }
+}
+
+export interface OpenAITextErrorDetails {
+  code: string;
+  nextAction: string;
+  rawMessage: string;
+  stage: string;
+  systemic: boolean;
+  userMessage: string;
 }
 
 type LocalStore = typeof import('./store');
@@ -779,6 +798,69 @@ export function openAIImageErrorDetails(error: unknown): OpenAIImageErrorDetails
     rawMessage: normalized.rawMessage,
     stage: normalized.stage,
     userMessage: normalized.userMessage,
+  };
+}
+
+function openAITextErrorCode(rawMessage: string): { code: string; systemic: boolean } {
+  const normalized = rawMessage.toLowerCase();
+  if (
+    normalized.includes('insufficient_quota')
+    || normalized.includes('exceeded your current quota')
+    || normalized.includes('quota exceeded')
+  ) {
+    return { code: OPENAI_TEXT_QUOTA_EXCEEDED_CODE, systemic: true };
+  }
+  if (
+    normalized.includes('billing hard limit')
+    || normalized.includes('billing_hard_limit')
+    || normalized.includes('billing')
+  ) {
+    return { code: OPENAI_TEXT_BILLING_BLOCKED_CODE, systemic: true };
+  }
+  if (
+    normalized.includes('rate limit')
+    || normalized.includes('rate_limit')
+    || normalized.includes('too many requests')
+    || normalized.includes(' 429')
+  ) {
+    return { code: OPENAI_TEXT_RATE_LIMITED_CODE, systemic: true };
+  }
+  if (
+    normalized.includes('model')
+    && (
+      normalized.includes('not found')
+      || normalized.includes('does not exist')
+      || normalized.includes('not have access')
+      || normalized.includes('access')
+      || normalized.includes('unavailable')
+    )
+  ) {
+    return { code: OPENAI_TEXT_MODEL_UNAVAILABLE_CODE, systemic: true };
+  }
+  return { code: OPENAI_TEXT_GENERATION_FAILED_CODE, systemic: false };
+}
+
+export function openAITextErrorDetails(
+  error: unknown,
+  stage = 'text_generation'
+): OpenAITextErrorDetails | undefined {
+  const message = error instanceof Error ? error.message : String(error || '');
+  if (!message.toLowerCase().includes('openai')) {
+    return undefined;
+  }
+  const rawMessage = message.trim() || 'Unknown OpenAI text generation error';
+  const normalized = openAITextErrorCode(rawMessage);
+  return {
+    code: normalized.code,
+    nextAction: stage === OPENAI_TEXT_ANGLE_EXTRACTION_STAGE
+      ? OPENAI_TEXT_ANGLE_EXTRACTION_NEXT_ACTION
+      : 'Fix OpenAI billing/quota or wait for rate limits to reset, then retry.',
+    rawMessage,
+    stage,
+    systemic: normalized.systemic,
+    userMessage: stage === OPENAI_TEXT_ANGLE_EXTRACTION_STAGE
+      ? OPENAI_TEXT_ANGLE_EXTRACTION_MESSAGE
+      : 'OpenAI text generation failed. Fix OpenAI billing/quota or retry later.',
   };
 }
 

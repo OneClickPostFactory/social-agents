@@ -74,7 +74,7 @@ The production flow is:
 2. Resolve each source's declared intent.
 3. Fetch via the declared acquisition mode.
 4. Reject fetched items that do not match author, subreddit, or RSS discovery
-   rules before database writes.
+   rules before source/angle/queue writes.
 5. Insert one tenant-scoped `source_records` row per accepted unique Reddit URL.
 6. Extract multiple angles from that source.
 7. Insert one tenant-scoped `angle_records` row per angle and enabled platform.
@@ -84,6 +84,11 @@ The production flow is:
 The worker drains existing `unused` or `in_progress` angles before fetching new
 Reddit posts. This prevents wasting OpenAI calls on new sources while usable
 banked angles remain.
+
+Accepted source records are saved before OpenAI angle extraction starts. A
+`source_records` row without matching tenant-scoped `angle_records` is preserved
+evidence, not a completed source. It must not block future angle extraction after
+OpenAI billing, quota, rate-limit, or model-access issues are fixed.
 
 If the only active angles are legacy/incomplete rows that cannot be proven to
 have source URL, subreddit, author, and intended platform metadata, the worker
@@ -104,7 +109,8 @@ The summary includes:
   author-rejected, subreddit-rejected, unfiltered-RSS-rejected, duplicate,
   no-angle, and fetch failure counts
 - angle counts: active at start, draftable at start, created, existing,
-  quarantined legacy rows, unused, in-progress, and status totals
+  extraction failures, grouped failure reasons, quarantined legacy rows, unused,
+  in-progress, and status totals
 - draft counts: attempted, created, skipped, failures, and grouped reasons
 - queue counts: active slots at start, open slots at start, ready rows, and rows
   created by the job
@@ -118,11 +124,21 @@ Common empty outcomes:
 - an unfiltered RSS feed needs explicit Discovery Feed confirmation
 - no Reddit posts matched the configured author filter
 - Reddit/API access failed closed
+- Reddit fetch succeeded, but OpenAI text angle extraction failed
 - no usable angles were extracted
 - draft generation failed
 - Instagram image persistence failed
 - no source, platform, credential, or billing access was available
 - legacy Angle Bank rows were quarantined before fresh fetching
+
+Systemic OpenAI text failures during angle extraction use stable codes such as
+`openai_text_quota_exceeded`, `openai_text_billing_blocked`,
+`openai_text_rate_limited`, `openai_text_model_unavailable`, or
+`openai_text_generation_failed` with stage `angle_extraction`. For quota,
+billing, rate-limit, and model-access failures, the worker must stop trying
+remaining accepted posts, write a clear `worker_logs` entry, and finalize
+`agent_jobs` as `failed` or `completed_with_errors` instead of leaving the job
+`running`.
 
 ## Angle Statuses
 

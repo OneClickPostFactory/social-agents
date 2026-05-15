@@ -187,6 +187,8 @@ interface PipelineSummary {
     draftableAtStart: number;
     created: number;
     alreadyExisting: number;
+    extractionFailures: number;
+    failureReasons: Record<string, number>;
     legacyRejected: number;
     disabledPlatformRejected: number;
     missingMetadataRejected: number;
@@ -551,6 +553,11 @@ function addSummaryError(summary: PipelineSummary, error: unknown): void {
     summary.failedStage ||= imageError.stage;
     summary.failureCode ||= imageError.code;
   }
+  const textError = ai.openAITextErrorDetails(error, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE);
+  if (textError) {
+    summary.failedStage ||= textError.stage;
+    summary.failureCode ||= textError.code;
+  }
 }
 
 async function writeWorkerLog(
@@ -818,6 +825,8 @@ async function createPipelineSummary(
       draftableAtStart: activeAngles.filter(row => anglePlatform(row, tenant) && isDraftableAngle(row)).length,
       created: 0,
       alreadyExisting: 0,
+      extractionFailures: 0,
+      failureReasons: {},
       legacyRejected: 0,
       disabledPlatformRejected: 0,
       missingMetadataRejected: 0,
@@ -972,18 +981,53 @@ async function claimJob(job: AgentJobRow): Promise<AgentJobRow | null> {
   return claimed[0] || null;
 }
 
-async function completeJob(job: AgentJobRow, result: JsonMap): Promise<void> {
+function resultSummary(result: JsonMap): JsonMap {
+  const summary = result.summary;
+  return typeof summary === 'object' && summary !== null && !Array.isArray(summary)
+    ? summary as JsonMap
+    : {};
+}
+
+function terminalStatusForResult(result: JsonMap): string {
+  const requested = typeof result.jobStatus === 'string' ? result.jobStatus : '';
+  if (requested === 'failed' || requested === 'completed_with_errors') return requested;
+
+  const summary = resultSummary(result);
+  if (summary.failedStage === ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE) {
+    const queue = typeof summary.queue === 'object' && summary.queue !== null && !Array.isArray(summary.queue)
+      ? summary.queue as JsonMap
+      : {};
+    const angles = typeof summary.angles === 'object' && summary.angles !== null && !Array.isArray(summary.angles)
+      ? summary.angles as JsonMap
+      : {};
+    const queueCreated = Number(queue.created || 0);
+    const anglesCreated = Number(angles.created || 0);
+    return queueCreated > 0 || anglesCreated > 0 ? 'completed_with_errors' : 'failed';
+  }
+
+  return 'completed';
+}
+
+function resultErrorMessage(result: JsonMap, status: string): string | null {
+  if (status !== 'failed') return null;
+  const summary = resultSummary(result);
+  return String(summary.failureCode || summary.message || result.error || 'job_failed');
+}
+
+async function completeJob(job: AgentJobRow, result: JsonMap): Promise<string> {
+  const status = terminalStatusForResult(result);
   await supabaseUpdate('agent_jobs', {
-    status: 'completed',
+    status,
     completed_at: nowIso(),
     result,
-    error: null,
+    error: resultErrorMessage(result, status),
   }, {
     filters: [
       { column: 'id', operator: 'eq', value: job.id },
       { column: 'user_id', operator: 'eq', value: job.user_id },
     ],
   });
+  return status;
 }
 
 async function failJob(job: AgentJobRow, error: unknown): Promise<void> {
@@ -1399,16 +1443,13 @@ function firstOpenSlot(occupied: Set<number>): number | undefined {
   return [0, 1, 2, 3].find(slot => !occupied.has(slot));
 }
 
-async function loadExistingSourceUrls(userId: string): Promise<Set<string>> {
-  const rows = await supabaseSelect<{ url: string }>('source_records', {
-    select: 'url',
-    filters: [
-      { column: 'user_id', operator: 'eq', value: userId },
-      { column: 'status', operator: 'neq', value: 'rejected' },
-    ],
-    limit: 1000,
+async function loadSourceUrlsWithAngles(userId: string): Promise<Set<string>> {
+  const rows = await supabaseSelect<{ source_url?: string | null }>('angle_records', {
+    select: 'source_url',
+    filters: [{ column: 'user_id', operator: 'eq', value: userId }],
+    limit: 5000,
   });
-  return new Set(rows.map(row => row.url));
+  return new Set(rows.map(row => row.source_url || '').filter(Boolean));
 }
 
 async function loadExistingSourceRecord(
@@ -1423,6 +1464,45 @@ async function loadExistingSourceRecord(
     ],
     limit: 1,
   }))[0];
+}
+
+async function saveAcceptedSourceRecord(
+  job: AgentJobRow,
+  source: UserSourceRow,
+  post: RedditPost,
+  sourceUrl: string,
+  summary: PipelineSummary
+): Promise<string | null> {
+  const sourcePayload = {
+    user_id: job.user_id,
+    url: sourceUrl,
+    title: post.title || null,
+    origin: source.kind,
+    score: post.score || null,
+    reddit_post_id: post.id || null,
+    subreddit: post.subreddit || null,
+    reddit_author: normalizeRedditUsername(post.author) || null,
+    content_hash: contentHashForPost(post),
+    status: 'banked',
+    used: false,
+    fetched_at: nowIso(),
+  };
+  const existingSource = await loadExistingSourceRecord(job.user_id, sourceUrl);
+  if (existingSource) {
+    const rows = await supabaseUpdate<{ id: string }>('source_records', sourcePayload, {
+      filters: [
+        { column: 'id', operator: 'eq', value: existingSource.id },
+        { column: 'user_id', operator: 'eq', value: job.user_id },
+      ],
+      returning: true,
+    });
+    summary.sources.recordsUpdated++;
+    return rows[0]?.id || existingSource.id;
+  }
+
+  const rows = await supabaseInsert<{ id: string }>('source_records', sourcePayload, true);
+  summary.sources.recordsCreated++;
+  return rows[0]?.id || null;
 }
 
 async function hasActiveBankedAngles(userId: string): Promise<boolean> {
@@ -1488,6 +1568,15 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     summary.outcome = 'deferred';
     summary.message = 'The queue already had active items, so the worker did not create another draft.';
     summary.nextAction = 'Publish, skip, or release an existing queue item to open a slot.';
+    return;
+  }
+
+  if (summary.failedStage === ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE) {
+    summary.outcome = summary.queue.created > 0 ? 'queued' : 'blocked';
+    summary.message = summary.queue.created > 0
+      ? 'Some queue items were created, but OpenAI angle extraction failed for additional accepted Reddit posts.'
+      : ai.OPENAI_TEXT_ANGLE_EXTRACTION_MESSAGE;
+    summary.nextAction = ai.OPENAI_TEXT_ANGLE_EXTRACTION_NEXT_ACTION;
     return;
   }
 
@@ -1952,7 +2041,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     }
   }
 
-  const existingSourceUrls = await loadExistingSourceUrls(job.user_id);
+  const sourceUrlsWithAngles = await loadSourceUrlsWithAngles(job.user_id);
   const { author: tenantAuthor, allowedSubreddits: tenantAllowedSubreddits, processingSources } = tenantRedditConfig(enabledSources);
   if (!processingSources.length) {
     summary.drafts.skipped++;
@@ -1962,8 +2051,10 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
 
   let fetched = 0;
   let banked = 0;
+  let stopSourceProcessing = false;
 
   for (const source of processingSources) {
+    if (stopSourceProcessing) break;
     if (firstOpenSlot(occupiedSlots) === undefined) break;
     summary.sources.checked++;
     const intent = sourceIntentFor(source, tenantAuthor, tenantAllowedSubreddits);
@@ -2051,11 +2142,21 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
       rejection_reasons: rejectionReasons,
     });
 
+    const acceptedSourceRecords: Array<{
+      post: RedditPost;
+      sourceRecordId: string | null;
+      sourceUrl: string;
+    }> = [];
     for (const post of sourcePosts) {
+      const sourceUrl = canonicalSourceUrl(post);
+      const sourceRecordId = await saveAcceptedSourceRecord(job, source, post, sourceUrl, summary);
+      acceptedSourceRecords.push({ post, sourceRecordId, sourceUrl });
+    }
+
+    for (const { post, sourceRecordId, sourceUrl } of acceptedSourceRecords) {
       if (firstOpenSlot(occupiedSlots) === undefined) break;
 
-      const sourceUrl = canonicalSourceUrl(post);
-      if (existingSourceUrls.has(sourceUrl)) {
+      if (sourceUrlsWithAngles.has(sourceUrl)) {
         summary.sources.duplicatesSkipped++;
         summary.angles.alreadyExisting++;
         continue;
@@ -2065,45 +2166,46 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
       try {
         extraction = await ai.extractSourceBank(post);
       } catch (error) {
+        const textError = ai.openAITextErrorDetails(error, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE);
+        const failureCode = textError?.code || 'angle_extraction_failed';
         summary.sources.withoutAngles++;
-        addSummaryError(summary, error);
+        summary.angles.extractionFailures++;
+        incrementCounter(summary.angles.failureReasons, failureCode);
+        if (textError) {
+          if (!summary.errors.includes(textError.userMessage)) {
+            summary.errors.push(textError.userMessage);
+          }
+          summary.failedStage ||= textError.stage;
+          summary.failureCode ||= textError.code;
+        } else {
+          addSummaryError(summary, error);
+          summary.failedStage ||= ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE;
+          summary.failureCode ||= failureCode;
+        }
         await writeWorkerLog(job.user_id, 'warn', 'source_angle_extraction_failed', {
           jobId: job.id,
           sourceId: source.id,
           sourceUrl,
-          error: publicError(error),
+          error: textError?.userMessage || publicError(error),
+          normalized_error_code: failureCode,
+          stage: ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE,
+          next_action: textError?.nextAction || 'Open Logs for the failed angle extraction reason, then retry Fetch sources.',
+          systemic: textError?.systemic === true,
         });
+        if (textError?.systemic) {
+          stopSourceProcessing = true;
+          await writeWorkerLog(job.user_id, 'warn', 'source_angle_extraction_stopped', {
+            jobId: job.id,
+            sourceId: source.id,
+            sourceUrl,
+            normalized_error_code: textError.code,
+            stage: textError.stage,
+            next_action: textError.nextAction,
+          });
+          break;
+        }
         continue;
       }
-
-      const sourcePayload = {
-        user_id: job.user_id,
-        url: sourceUrl,
-        title: post.title || null,
-        origin: source.kind,
-        score: post.score || null,
-        reddit_post_id: post.id || null,
-        subreddit: post.subreddit || null,
-        reddit_author: normalizeRedditUsername(post.author) || null,
-        content_hash: contentHashForPost(post),
-        status: 'banked',
-        used: false,
-        fetched_at: nowIso(),
-      };
-      const existingSource = await loadExistingSourceRecord(job.user_id, sourceUrl);
-      const sourceRows = existingSource?.status === 'rejected'
-        ? await supabaseUpdate<{ id: string }>('source_records', sourcePayload, {
-            filters: [
-              { column: 'id', operator: 'eq', value: existingSource.id },
-              { column: 'user_id', operator: 'eq', value: job.user_id },
-            ],
-            returning: true,
-          })
-        : await supabaseInsert<{ id: string }>('source_records', sourcePayload, true);
-      const sourceRecordId = sourceRows[0]?.id || null;
-      if (existingSource?.status === 'rejected') summary.sources.recordsUpdated++;
-      else summary.sources.recordsCreated++;
-      existingSourceUrls.add(sourceUrl);
 
       const angles = extraction.angles.slice(0, 5);
       if (!angles.length) {
@@ -2143,6 +2245,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
       }
       banked += angleRows.length;
       summary.angles.created += angleRows.length;
+      sourceUrlsWithAngles.add(sourceUrl);
 
       const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, summary);
       queued += queuedFromAngles.queued;
@@ -2492,11 +2595,13 @@ export async function processPendingSupabaseJobs(): Promise<WorkerStats> {
     stats.claimed++;
     try {
       const result = await handleClaimedJob(job);
-      await completeJob(job, result);
-      stats.completed++;
+      const terminalStatus = await completeJob(job, result);
+      if (terminalStatus === 'failed') stats.failed++;
+      else stats.completed++;
       await writeWorkerLog(job.user_id, 'info', 'job_completed', {
         jobId: job.id,
         kind: job.kind,
+        status: terminalStatus,
         result,
       });
     } catch (error) {
