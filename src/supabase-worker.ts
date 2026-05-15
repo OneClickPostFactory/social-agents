@@ -15,6 +15,7 @@ import {
   supabaseInsert,
   supabaseSelect,
   supabaseUpdate,
+  supabaseUpsert,
 } from './supabase-client';
 import {
   decryptTenantCredentials,
@@ -1471,28 +1472,32 @@ async function loadSourceUrlsWithAngles(userId: string): Promise<Set<string>> {
   return new Set(rows.map(row => row.source_url || '').filter(Boolean));
 }
 
-async function loadExistingSourceRecord(
+async function loadExistingSourceRecordsByUrl(
   userId: string,
-  url: string
-): Promise<{ id: string; status?: string | null } | undefined> {
-  return (await supabaseSelect<{ id: string; status?: string | null }>('source_records', {
-    select: 'id,status',
+  urls: string[]
+): Promise<Map<string, { id: string; status?: string | null; url: string }>> {
+  const uniqueUrls = uniqueStrings(urls);
+  if (!uniqueUrls.length) return new Map();
+  const rows = await supabaseSelect<{ id: string; status?: string | null; url: string }>('source_records', {
+    select: 'id,status,url',
     filters: [
       { column: 'user_id', operator: 'eq', value: userId },
-      { column: 'url', operator: 'eq', value: url },
+      { column: 'url', operator: 'in', value: uniqueUrls },
     ],
-    limit: 1,
-  }))[0];
+    limit: uniqueUrls.length,
+  });
+  return new Map(rows.map(row => [row.url, row]));
 }
 
-async function saveAcceptedSourceRecord(
+async function saveAcceptedSourceRecords(
   job: AgentJobRow,
   source: UserSourceRow,
-  post: RedditPost,
-  sourceUrl: string,
+  posts: Array<{ post: RedditPost; sourceUrl: string }>,
   summary: PipelineSummary
-): Promise<string | null> {
-  const sourcePayload = {
+): Promise<Map<string, string>> {
+  if (!posts.length) return new Map();
+  const existing = await loadExistingSourceRecordsByUrl(job.user_id, posts.map(entry => entry.sourceUrl));
+  const sourcePayloads = posts.map(({ post, sourceUrl }) => ({
     user_id: job.user_id,
     url: sourceUrl,
     title: post.title || null,
@@ -1505,23 +1510,17 @@ async function saveAcceptedSourceRecord(
     status: 'banked',
     used: false,
     fetched_at: nowIso(),
-  };
-  const existingSource = await loadExistingSourceRecord(job.user_id, sourceUrl);
-  if (existingSource) {
-    const rows = await supabaseUpdate<{ id: string }>('source_records', sourcePayload, {
-      filters: [
-        { column: 'id', operator: 'eq', value: existingSource.id },
-        { column: 'user_id', operator: 'eq', value: job.user_id },
-      ],
-      returning: true,
-    });
-    summary.sources.recordsUpdated++;
-    return rows[0]?.id || existingSource.id;
-  }
+  }));
 
-  const rows = await supabaseInsert<{ id: string }>('source_records', sourcePayload, true);
-  summary.sources.recordsCreated++;
-  return rows[0]?.id || null;
+  const rows = await supabaseUpsert<{ id: string; url: string }>(
+    'source_records',
+    sourcePayloads,
+    'user_id,url',
+    true
+  );
+  summary.sources.recordsUpdated += existing.size;
+  summary.sources.recordsCreated += Math.max(0, sourcePayloads.length - existing.size);
+  return new Map(rows.map(row => [row.url, row.id]));
 }
 
 async function hasActiveBankedAngles(userId: string): Promise<boolean> {
@@ -2165,11 +2164,14 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
       post: RedditPost;
       sourceRecordId: string | null;
       sourceUrl: string;
-    }> = [];
-    for (const post of sourcePosts) {
-      const sourceUrl = canonicalSourceUrl(post);
-      const sourceRecordId = await saveAcceptedSourceRecord(job, source, post, sourceUrl, summary);
-      acceptedSourceRecords.push({ post, sourceRecordId, sourceUrl });
+    }> = sourcePosts.map(post => ({
+      post,
+      sourceRecordId: null,
+      sourceUrl: canonicalSourceUrl(post),
+    }));
+    const sourceRecordIds = await saveAcceptedSourceRecords(job, source, acceptedSourceRecords, summary);
+    for (const record of acceptedSourceRecords) {
+      record.sourceRecordId = sourceRecordIds.get(record.sourceUrl) || null;
     }
 
     for (const { post, sourceRecordId, sourceUrl } of acceptedSourceRecords) {

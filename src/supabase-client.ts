@@ -187,6 +187,28 @@ export async function supabaseInsert<T>(
   return parseResponse<T[]>(response, table);
 }
 
+export async function supabaseUpsert<T>(
+  table: string,
+  body: Record<string, unknown> | Array<Record<string, unknown>>,
+  onConflict: string,
+  returning = false
+): Promise<T[]> {
+  const url = new URL(`${baseUrl()}/${table}`);
+  url.searchParams.set('on_conflict', onConflict);
+  const response = await fetchSupabase(url, {
+    method: 'POST',
+    headers: serviceHeaders({
+      'Content-Type': 'application/json',
+      Prefer: [
+        'resolution=merge-duplicates',
+        returning ? 'return=representation' : 'return=minimal',
+      ].join(','),
+    }),
+    body: JSON.stringify(body),
+  }, table, 'upsert');
+  return parseResponse<T[]>(response, table);
+}
+
 export async function supabaseUpdate<T>(
   table: string,
   body: Record<string, unknown>,
