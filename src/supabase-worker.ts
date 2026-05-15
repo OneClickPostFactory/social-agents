@@ -284,6 +284,7 @@ const SLOT_HOURS = [5, 7, 12, 15];
 const ACTIVE_QUEUE_STATUSES = ['pending', 'ready', 'publishing'];
 const ACTIVE_ANGLE_STATUSES: AngleRecordStatus[] = ['unused', 'in_progress'];
 const REDDIT_TOKEN_SKEW_MS = 60_000;
+const ANGLE_EXTRACTION_TIMEOUT_MS = 12_000;
 const redditTokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
 
 function nowIso(): string {
@@ -1012,6 +1013,24 @@ function resultErrorMessage(result: JsonMap, status: string): string | null {
   if (status !== 'failed') return null;
   const summary = resultSummary(result);
   return String(summary.failureCode || summary.message || result.error || 'job_failed');
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
+
+function extractSourceBankWithJobTimeout(post: RedditPost): Promise<Awaited<ReturnType<typeof ai.extractSourceBank>>> {
+  return withTimeout(
+    ai.extractSourceBank(post),
+    Math.max(5_000, Math.min(ANGLE_EXTRACTION_TIMEOUT_MS, config.HTTP_TIMEOUT_MS - 1_000)),
+    'OpenAI angle extraction timed out before the worker could finalize the job'
+  );
 }
 
 async function completeJob(job: AgentJobRow, result: JsonMap): Promise<string> {
@@ -2164,7 +2183,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
 
       let extraction: Awaited<ReturnType<typeof ai.extractSourceBank>>;
       try {
-        extraction = await ai.extractSourceBank(post);
+        extraction = await extractSourceBankWithJobTimeout(post);
       } catch (error) {
         const textError = ai.openAITextErrorDetails(error, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE);
         const failureCode = textError?.code || 'angle_extraction_failed';

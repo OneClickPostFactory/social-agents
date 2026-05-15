@@ -837,6 +837,13 @@ function openAITextErrorCode(rawMessage: string): { code: string; systemic: bool
   ) {
     return { code: OPENAI_TEXT_MODEL_UNAVAILABLE_CODE, systemic: true };
   }
+  if (
+    normalized.includes('timed out')
+    || normalized.includes('timeout')
+    || normalized.includes('aborted')
+  ) {
+    return { code: OPENAI_TEXT_GENERATION_FAILED_CODE, systemic: true };
+  }
   return { code: OPENAI_TEXT_GENERATION_FAILED_CODE, systemic: false };
 }
 
