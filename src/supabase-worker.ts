@@ -148,6 +148,7 @@ export interface SchedulerStats {
   tenantsChecked: number;
   staleJobsFailed: number;
   fetchJobsEnqueued: number;
+  slotFillJobsEnqueued: number;
   publishJobsEnqueued: number;
   skipped: Record<string, number>;
 }
@@ -249,6 +250,7 @@ interface PipelineSummary {
   errors: string[];
   failedStage?: string;
   failureCode?: string;
+  mode?: 'fill_existing_angles';
 }
 
 interface QueueFromAnglesResult {
@@ -1689,6 +1691,21 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     return;
   }
 
+  if (summary.mode === 'fill_existing_angles' && summary.queue.created === 0) {
+    if (summary.drafts.failures > 0) {
+      summary.outcome = 'blocked';
+      summary.message = 'Automation found unused angles, but OpenAI drafting failed. Fix OpenAI billing/quota, then retry.';
+      summary.nextAction = 'Fix OpenAI billing/quota or wait for rate limits to reset, then let automation run again.';
+      return;
+    }
+    if (summary.angles.activeAtStart === 0 || summary.angles.draftableAtStart === 0) {
+      summary.outcome = 'empty';
+      summary.message = 'Automation is enabled, but there are no unused angles to schedule.';
+      summary.nextAction = 'Run Fetch sources to bank new angles, then automation can fill open slots.';
+      return;
+    }
+  }
+
   if (summary.failedStage === ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE) {
     summary.outcome = summary.queue.created > 0 ? 'queued' : 'blocked';
     summary.message = summary.queue.created > 0
@@ -2143,6 +2160,10 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
   });
   const occupiedSlots = await loadActiveSlotIndexes(job.user_id);
   const summary = await createPipelineSummary(job, tenant, sources, occupiedSlots);
+  const fillExistingAnglesOnly = job.payload?.fill_existing_angles_only === true;
+  if (fillExistingAnglesOnly) {
+    summary.mode = 'fill_existing_angles';
+  }
 
   if (!config.OPENAI_API_KEY) {
     summary.drafts.skipped++;
@@ -2152,11 +2173,6 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
   if (!tenant.activePlatforms.length) {
     summary.drafts.skipped++;
     incrementCounter(summary.drafts.skipReasons, 'no_enabled_platforms');
-    return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0 });
-  }
-
-  const enabledSources = sources.filter(source => source.enabled);
-  if (!enabledSources.length) {
     return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0 });
   }
 
@@ -2176,6 +2192,21 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     if (bankedResult.draftableSeen > 0 && await hasActiveBankedAngles(job.user_id)) {
       return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued, deferredFetch: true });
     }
+  }
+
+  if (fillExistingAnglesOnly) {
+    return finishRefreshResult(job, summary, {
+      fetched: 0,
+      banked: 0,
+      queued,
+      fillExistingAnglesOnly: true,
+      deferredFetch: true,
+    });
+  }
+
+  const enabledSources = sources.filter(source => source.enabled);
+  if (!enabledSources.length) {
+    return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0 });
   }
 
   const sourceUrlsWithAngles = await loadSourceUrlsWithAngles(job.user_id);
@@ -2711,12 +2742,26 @@ async function hasPendingOrRunningFetch(userId: string): Promise<boolean> {
     select: 'id,status,payload',
     filters: [
       { column: 'user_id', operator: 'eq', value: userId },
-      { column: 'kind', operator: 'eq', value: 'fetch_sources' },
+      { column: 'kind', operator: 'in', value: ['fetch_sources', 'refresh_queue'] },
       { column: 'status', operator: 'in', value: ['pending', 'running'] },
     ],
     limit: 10,
   });
   return rows.length > 0;
+}
+
+async function hasDraftableActiveAngle(userId: string, platforms: PlatformKey[]): Promise<boolean> {
+  if (!platforms.length) return false;
+  const rows = await supabaseSelect<AngleRecordRow>('angle_records', {
+    select: 'id,intended_platform,source_reddit_post_id,source_url,subreddit,reddit_author',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'status', operator: 'in', value: ACTIVE_ANGLE_STATUSES },
+      { column: 'intended_platform', operator: 'in', value: platforms },
+    ],
+    limit: 50,
+  });
+  return rows.some(isDraftableAngle);
 }
 
 async function hasPendingOrRunningPublish(userId: string, queueItemId: string): Promise<boolean> {
@@ -2742,6 +2787,16 @@ function fetchIsDue(settings: AutomationSettingsRow, now: Date): boolean {
   if (!settings.next_fetch_at) return true;
   const dueAt = Date.parse(settings.next_fetch_at);
   return !Number.isFinite(dueAt) || dueAt <= now.getTime();
+}
+
+function hasRecentOpenAIAutomationFailure(settings: AutomationSettingsRow, now: Date): boolean {
+  const result = settings.last_automation_result;
+  if (!result || result.status !== 'failed') return false;
+  const failureCode = String(result.failureCode || '');
+  if (!failureCode.startsWith('openai_')) return false;
+  const completedAt = Date.parse(String(result.completedAt || ''));
+  if (!Number.isFinite(completedAt)) return false;
+  return now.getTime() - completedAt < 15 * 60_000;
 }
 
 async function updateAutomationResult(
@@ -2860,6 +2915,92 @@ async function enqueueDueFetchJobs(stats: SchedulerStats, now: Date): Promise<vo
       jobId: job?.id || null,
       dueAt,
       nextFetchAt,
+      scheduler: SCHEDULER_NAME,
+    });
+  }
+}
+
+async function enqueueDueSlotFillJobs(stats: SchedulerStats, now: Date): Promise<void> {
+  const settingsRows = await supabaseSelect<AutomationSettingsRow>('user_settings', {
+    select: '*',
+    filters: [
+      { column: 'automation_enabled', operator: 'eq', value: true },
+      { column: 'automation_publish_enabled', operator: 'eq', value: true },
+    ],
+    limit: 200,
+  });
+
+  for (const settings of settingsRows) {
+    stats.tenantsChecked++;
+
+    if (hasRecentOpenAIAutomationFailure(settings, now)) {
+      incrementSchedulerSkip(stats, 'fill_recent_openai_failure');
+      continue;
+    }
+
+    const entitlement = await loadEntitlement(settings.user_id);
+    if (!entitlement.canWrite) {
+      incrementSchedulerSkip(stats, `fill_access_${entitlement.reason}`);
+      await recordAutomationSkip(
+        settings.user_id,
+        'refresh_queue',
+        entitlement.reason,
+        'Scheduled slot fill is blocked by billing or access state.',
+        'Restore billing access or dev/test access before automation can fill open slots.'
+      );
+      continue;
+    }
+
+    const tenant = await loadTenantContext(settings.user_id);
+    if (!tenant.activePlatforms.length) {
+      incrementSchedulerSkip(stats, 'fill_no_enabled_platforms');
+      continue;
+    }
+
+    const occupiedSlots = await loadActiveSlotIndexes(settings.user_id);
+    if (firstOpenSlot(occupiedSlots) === undefined) {
+      incrementSchedulerSkip(stats, 'fill_no_open_queue_slot');
+      continue;
+    }
+
+    if (await hasPendingOrRunningFetch(settings.user_id)) {
+      incrementSchedulerSkip(stats, 'fill_already_pending_or_running');
+      continue;
+    }
+
+    if (!(await hasDraftableActiveAngle(settings.user_id, tenant.activePlatforms))) {
+      incrementSchedulerSkip(stats, 'fill_no_unused_angles');
+      continue;
+    }
+
+    const inserted = await supabaseInsert<AgentJobRow>('agent_jobs', {
+      user_id: settings.user_id,
+      kind: 'refresh_queue',
+      payload: {
+        source: SCHEDULED_SOURCE,
+        scheduler: SCHEDULER_NAME,
+        mode: 'fill_existing_angles',
+        fill_existing_angles_only: true,
+        due_at: now.toISOString(),
+      },
+    }, true);
+    const job = inserted[0];
+    await updateAutomationResult(settings.user_id, {
+      jobId: job?.id || null,
+      kind: 'refresh_queue',
+      status: 'pending',
+      origin: 'scheduled',
+      mode: 'fill_existing_angles',
+      message: 'Scheduled slot fill was queued from existing unused angles.',
+      nextAction: 'Wait for the worker to draft an unused angle into the next open slot.',
+      dueAt: now.toISOString(),
+    }, {
+      last_scheduled_job_id: job?.id || null,
+    });
+    stats.slotFillJobsEnqueued++;
+    await writeWorkerLog(settings.user_id, 'info', 'scheduled_slot_fill_enqueued', {
+      jobId: job?.id || null,
+      dueAt: now.toISOString(),
       scheduler: SCHEDULER_NAME,
     });
   }
@@ -3064,12 +3205,14 @@ export async function runSupabaseAutomationScheduler(): Promise<SchedulerStats> 
     tenantsChecked: 0,
     staleJobsFailed: 0,
     fetchJobsEnqueued: 0,
+    slotFillJobsEnqueued: 0,
     publishJobsEnqueued: 0,
     skipped: {},
   };
   const now = new Date();
   await cleanupStaleRunningJobs(stats, now);
   await enqueueDueFetchJobs(stats, now);
+  await enqueueDueSlotFillJobs(stats, now);
   await enqueueDuePublishJobs(stats, now);
   return stats;
 }

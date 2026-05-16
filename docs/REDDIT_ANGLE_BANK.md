@@ -85,6 +85,15 @@ The worker drains existing `unused` or `in_progress` angles before fetching new
 Reddit posts. This prevents wasting OpenAI calls on new sources while usable
 banked angles remain.
 
+Cloudflare scheduled automation keeps slot filling and publishing separate.
+Scheduled publish only publishes existing `queue_items` whose `scheduled_for`
+time is due. It does not turn angles into posts. A separate scheduled
+`refresh_queue` job with `fill_existing_angles_only=true` fills open slots from
+existing metadata-complete angles without fetching Reddit. If no usable angles
+exist, the job should say automation has no unused angles to schedule. If OpenAI
+drafting fails while filling slots, the job must finalize with an OpenAI blocker
+instead of retrying every cron tick.
+
 Accepted source records are saved before OpenAI angle extraction starts. A
 `source_records` row without matching tenant-scoped `angle_records` is preserved
 evidence, not a completed source. It must not block future angle extraction after
