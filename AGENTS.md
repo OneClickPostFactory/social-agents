@@ -66,7 +66,7 @@ This codebase now has two runtime boundaries:
 - SaaS reads/writes for `profiles`, `user_credentials`, `user_sources`, `user_settings`, `queue_items`, `publish_history`, `source_records`, `angle_records`, and `worker_logs` are scoped by `job.user_id`.
 - SaaS source ingestion also enforces source intent. `user_sources` rows declare `provider`, `acquisition_mode`, `source_scope`, `target_author`, `allowed_subreddits`, and `allow_unfiltered_rss`. RSS is blocked by default unless it is an author RSS feed with a matching Reddit author or the user explicitly enables Discovery Feed mode.
 - SaaS credential values are decrypted with `CREDENTIAL_ENCRYPTION_KEY`.
-- SaaS billing entitlement is checked from Supabase `profiles`; the local SQLite billing state and local billing bypass do not grant SaaS worker entitlement.
+- SaaS billing entitlement is checked from Supabase `profiles`; the local SQLite billing state and local billing bypass do not grant SaaS worker entitlement. A future `profiles.dev_access_until` is the only SaaS dev/test override, and it must be presented as dev/test access rather than paid Stripe status.
 - Local SQLite remains acceptable for local admin/dev state, but it is not the SaaS tenant source of truth.
 
 Known SaaS worker limitations:

@@ -62,6 +62,7 @@ interface ProfileRow {
   subscription_status?: string | null;
   current_period_end?: string | null;
   trial_ends_at?: string | null;
+  dev_access_until?: string | null;
 }
 
 interface UserSettingsRow {
@@ -589,12 +590,15 @@ async function writeWorkerLog(
 
 async function loadEntitlement(userId: string): Promise<{ canWrite: boolean; status: string; reason: string }> {
   const profile = (await supabaseSelect<ProfileRow>('profiles', {
-    select: 'subscription_status,current_period_end,trial_ends_at',
+    select: 'subscription_status,current_period_end,trial_ends_at,dev_access_until',
     filters: [{ column: 'user_id', operator: 'eq', value: userId }],
     limit: 1,
   }))[0];
 
   const status = profile?.subscription_status || 'none';
+  if (hasDateInFuture(profile?.dev_access_until)) {
+    return { canWrite: true, status, reason: 'dev_access' };
+  }
   if (status === 'active') return { canWrite: true, status, reason: 'ok' };
   if (status === 'trialing' && hasDateInFuture(profile?.trial_ends_at)) {
     return { canWrite: true, status, reason: 'ok' };
