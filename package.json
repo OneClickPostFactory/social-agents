@@ -6,9 +6,9 @@
   "scripts": {
     "build": "tsx scripts/build.ts",
     "typecheck": "tsc --noEmit --project tsconfig.json",
-    "test": "npm run build && node dist/test/security-hardening.test.js",
+    "test": "npm run build && node dist/test/security-hardening.test.js && node dist/test/slot-scheduler.test.js",
     "smoke:dist": "node dist/src/cli.js status",
-    "ci": "npm run typecheck && npm run build && npm run smoke:dist && node dist/test/security-hardening.test.js",
+    "ci": "npm run typecheck && npm run build && npm run smoke:dist && node dist/test/security-hardening.test.js && node dist/test/slot-scheduler.test.js",
     "smoke:reddit-public-json": "tsx scripts/smoke-reddit-public-json.ts",
     "dev": "tsx src/agent.ts",
     "worker:supabase": "tsx src/supabase-worker.ts",

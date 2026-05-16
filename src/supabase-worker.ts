@@ -34,6 +34,14 @@ import {
   type RedditPublicJsonRuntime,
   type RedditPublicJsonUsedTransport,
 } from './reddit-public-json';
+import {
+  buildPlatformSlotOccupancy,
+  nextOpenPlatformSlot,
+  platformSlotOccupancyKey,
+  tenantTimeZone,
+  type PlatformSlotOccupancy,
+  type ScheduledPlatformSlot,
+} from './slot-scheduler';
 
 import type { AppConfig } from '../config';
 import type { AngleCandidate, PlatformKey, RedditPost, SourceSummary } from './types';
@@ -317,7 +325,6 @@ const SUPPORTED_JOB_KINDS = new Set<JobKind>([
   'release_slot',
 ]);
 
-const SLOT_HOURS = [5, 7, 12, 15];
 const ACTIVE_QUEUE_STATUSES = ['pending', 'ready', 'publishing'];
 const ACTIVE_ANGLE_STATUSES: AngleRecordStatus[] = ['unused', 'in_progress'];
 const REDDIT_TOKEN_SKEW_MS = 60_000;
@@ -818,7 +825,7 @@ async function createPipelineSummary(
   job: AgentJobRow,
   tenant: TenantContext,
   sources: UserSourceRow[],
-  occupiedSlots: Set<number>
+  occupiedSlots: PlatformSlotOccupancy
 ): Promise<PipelineSummary> {
   const entitlement = await loadEntitlement(job.user_id);
   const enabledSources = sources.filter(source => source.enabled);
@@ -896,7 +903,7 @@ async function createPipelineSummary(
       failureReasons: {},
     },
     queue: {
-      openSlotsAtStart: Math.max(0, 4 - occupiedSlots.size),
+      openSlotsAtStart: Math.max(0, tenant.activePlatforms.length * 4 - occupiedSlots.size),
       activeSlotsAtStart: occupiedSlots.size,
       created: 0,
       ready: 0,
@@ -1539,30 +1546,20 @@ function getPlatformDraftText(
   }
 }
 
-function nextScheduledFor(slotIndex: number): string {
-  const now = new Date();
-  const scheduled = new Date(now);
-  scheduled.setHours(SLOT_HOURS[slotIndex] || 9, 0, 0, 0);
-  if (scheduled.getTime() <= now.getTime()) {
-    scheduled.setDate(scheduled.getDate() + 1);
-  }
-  return scheduled.toISOString();
+function tenantAutomationTimeZone(tenant: TenantContext): string {
+  return tenantTimeZone(tenant.settings.automation_timezone, tenant.settings.posting_timezone);
 }
 
-async function loadActiveSlotIndexes(userId: string): Promise<Set<number>> {
+async function loadActiveSlotOccupancy(userId: string, timeZone: string): Promise<PlatformSlotOccupancy> {
   const rows = await supabaseSelect<QueueItemRow>('queue_items', {
-    select: 'slot_index,status',
+    select: 'slot_index,status,platform,scheduled_for',
     filters: [
       { column: 'user_id', operator: 'eq', value: userId },
       { column: 'status', operator: 'in', value: ACTIVE_QUEUE_STATUSES },
     ],
     limit: 100,
   });
-  return new Set(rows.map(row => Number(row.slot_index)));
-}
-
-function firstOpenSlot(occupied: Set<number>): number | undefined {
-  return [0, 1, 2, 3].find(slot => !occupied.has(slot));
+  return buildPlatformSlotOccupancy(rows, timeZone);
 }
 
 async function loadSourceUrlsWithAngles(userId: string): Promise<Set<string>> {
@@ -1878,7 +1875,7 @@ function tenantRedditConfig(sources: UserSourceRow[]): {
 
 function toQueueRows(
   userId: string,
-  slotIndex: number,
+  slot: ScheduledPlatformSlot,
   post: RedditPost,
   sourceUrl: string,
   angle: AngleCandidate,
@@ -1886,12 +1883,11 @@ function toQueueRows(
   platforms: PlatformKey[],
   angleRecordId?: string
 ): Array<Record<string, unknown>> {
-  const scheduledFor = nextScheduledFor(slotIndex);
   return platforms
     .map(platform => ({
       user_id: userId,
-      slot_index: slotIndex,
-      scheduled_for: scheduledFor,
+      slot_index: slot.slotIndex,
+      scheduled_for: slot.scheduledFor,
       platform,
       status: 'ready',
       draft_text: getPlatformDraftText(draft, platform),
@@ -1942,7 +1938,8 @@ function isDraftableAngle(row: AngleRecordRow): boolean {
 async function queueFromBankedAngles(
   job: AgentJobRow,
   tenant: TenantContext,
-  occupiedSlots: Set<number>,
+  occupiedSlots: PlatformSlotOccupancy,
+  timeZone: string,
   summary?: PipelineSummary
 ): Promise<QueueFromAnglesResult> {
   const result: QueueFromAnglesResult = {
@@ -1951,14 +1948,6 @@ async function queueFromBankedAngles(
     failures: 0,
     rejected: 0,
   };
-  const slotIndex = firstOpenSlot(occupiedSlots);
-  if (slotIndex === undefined) {
-    if (summary) {
-      summary.drafts.skipped++;
-      incrementCounter(summary.drafts.skipReasons, 'no_open_queue_slot');
-    }
-    return result;
-  }
 
   const angles = await supabaseSelect<AngleRecordRow>('angle_records', {
     select: '*',
@@ -1999,6 +1988,7 @@ async function queueFromBankedAngles(
 
     result.draftableSeen++;
     if (summary) summary.drafts.attempted++;
+    const slot = nextOpenPlatformSlot(platform, occupiedSlots, timeZone);
 
     const locked = await supabaseUpdate<AngleRecordRow>('angle_records', {
       status: 'in_progress',
@@ -2058,7 +2048,7 @@ async function queueFromBankedAngles(
       }
       const rows = toQueueRows(
         job.user_id,
-        slotIndex,
+        slot,
         post,
         currentAngle.source_url || `banked-angle:${currentAngle.id}`,
         selectedAngle,
@@ -2091,19 +2081,22 @@ async function queueFromBankedAngles(
           { column: 'user_id', operator: 'eq', value: job.user_id },
         ],
       });
-      occupiedSlots.add(slotIndex);
-      result.queued = rows.length;
+      occupiedSlots.add(platformSlotOccupancyKey(platform, slot.localDate, slot.slotIndex));
+      result.queued += rows.length;
       if (summary) {
         summary.queue.created += rows.length;
         summary.drafts.created += rows.length;
       }
       await writeWorkerLog(job.user_id, 'info', 'queued_banked_angle', {
         jobId: job.id,
-        slotIndex,
+        slotIndex: slot.slotIndex,
+        localDate: slot.localDate,
+        localHour: slot.localHour,
+        scheduledFor: slot.scheduledFor,
+        timeZone,
         angleId: currentAngle.id,
         platforms: rows.map(row => row.platform),
       });
-      return result;
     } catch (error) {
       result.failures++;
       const textError = ai.openAITextErrorDetails(error, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE);
@@ -2158,7 +2151,8 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     order: 'created_at.asc',
     limit: 100,
   });
-  const occupiedSlots = await loadActiveSlotIndexes(job.user_id);
+  const timeZone = tenantAutomationTimeZone(tenant);
+  const occupiedSlots = await loadActiveSlotOccupancy(job.user_id, timeZone);
   const summary = await createPipelineSummary(job, tenant, sources, occupiedSlots);
   const fillExistingAnglesOnly = job.payload?.fill_existing_angles_only === true;
   if (fillExistingAnglesOnly) {
@@ -2176,14 +2170,10 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0 });
   }
 
-  if (firstOpenSlot(occupiedSlots) === undefined) {
-    return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0, deferredFetch: true });
-  }
-
   let queued = 0;
 
   if (summary.angles.activeAtStart > 0) {
-    const bankedResult = await queueFromBankedAngles(job, tenant, occupiedSlots, summary);
+    const bankedResult = await queueFromBankedAngles(job, tenant, occupiedSlots, timeZone, summary);
     queued += bankedResult.queued;
     if (queued > 0) {
       return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued, deferredFetch: true });
@@ -2223,7 +2213,6 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
 
   for (const source of processingSources) {
     if (stopSourceProcessing) break;
-    if (firstOpenSlot(occupiedSlots) === undefined) break;
     summary.sources.checked++;
     const intent = sourceIntentFor(source, tenantAuthor, tenantAllowedSubreddits);
     const preflightRejectReason = preflightSourceIntentRejectReason(intent);
@@ -2325,8 +2314,6 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     }
 
     for (const { post, sourceRecordId, sourceUrl } of acceptedSourceRecords) {
-      if (firstOpenSlot(occupiedSlots) === undefined) break;
-
       if (sourceUrlsWithAngles.has(sourceUrl)) {
         summary.sources.duplicatesSkipped++;
         summary.angles.alreadyExisting++;
@@ -2418,7 +2405,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
       summary.angles.created += angleRows.length;
       sourceUrlsWithAngles.add(sourceUrl);
 
-      const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, summary);
+      const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, timeZone, summary);
       queued += queuedFromAngles.queued;
       await writeWorkerLog(job.user_id, 'info', 'source_banked_angles', {
         jobId: job.id,
@@ -2433,8 +2420,8 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     if (queued > 0 || await hasActiveBankedAngles(job.user_id)) break;
   }
 
-  if (queued === 0 && firstOpenSlot(occupiedSlots) !== undefined) {
-    const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, summary);
+  if (queued === 0) {
+    const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, timeZone, summary);
     queued += queuedFromAngles.queued;
   }
 
@@ -2954,12 +2941,6 @@ async function enqueueDueSlotFillJobs(stats: SchedulerStats, now: Date): Promise
     const tenant = await loadTenantContext(settings.user_id);
     if (!tenant.activePlatforms.length) {
       incrementSchedulerSkip(stats, 'fill_no_enabled_platforms');
-      continue;
-    }
-
-    const occupiedSlots = await loadActiveSlotIndexes(settings.user_id);
-    if (firstOpenSlot(occupiedSlots) === undefined) {
-      incrementSchedulerSkip(stats, 'fill_no_open_queue_slot');
       continue;
     }
 
