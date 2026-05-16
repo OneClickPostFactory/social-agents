@@ -46,17 +46,18 @@ function applyCloudflareEnv(env: Env): void {
 async function runScheduledTick(env: Env): Promise<Response> {
   applyCloudflareEnv(env);
 
-  const [{ processPendingSupabaseJobs }, logger] = await Promise.all([
+  const [{ processPendingSupabaseJobs, runSupabaseAutomationScheduler }, logger] = await Promise.all([
     import('./supabase-worker'),
     import('./logger'),
   ]);
 
+  const schedulerStats = await runSupabaseAutomationScheduler();
   const stats = await processPendingSupabaseJobs();
   logger.info(
-    `Cloudflare scheduled worker tick | claimed:${stats.claimed} completed:${stats.completed} failed:${stats.failed}`
+    `Cloudflare scheduled worker tick | scheduled_fetch:${schedulerStats.fetchJobsEnqueued} scheduled_publish:${schedulerStats.publishJobsEnqueued} stale_failed:${schedulerStats.staleJobsFailed} claimed:${stats.claimed} completed:${stats.completed} failed:${stats.failed}`
   );
 
-  return Response.json({ ok: true, stats });
+  return Response.json({ ok: true, schedulerStats, stats });
 }
 
 export default {

@@ -56,6 +56,10 @@ interface AgentJobRow {
   payload: JsonMap | null;
   status: string;
   created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error?: string | null;
+  result?: JsonMap | null;
 }
 
 interface ProfileRow {
@@ -66,6 +70,7 @@ interface ProfileRow {
 }
 
 interface UserSettingsRow {
+  user_id?: string | null;
   ai_model?: string | null;
   posting_timezone?: string | null;
   threads_enabled?: boolean | null;
@@ -73,6 +78,19 @@ interface UserSettingsRow {
   linkedin_enabled?: boolean | null;
   x_enabled?: boolean | null;
   facebook_enabled?: boolean | null;
+  automation_enabled?: boolean | null;
+  automation_fetch_enabled?: boolean | null;
+  automation_publish_enabled?: boolean | null;
+  automation_timezone?: string | null;
+  automation_cadence_minutes?: number | null;
+  next_fetch_at?: string | null;
+  last_scheduled_fetch_at?: string | null;
+  last_scheduled_job_id?: string | null;
+  last_automation_result?: JsonMap | null;
+}
+
+interface AutomationSettingsRow extends UserSettingsRow {
+  user_id: string;
 }
 
 interface UserSourceRow {
@@ -117,6 +135,21 @@ interface QueueItemRow {
   source_title?: string | null;
   angle?: string | null;
   angle_record_id?: string | null;
+}
+
+interface WorkerLogRow {
+  level: WorkerLevel;
+  message: string;
+  context?: JsonMap | null;
+  created_at: string;
+}
+
+export interface SchedulerStats {
+  tenantsChecked: number;
+  staleJobsFailed: number;
+  fetchJobsEnqueued: number;
+  publishJobsEnqueued: number;
+  skipped: Record<string, number>;
 }
 
 type AngleRecordStatus = 'unused' | 'in_progress' | 'drafted' | 'published' | 'rejected' | 'exhausted';
@@ -287,10 +320,21 @@ const ACTIVE_QUEUE_STATUSES = ['pending', 'ready', 'publishing'];
 const ACTIVE_ANGLE_STATUSES: AngleRecordStatus[] = ['unused', 'in_progress'];
 const REDDIT_TOKEN_SKEW_MS = 60_000;
 const ANGLE_EXTRACTION_TIMEOUT_MS = 12_000;
+const SCHEDULER_NAME = 'cloudflare_cron';
+const SCHEDULED_SOURCE = 'scheduled';
+const STALE_RUNNING_JOB_MINUTES = 3;
 const redditTokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function addMinutesIso(date: Date, minutes: number): string {
+  return new Date(date.getTime() + minutes * 60_000).toISOString();
+}
+
+function incrementSchedulerSkip(stats: SchedulerStats, reason: string): void {
+  stats.skipped[reason] = (stats.skipped[reason] || 0) + 1;
 }
 
 function secondsFromNowIso(seconds: number | undefined): string | null {
@@ -1020,6 +1064,56 @@ function resultErrorMessage(result: JsonMap, status: string): string | null {
   return String(summary.failureCode || summary.message || result.error || 'job_failed');
 }
 
+function payloadSource(payload: JsonMap | null | undefined): string {
+  return typeof payload?.source === 'string' ? payload.source : 'manual';
+}
+
+function jobOrigin(job: AgentJobRow): string {
+  const source = payloadSource(job.payload);
+  if (source === SCHEDULED_SOURCE) return 'scheduled';
+  if (source.includes('smoke') || Boolean(job.payload?.smoke_test) || Boolean(job.payload?.smoke)) return 'smoke-test';
+  if (source === 'system') return 'system';
+  return 'manual';
+}
+
+function queueItemIdFromPayload(payload: JsonMap | null | undefined): string {
+  return typeof payload?.queue_item_id === 'string' ? payload.queue_item_id : '';
+}
+
+function isScheduledJob(job: AgentJobRow): boolean {
+  return payloadSource(job.payload) === SCHEDULED_SOURCE
+    && job.payload?.scheduler === SCHEDULER_NAME;
+}
+
+function automationResultPayload(job: AgentJobRow, status: string, result: JsonMap): JsonMap {
+  const summary = resultSummary(result);
+  return {
+    jobId: job.id,
+    kind: job.kind,
+    status,
+    origin: jobOrigin(job),
+    completedAt: nowIso(),
+    message: String(summary.message || result.message || result.error || status),
+    nextAction: String(summary.nextAction || result.nextAction || ''),
+    failedStage: typeof summary.failedStage === 'string' ? summary.failedStage : null,
+    failureCode: typeof summary.failureCode === 'string' ? summary.failureCode : null,
+  };
+}
+
+async function recordScheduledAutomationResult(job: AgentJobRow, status: string, result: JsonMap): Promise<void> {
+  if (!isScheduledJob(job)) return;
+  try {
+    await supabaseUpdate('user_settings', {
+      last_scheduled_job_id: job.id,
+      last_automation_result: automationResultPayload(job, status, result),
+    }, {
+      filters: [{ column: 'user_id', operator: 'eq', value: job.user_id }],
+    });
+  } catch (error) {
+    logger.warn(`Scheduled automation result update failed: ${publicError(error)}`);
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -1051,6 +1145,7 @@ async function completeJob(job: AgentJobRow, result: JsonMap): Promise<string> {
       { column: 'user_id', operator: 'eq', value: job.user_id },
     ],
   });
+  await recordScheduledAutomationResult(job, status, result);
   return status;
 }
 
@@ -1080,6 +1175,7 @@ async function failJob(job: AgentJobRow, error: unknown): Promise<void> {
       { column: 'user_id', operator: 'eq', value: job.user_id },
     ],
   });
+  await recordScheduledAutomationResult(job, 'failed', result);
 }
 
 function hashId(value: string): string {
@@ -1993,10 +2089,19 @@ async function queueFromBankedAngles(
       return result;
     } catch (error) {
       result.failures++;
+      const textError = ai.openAITextErrorDetails(error, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE);
       if (summary) {
         summary.drafts.failures++;
-        incrementCounter(summary.drafts.failureReasons, errorFailureReason(error));
-        addSummaryError(summary, error);
+        incrementCounter(summary.drafts.failureReasons, textError?.code || errorFailureReason(error));
+        if (textError) {
+          if (!summary.errors.includes(textError.userMessage)) {
+            summary.errors.push(textError.userMessage);
+          }
+          summary.failedStage ||= textError.stage;
+          summary.failureCode ||= textError.code;
+        } else {
+          addSummaryError(summary, error);
+        }
       }
       await supabaseUpdate('angle_records', {
         status: 'unused',
@@ -2013,6 +2118,16 @@ async function queueFromBankedAngles(
         error: publicError(error),
         ...(draftErrorContext || {}),
       });
+      if (textError?.systemic) {
+        await writeWorkerLog(job.user_id, 'warn', 'banked_angle_draft_stopped', {
+          jobId: job.id,
+          angleId: currentAngle.id,
+          normalized_error_code: textError.code,
+          stage: textError.stage,
+          next_action: textError.nextAction,
+        });
+        return result;
+      }
     }
   }
 
@@ -2579,6 +2694,386 @@ async function handleReleaseSlot(job: AgentJobRow): Promise<JsonMap> {
   return { released: rows.length };
 }
 
+async function hasEnabledSource(userId: string): Promise<boolean> {
+  const rows = await supabaseSelect<UserSourceRow>('user_sources', {
+    select: 'id',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'enabled', operator: 'eq', value: true },
+    ],
+    limit: 1,
+  });
+  return rows.length > 0;
+}
+
+async function hasPendingOrRunningFetch(userId: string): Promise<boolean> {
+  const rows = await supabaseSelect<AgentJobRow>('agent_jobs', {
+    select: 'id,status,payload',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'kind', operator: 'eq', value: 'fetch_sources' },
+      { column: 'status', operator: 'in', value: ['pending', 'running'] },
+    ],
+    limit: 10,
+  });
+  return rows.length > 0;
+}
+
+async function hasPendingOrRunningPublish(userId: string, queueItemId: string): Promise<boolean> {
+  const rows = await supabaseSelect<AgentJobRow>('agent_jobs', {
+    select: 'id,status,payload',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'kind', operator: 'eq', value: 'publish_now' },
+      { column: 'status', operator: 'in', value: ['pending', 'running'] },
+    ],
+    limit: 50,
+  });
+  return rows.some(row => queueItemIdFromPayload(row.payload) === queueItemId);
+}
+
+function cadenceMinutes(settings: AutomationSettingsRow): number {
+  const value = Number(settings.automation_cadence_minutes || 1440);
+  if (!Number.isFinite(value)) return 1440;
+  return Math.max(15, Math.min(Math.round(value), 10080));
+}
+
+function fetchIsDue(settings: AutomationSettingsRow, now: Date): boolean {
+  if (!settings.next_fetch_at) return true;
+  const dueAt = Date.parse(settings.next_fetch_at);
+  return !Number.isFinite(dueAt) || dueAt <= now.getTime();
+}
+
+async function updateAutomationResult(
+  userId: string,
+  result: JsonMap,
+  extra?: Record<string, unknown>
+): Promise<void> {
+  try {
+    await supabaseUpdate('user_settings', {
+      ...extra,
+      last_automation_result: result,
+    }, {
+      filters: [{ column: 'user_id', operator: 'eq', value: userId }],
+    });
+  } catch (error) {
+    logger.warn(`Automation result update failed: ${publicError(error)}`);
+  }
+}
+
+async function recordAutomationSkip(
+  userId: string,
+  kind: string,
+  reason: string,
+  message: string,
+  nextAction: string
+): Promise<void> {
+  await updateAutomationResult(userId, {
+    kind,
+    status: 'skipped',
+    origin: 'scheduled',
+    reason,
+    message,
+    nextAction,
+    checkedAt: nowIso(),
+  });
+}
+
+async function enqueueDueFetchJobs(stats: SchedulerStats, now: Date): Promise<void> {
+  const settingsRows = await supabaseSelect<AutomationSettingsRow>('user_settings', {
+    select: '*',
+    filters: [
+      { column: 'automation_enabled', operator: 'eq', value: true },
+      { column: 'automation_fetch_enabled', operator: 'eq', value: true },
+    ],
+    limit: 200,
+  });
+
+  for (const settings of settingsRows) {
+    stats.tenantsChecked++;
+    if (!fetchIsDue(settings, now)) {
+      incrementSchedulerSkip(stats, 'fetch_not_due');
+      continue;
+    }
+
+    const entitlement = await loadEntitlement(settings.user_id);
+    if (!entitlement.canWrite) {
+      incrementSchedulerSkip(stats, `fetch_access_${entitlement.reason}`);
+      await recordAutomationSkip(
+        settings.user_id,
+        'fetch_sources',
+        entitlement.reason,
+        'Scheduled fetch is blocked by billing or access state.',
+        'Restore billing access or dev/test access, then wait for the next scheduled run.'
+      );
+      continue;
+    }
+
+    if (!(await hasEnabledSource(settings.user_id))) {
+      incrementSchedulerSkip(stats, 'fetch_no_enabled_sources');
+      await recordAutomationSkip(
+        settings.user_id,
+        'fetch_sources',
+        'no_enabled_sources',
+        'Automation is enabled, but no enabled sources are configured.',
+        'Add an enabled Reddit user, subreddit, or approved discovery feed.'
+      );
+      continue;
+    }
+
+    if (await hasPendingOrRunningFetch(settings.user_id)) {
+      incrementSchedulerSkip(stats, 'fetch_already_pending_or_running');
+      continue;
+    }
+
+    const dueAt = settings.next_fetch_at || now.toISOString();
+    const inserted = await supabaseInsert<AgentJobRow>('agent_jobs', {
+      user_id: settings.user_id,
+      kind: 'fetch_sources',
+      payload: {
+        source: SCHEDULED_SOURCE,
+        scheduler: SCHEDULER_NAME,
+        due_at: dueAt,
+      },
+    }, true);
+    const job = inserted[0];
+    const nextFetchAt = addMinutesIso(now, cadenceMinutes(settings));
+    await supabaseUpdate('user_settings', {
+      last_scheduled_fetch_at: now.toISOString(),
+      last_scheduled_job_id: job?.id || null,
+      next_fetch_at: nextFetchAt,
+      last_automation_result: {
+        jobId: job?.id || null,
+        kind: 'fetch_sources',
+        status: 'pending',
+        origin: 'scheduled',
+        message: 'Scheduled fetch was queued by Cloudflare cron.',
+        nextAction: 'Wait for the worker to process this scheduled fetch.',
+        dueAt,
+        nextFetchAt,
+      },
+    }, {
+      filters: [{ column: 'user_id', operator: 'eq', value: settings.user_id }],
+    });
+    stats.fetchJobsEnqueued++;
+    await writeWorkerLog(settings.user_id, 'info', 'scheduled_fetch_enqueued', {
+      jobId: job?.id || null,
+      dueAt,
+      nextFetchAt,
+      scheduler: SCHEDULER_NAME,
+    });
+  }
+}
+
+async function loadAutomationSettingsByUser(): Promise<Map<string, AutomationSettingsRow>> {
+  const rows = await supabaseSelect<AutomationSettingsRow>('user_settings', {
+    select: '*',
+    filters: [{ column: 'automation_enabled', operator: 'eq', value: true }],
+    limit: 500,
+  });
+  return new Map(rows.map(row => [row.user_id, row]));
+}
+
+async function enqueueDuePublishJobs(stats: SchedulerStats, now: Date): Promise<void> {
+  const settingsByUser = await loadAutomationSettingsByUser();
+  const dueRows = await supabaseSelect<QueueItemRow>('queue_items', {
+    select: 'id,user_id,platform,status,slot_index,scheduled_for',
+    filters: [
+      { column: 'status', operator: 'in', value: ['pending', 'ready'] },
+      { column: 'scheduled_for', operator: 'lte', value: now.toISOString() },
+    ],
+    order: 'scheduled_for.asc',
+    limit: 100,
+  });
+
+  for (const row of dueRows) {
+    const settings = settingsByUser.get(row.user_id);
+    if (!settings || !settings.automation_publish_enabled) {
+      incrementSchedulerSkip(stats, 'publish_automation_disabled');
+      continue;
+    }
+
+    const entitlement = await loadEntitlement(row.user_id);
+    if (!entitlement.canWrite) {
+      incrementSchedulerSkip(stats, `publish_access_${entitlement.reason}`);
+      await recordAutomationSkip(
+        row.user_id,
+        'publish_now',
+        entitlement.reason,
+        'Scheduled publish is blocked by billing or access state.',
+        'Restore billing access or dev/test access before scheduled publishing can continue.'
+      );
+      continue;
+    }
+
+    if (await hasPendingOrRunningPublish(row.user_id, row.id)) {
+      incrementSchedulerSkip(stats, 'publish_already_pending_or_running');
+      continue;
+    }
+
+    const inserted = await supabaseInsert<AgentJobRow>('agent_jobs', {
+      user_id: row.user_id,
+      kind: 'publish_now',
+      payload: {
+        source: SCHEDULED_SOURCE,
+        scheduler: SCHEDULER_NAME,
+        queue_item_id: row.id,
+        due_at: row.scheduled_for,
+      },
+    }, true);
+    const job = inserted[0];
+    await updateAutomationResult(row.user_id, {
+      jobId: job?.id || null,
+      kind: 'publish_now',
+      status: 'pending',
+      origin: 'scheduled',
+      message: `Scheduled ${row.platform} publish was queued.`,
+      nextAction: 'Wait for the worker to publish this due queue item.',
+      queueItemId: row.id,
+      dueAt: row.scheduled_for,
+    }, {
+      last_scheduled_job_id: job?.id || null,
+    });
+    stats.publishJobsEnqueued++;
+    await writeWorkerLog(row.user_id, 'info', 'scheduled_publish_enqueued', {
+      jobId: job?.id || null,
+      queueItemId: row.id,
+      platform: row.platform,
+      dueAt: row.scheduled_for,
+      scheduler: SCHEDULER_NAME,
+    });
+  }
+}
+
+function textFromWorkerLog(row: WorkerLogRow): string {
+  return `${row.message} ${row.context ? JSON.stringify(row.context) : ''}`;
+}
+
+async function staleOpenAITextError(job: AgentJobRow): Promise<ai.OpenAITextErrorDetails | undefined> {
+  if (!job.started_at) return undefined;
+  const logs = await supabaseSelect<WorkerLogRow>('worker_logs', {
+    select: 'level,message,context,created_at',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: job.user_id },
+      { column: 'created_at', operator: 'gte', value: job.started_at },
+    ],
+    order: 'created_at.desc',
+    limit: 50,
+  });
+
+  for (const row of logs) {
+    const details = ai.openAITextErrorDetails(
+      new Error(textFromWorkerLog(row)),
+      ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE
+    );
+    if (details?.systemic) return details;
+  }
+  return undefined;
+}
+
+function staleJobResult(job: AgentJobRow, details?: ai.OpenAITextErrorDetails): JsonMap {
+  if (details) {
+    return {
+      outcome: 'blocked',
+      message: details.userMessage,
+      nextAction: details.nextAction,
+      error: details.code,
+      summary: {
+        outcome: 'blocked',
+        message: details.userMessage,
+        nextAction: details.nextAction,
+        failedStage: details.stage,
+        failureCode: details.code,
+        errors: [details.userMessage],
+        sources: {
+          postsFetched: 0,
+          postsAccepted: 0,
+          rejected: 0,
+          fetchFailures: 0,
+        },
+        angles: {
+          created: 0,
+          extractionFailures: 1,
+          failureReasons: { [details.code]: 1 },
+        },
+        queue: {
+          created: 0,
+          ready: 0,
+        },
+      },
+    };
+  }
+
+  return {
+    outcome: 'blocked',
+    message: 'The worker job exceeded its safe runtime and was marked failed.',
+    nextAction: 'Check Logs for the last recorded stage, then retry the action.',
+    error: 'worker_job_timed_out',
+    summary: {
+      outcome: 'blocked',
+      message: 'The worker job exceeded its safe runtime and was marked failed.',
+      nextAction: 'Check Logs for the last recorded stage, then retry the action.',
+      failedStage: 'worker_runtime',
+      failureCode: 'worker_job_timed_out',
+      errors: ['worker_job_timed_out'],
+    },
+  };
+}
+
+async function cleanupStaleRunningJobs(stats: SchedulerStats, now: Date): Promise<void> {
+  const cutoff = addMinutesIso(now, -STALE_RUNNING_JOB_MINUTES);
+  const jobs = await supabaseSelect<AgentJobRow>('agent_jobs', {
+    select: '*',
+    filters: [
+      { column: 'status', operator: 'eq', value: 'running' },
+      { column: 'started_at', operator: 'lte', value: cutoff },
+    ],
+    order: 'started_at.asc',
+    limit: 50,
+  });
+
+  for (const job of jobs) {
+    const details = await staleOpenAITextError(job);
+    const result = staleJobResult(job, details);
+    const summary = resultSummary(result);
+    const error = String(summary.failureCode || result.error || 'worker_job_timed_out');
+    await supabaseUpdate('agent_jobs', {
+      status: 'failed',
+      completed_at: now.toISOString(),
+      error,
+      result,
+    }, {
+      filters: [
+        { column: 'id', operator: 'eq', value: job.id },
+        { column: 'status', operator: 'eq', value: 'running' },
+      ],
+    });
+    await recordScheduledAutomationResult(job, 'failed', result);
+    stats.staleJobsFailed++;
+    await writeWorkerLog(job.user_id, 'warn', 'stale_running_job_failed', {
+      jobId: job.id,
+      kind: job.kind,
+      reason: error,
+      startedAt: job.started_at || null,
+    });
+  }
+}
+
+export async function runSupabaseAutomationScheduler(): Promise<SchedulerStats> {
+  const stats: SchedulerStats = {
+    tenantsChecked: 0,
+    staleJobsFailed: 0,
+    fetchJobsEnqueued: 0,
+    publishJobsEnqueued: 0,
+    skipped: {},
+  };
+  const now = new Date();
+  await cleanupStaleRunningJobs(stats, now);
+  await enqueueDueFetchJobs(stats, now);
+  await enqueueDuePublishJobs(stats, now);
+  return stats;
+}
+
 async function handleClaimedJob(job: AgentJobRow): Promise<JsonMap> {
   assertSupportedJobKind(job.kind);
   await assertTenantEntitlement(job);
@@ -2589,6 +3084,7 @@ async function handleClaimedJob(job: AgentJobRow): Promise<JsonMap> {
     await writeWorkerLog(job.user_id, 'info', 'job_started', {
       jobId: job.id,
       kind: job.kind,
+      origin: jobOrigin(job),
     });
 
     switch (kind) {
@@ -2627,6 +3123,7 @@ export async function processPendingSupabaseJobs(): Promise<WorkerStats> {
         jobId: job.id,
         kind: job.kind,
         status: terminalStatus,
+        origin: jobOrigin(job),
         result,
       });
     } catch (error) {
