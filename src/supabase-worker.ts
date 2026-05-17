@@ -191,7 +191,7 @@ interface TenantContext {
 }
 
 interface PipelineSummary {
-  outcome: 'queued' | 'blocked' | 'empty' | 'deferred';
+  outcome: 'queued' | 'blocked' | 'empty' | 'deferred' | 'content_exhausted';
   message: string;
   nextAction: string;
   access: {
@@ -260,6 +260,11 @@ interface PipelineSummary {
   failureCode?: string;
   mode?: 'fill_existing_angles';
 }
+
+const CONTENT_EXHAUSTED_MESSAGE =
+  'Automation is working, but there are no new usable posts from your current Reddit sources. Add more sources, enable discovery feeds, paste manual URLs, or wait for new posts.';
+const CONTENT_EXHAUSTED_NEXT_ACTION =
+  'Add another subreddit or Reddit user, enable an intentional discovery feed, paste manual Reddit URLs, or wait for new source posts.';
 
 interface QueueFromAnglesResult {
   queued: number;
@@ -1096,10 +1101,13 @@ function isScheduledJob(job: AgentJobRow): boolean {
 
 function automationResultPayload(job: AgentJobRow, status: string, result: JsonMap): JsonMap {
   const summary = resultSummary(result);
+  const outcome = typeof summary.outcome === 'string' ? summary.outcome : '';
   return {
     jobId: job.id,
     kind: job.kind,
-    status,
+    status: outcome === 'content_exhausted' ? 'content_exhausted' : status,
+    jobStatus: status,
+    outcome: outcome || null,
     origin: jobOrigin(job),
     completedAt: nowIso(),
     message: String(summary.message || result.message || result.error || status),
@@ -1666,6 +1674,12 @@ function primaryFailureReason(reasons: Record<string, number>): string {
   return first?.[0] || 'unknown';
 }
 
+function markContentExhausted(summary: PipelineSummary): void {
+  summary.outcome = 'content_exhausted';
+  summary.message = CONTENT_EXHAUSTED_MESSAGE;
+  summary.nextAction = CONTENT_EXHAUSTED_NEXT_ACTION;
+}
+
 function finalizePipelineSummary(summary: PipelineSummary): void {
   if (!summary.access.canWrite) {
     summary.outcome = 'blocked';
@@ -1696,9 +1710,7 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
       return;
     }
     if (summary.angles.activeAtStart === 0 || summary.angles.draftableAtStart === 0) {
-      summary.outcome = 'empty';
-      summary.message = 'Automation is enabled, but there are no unused angles to schedule.';
-      summary.nextAction = 'Run Fetch sources to bank new angles, then automation can fill open slots.';
+      markContentExhausted(summary);
       return;
     }
   }
@@ -1789,9 +1801,7 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
   }
 
   if (summary.sources.checked > 0 && summary.sources.postsFetched === 0 && summary.sources.fetchFailures === 0) {
-    summary.outcome = 'empty';
-    summary.message = 'Fetch completed, but Reddit returned no posts for the configured sources.';
-    summary.nextAction = 'Check the Reddit user, allowed subreddits, and source activity, then retry.';
+    markContentExhausted(summary);
     return;
   }
 
@@ -1808,9 +1818,7 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     && summary.sources.recordsCreated === 0
     && summary.angles.created === 0
   ) {
-    summary.outcome = 'empty';
-    summary.message = 'Fetch completed, but every accepted post was already in source memory.';
-    summary.nextAction = 'Work through existing banked angles or wait for newer Reddit posts.';
+    markContentExhausted(summary);
     return;
   }
 

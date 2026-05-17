@@ -136,6 +136,11 @@ Common empty outcomes:
 - RSS source fetched posts, but none matched the allowed subreddit list
 - an unfiltered RSS feed needs explicit Discovery Feed confirmation
 - no Reddit posts matched the configured author filter
+- `content_exhausted`: automation is working, but current Reddit sources have
+  no new usable posts and there are no unused angles to schedule. This is a
+  healthy terminal state, not a Reddit/platform failure. The next action is to
+  add another subreddit or Reddit user, enable an intentional discovery feed,
+  paste manual Reddit URLs, or wait for new source posts.
 - Reddit/API access failed closed
 - Reddit fetch succeeded, but OpenAI text angle extraction failed
 - no usable angles were extracted
