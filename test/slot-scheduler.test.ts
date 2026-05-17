@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 
 import {
+  activeQueueSlotUniquenessKey,
   buildPlatformSlotOccupancy,
   nextOpenPlatformSlot,
   platformSlotOccupancyKey,
+  scheduledSlotWriteFields,
   tenantLocalDateForInstant,
 } from '../src/slot-scheduler';
 
@@ -85,4 +87,79 @@ test('same user platform date slot occupancy prevents duplicate slot selection',
   assert.equal(slot.slotIndex, 3);
   assert.equal(slot.localDate, '2026-05-16');
   assert.equal(slot.scheduledFor, '2026-05-16T14:00:00.000Z');
+});
+
+test('same user platform local date slot has one active DB uniqueness key', () => {
+  const first = activeQueueSlotUniquenessKey({
+    user_id: 'tenant-1',
+    platform: 'x',
+    scheduled_local_date: '2026-05-16',
+    slot_index: 2,
+    status: 'ready',
+  });
+  const duplicate = activeQueueSlotUniquenessKey({
+    user_id: 'tenant-1',
+    platform: 'x',
+    scheduled_local_date: '2026-05-16',
+    slot_index: 2,
+    status: 'pending',
+  });
+
+  assert.equal(first, duplicate);
+});
+
+test('same user different platform same local date slot is allowed by DB key', () => {
+  const xKey = activeQueueSlotUniquenessKey({
+    user_id: 'tenant-1',
+    platform: 'x',
+    scheduled_local_date: '2026-05-16',
+    slot_index: 2,
+    status: 'ready',
+  });
+  const threadsKey = activeQueueSlotUniquenessKey({
+    user_id: 'tenant-1',
+    platform: 'threads',
+    scheduled_local_date: '2026-05-16',
+    slot_index: 2,
+    status: 'ready',
+  });
+
+  assert.notEqual(xKey, threadsKey);
+});
+
+test('same platform same slot on different local dates is allowed by DB key', () => {
+  const today = activeQueueSlotUniquenessKey({
+    user_id: 'tenant-1',
+    platform: 'x',
+    scheduled_local_date: '2026-05-16',
+    slot_index: 2,
+    status: 'ready',
+  });
+  const tomorrow = activeQueueSlotUniquenessKey({
+    user_id: 'tenant-1',
+    platform: 'x',
+    scheduled_local_date: '2026-05-17',
+    slot_index: 2,
+    status: 'ready',
+  });
+
+  assert.notEqual(today, tomorrow);
+});
+
+test('published row does not produce an active DB uniqueness key', () => {
+  assert.equal(activeQueueSlotUniquenessKey({
+    user_id: 'tenant-1',
+    platform: 'x',
+    scheduled_local_date: '2026-05-16',
+    slot_index: 2,
+    status: 'published',
+  }), undefined);
+});
+
+test('queue insert writes scheduled local date and timezone fields', () => {
+  const slot = nextOpenPlatformSlot('x', new Set(), TZ, new Date('2026-05-16T09:30:00.000Z'));
+  const fields = scheduledSlotWriteFields(slot, TZ);
+
+  assert.equal(fields.scheduled_local_date, '2026-05-16');
+  assert.equal(fields.scheduled_timezone, 'Europe/London');
 });

@@ -38,6 +38,7 @@ import {
   buildPlatformSlotOccupancy,
   nextOpenPlatformSlot,
   platformSlotOccupancyKey,
+  scheduledSlotWriteFields,
   tenantTimeZone,
   type PlatformSlotOccupancy,
   type ScheduledPlatformSlot,
@@ -134,6 +135,8 @@ interface QueueItemRow {
   user_id: string;
   slot_index: number;
   scheduled_for: string;
+  scheduled_local_date?: string | null;
+  scheduled_timezone?: string | null;
   platform: PlatformKey;
   status: string;
   draft_text?: string | null;
@@ -1602,7 +1605,7 @@ function tenantAutomationTimeZone(tenant: TenantContext): string {
 
 async function loadActiveSlotOccupancy(userId: string, timeZone: string): Promise<PlatformSlotOccupancy> {
   const rows = await supabaseSelect<QueueItemRow>('queue_items', {
-    select: 'slot_index,status,platform,scheduled_for',
+    select: 'slot_index,status,platform,scheduled_for,scheduled_local_date',
     filters: [
       { column: 'user_id', operator: 'eq', value: userId },
       { column: 'status', operator: 'in', value: ACTIVE_QUEUE_STATUSES },
@@ -1948,6 +1951,7 @@ function toQueueRows(
   angle: AngleCandidate,
   draft: Awaited<ReturnType<typeof ai.draftPlatforms>>,
   platforms: PlatformKey[],
+  timeZone: string,
   angleRecordId?: string
 ): Array<Record<string, unknown>> {
   return platforms
@@ -1955,6 +1959,7 @@ function toQueueRows(
       user_id: userId,
       slot_index: slot.slotIndex,
       scheduled_for: slot.scheduledFor,
+      ...scheduledSlotWriteFields(slot, timeZone),
       platform,
       status: 'ready',
       draft_text: getPlatformDraftText(draft, platform),
@@ -2137,6 +2142,7 @@ async function queueFromBankedAngles(
         selectedAngle,
         draft,
         [platform],
+        timeZone,
         currentAngle.id
       );
       if (!rows.length) {
@@ -3095,7 +3101,7 @@ async function loadAutomationSettingsByUser(): Promise<Map<string, AutomationSet
 async function enqueueDuePublishJobs(stats: SchedulerStats, now: Date): Promise<void> {
   const settingsByUser = await loadAutomationSettingsByUser();
   const dueRows = await supabaseSelect<QueueItemRow>('queue_items', {
-    select: 'id,user_id,platform,status,slot_index,scheduled_for',
+    select: 'id,user_id,platform,status,slot_index,scheduled_for,scheduled_local_date,scheduled_timezone',
     filters: [
       { column: 'status', operator: 'in', value: ['pending', 'ready'] },
       { column: 'scheduled_for', operator: 'lte', value: now.toISOString() },

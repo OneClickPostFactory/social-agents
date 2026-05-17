@@ -4,6 +4,7 @@ export interface SlotOccupancyRow {
   platform?: string | null;
   slot_index?: number | null;
   scheduled_for?: string | null;
+  scheduled_local_date?: string | null;
 }
 
 export interface ScheduledPlatformSlot {
@@ -15,6 +16,16 @@ export interface ScheduledPlatformSlot {
 }
 
 export type PlatformSlotOccupancy = Set<string>;
+
+export const ACTIVE_QUEUE_SLOT_STATUSES = ['pending', 'ready', 'publishing'] as const;
+
+export interface QueueSlotUniquenessRow {
+  user_id?: string | null;
+  platform?: string | null;
+  slot_index?: number | null;
+  scheduled_local_date?: string | null;
+  status?: string | null;
+}
 
 interface LocalParts {
   year: number;
@@ -125,6 +136,31 @@ export function platformSlotOccupancyKey(platform: string, localDate: string, sl
   return `${platform}:${localDate}:${slotIndex}`;
 }
 
+export function activeQueueSlotUniquenessKey(row: QueueSlotUniquenessRow): string | undefined {
+  const status = String(row.status || '').trim();
+  if (!ACTIVE_QUEUE_SLOT_STATUSES.includes(status as typeof ACTIVE_QUEUE_SLOT_STATUSES[number])) {
+    return undefined;
+  }
+  const userId = String(row.user_id || '').trim();
+  const platform = String(row.platform || '').trim();
+  const localDate = String(row.scheduled_local_date || '').trim();
+  const slotIndex = Number(row.slot_index);
+  if (!userId || !platform || !localDate || !Number.isInteger(slotIndex)) {
+    return undefined;
+  }
+  return `${userId}:${platform}:${localDate}:${slotIndex}`;
+}
+
+export function scheduledSlotWriteFields(
+  slot: Pick<ScheduledPlatformSlot, 'localDate'>,
+  timeZone: string
+): { scheduled_local_date: string; scheduled_timezone: string } {
+  return {
+    scheduled_local_date: slot.localDate,
+    scheduled_timezone: safeTimeZone(timeZone),
+  };
+}
+
 export function buildPlatformSlotOccupancy(
   rows: SlotOccupancyRow[],
   timeZone: string
@@ -134,10 +170,11 @@ export function buildPlatformSlotOccupancy(
     const platform = String(row.platform || '').trim();
     const slotIndex = Number(row.slot_index);
     const scheduledFor = String(row.scheduled_for || '').trim();
-    if (!platform || !Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= DAILY_SLOT_HOURS.length || !scheduledFor) {
+    const localDate = String(row.scheduled_local_date || '').trim();
+    if (!platform || !Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= DAILY_SLOT_HOURS.length || (!scheduledFor && !localDate)) {
       continue;
     }
-    occupied.add(platformSlotOccupancyKey(platform, tenantLocalDateForInstant(scheduledFor, timeZone), slotIndex));
+    occupied.add(platformSlotOccupancyKey(platform, localDate || tenantLocalDateForInstant(scheduledFor, timeZone), slotIndex));
   }
   return occupied;
 }
