@@ -158,6 +158,15 @@ remaining accepted posts, write a clear `worker_logs` entry, and finalize
 `agent_jobs` as `failed` or `completed_with_errors` instead of leaving the job
 `running`.
 
+Partial success is valid. If Reddit fetch, source-record preservation, OpenAI
+text angle extraction, and some platform drafts succeed, but Instagram image
+generation fails later, the final summary must not relabel the job as
+`angle_extraction` or `openai_text_generation_failed`. It must preserve counts
+for fetched/accepted posts, source records, angle records, queue rows, and rows
+by platform, then report `outcome: "completed_with_errors"`,
+`failedStage: "instagram_image_generation"`, and the matching
+`openai_image_*` code.
+
 ## Angle Statuses
 
 Supabase angle statuses are:

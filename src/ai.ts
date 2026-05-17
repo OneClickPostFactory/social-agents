@@ -74,10 +74,17 @@ interface GeneratedImageAsset {
 }
 
 export const OPENAI_IMAGE_BILLING_BLOCKED_CODE = 'openai_image_billing_blocked';
+export const OPENAI_IMAGE_GENERATION_FAILED_CODE = 'openai_image_generation_failed';
+export const OPENAI_IMAGE_GENERATION_ABORTED_CODE = 'openai_image_generation_aborted';
+export const OPENAI_IMAGE_RATE_LIMITED_CODE = 'openai_image_rate_limited';
 export const OPENAI_IMAGE_BILLING_BLOCKED_MESSAGE =
   'Instagram image generation is blocked by OpenAI billing/quota. Add credits or raise your OpenAI billing hard limit, then retry.';
 export const OPENAI_IMAGE_BILLING_BLOCKED_NEXT_ACTION =
   'Add OpenAI image-generation credits or raise the billing hard limit, then retry the Instagram item.';
+export const OPENAI_IMAGE_GENERATION_FAILED_MESSAGE =
+  'Instagram image generation failed before durable media was ready.';
+export const OPENAI_IMAGE_GENERATION_FAILED_NEXT_ACTION =
+  'Retry the Instagram item after image generation is available, or attach/use a durable Cloudinary image.';
 export const OPENAI_IMAGE_GENERATION_STAGE = 'instagram_image_generation';
 export const OPENAI_TEXT_QUOTA_EXCEEDED_CODE = 'openai_text_quota_exceeded';
 export const OPENAI_TEXT_BILLING_BLOCKED_CODE = 'openai_text_billing_blocked';
@@ -753,6 +760,27 @@ function isOpenAIImageBillingBlocked(rawMessage: string): boolean {
   );
 }
 
+function isOpenAIImageRateLimited(rawMessage: string): boolean {
+  const normalized = rawMessage.toLowerCase();
+  return (
+    normalized.includes('rate limit')
+    || normalized.includes('rate_limit')
+    || normalized.includes('too many requests')
+    || normalized.includes(' 429')
+  );
+}
+
+function isOpenAIImageAborted(rawMessage: string): boolean {
+  const normalized = rawMessage.toLowerCase();
+  return (
+    normalized.includes('aborted')
+    || normalized.includes('operation was aborted')
+    || normalized.includes('aborterror')
+    || normalized.includes('timed out')
+    || normalized.includes('timeout')
+  );
+}
+
 function createOpenAIImageGenerationError(rawMessage: string): OpenAIImageGenerationError {
   const message = rawMessage.trim() || 'Unknown error';
   if (isOpenAIImageBillingBlocked(message)) {
@@ -764,13 +792,31 @@ function createOpenAIImageGenerationError(rawMessage: string): OpenAIImageGenera
       userMessage: OPENAI_IMAGE_BILLING_BLOCKED_MESSAGE,
     });
   }
+  if (isOpenAIImageRateLimited(message)) {
+    return new OpenAIImageGenerationError({
+      code: OPENAI_IMAGE_RATE_LIMITED_CODE,
+      nextAction: 'Wait for OpenAI image rate limits to reset, then retry the Instagram item.',
+      rawMessage: message,
+      stage: OPENAI_IMAGE_GENERATION_STAGE,
+      userMessage: 'Instagram image generation was rate-limited before durable media was ready.',
+    });
+  }
+  if (isOpenAIImageAborted(message)) {
+    return new OpenAIImageGenerationError({
+      code: OPENAI_IMAGE_GENERATION_ABORTED_CODE,
+      nextAction: OPENAI_IMAGE_GENERATION_FAILED_NEXT_ACTION,
+      rawMessage: message,
+      stage: OPENAI_IMAGE_GENERATION_STAGE,
+      userMessage: OPENAI_IMAGE_GENERATION_FAILED_MESSAGE,
+    });
+  }
 
   const userMessage = message.startsWith('GPT Image generation failed:')
     ? message
     : `GPT Image generation failed: ${message}`;
   return new OpenAIImageGenerationError({
-    code: 'openai_image_generation_failed',
-    nextAction: 'Open Logs for the failed image-generation reason, then retry the Instagram item.',
+    code: OPENAI_IMAGE_GENERATION_FAILED_CODE,
+    nextAction: OPENAI_IMAGE_GENERATION_FAILED_NEXT_ACTION,
     rawMessage: message,
     stage: OPENAI_IMAGE_GENERATION_STAGE,
     userMessage,

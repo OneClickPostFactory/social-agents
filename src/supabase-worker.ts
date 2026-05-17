@@ -191,7 +191,7 @@ interface TenantContext {
 }
 
 interface PipelineSummary {
-  outcome: 'queued' | 'blocked' | 'empty' | 'deferred' | 'content_exhausted';
+  outcome: 'queued' | 'blocked' | 'empty' | 'deferred' | 'content_exhausted' | 'completed_with_errors';
   message: string;
   nextAction: string;
   access: {
@@ -248,12 +248,14 @@ interface PipelineSummary {
     failures: number;
     skipReasons: Record<string, number>;
     failureReasons: Record<string, number>;
+    failuresByPlatform: Record<string, number>;
   };
   queue: {
     openSlotsAtStart: number;
     activeSlotsAtStart: number;
     created: number;
     ready: number;
+    createdByPlatform: Record<string, number>;
   };
   errors: string[];
   failedStage?: string;
@@ -265,6 +267,10 @@ const CONTENT_EXHAUSTED_MESSAGE =
   'Automation is working, but there are no new usable posts from your current Reddit sources. Add more sources, enable discovery feeds, paste manual URLs, or wait for new posts.';
 const CONTENT_EXHAUSTED_NEXT_ACTION =
   'Add another subreddit or Reddit user, enable an intentional discovery feed, paste manual Reddit URLs, or wait for new source posts.';
+const PARTIAL_INSTAGRAM_IMAGE_MESSAGE =
+  'Automation created drafts for some platforms, but Instagram image generation failed. Other platform drafts remain available.';
+const PARTIAL_INSTAGRAM_IMAGE_NEXT_ACTION =
+  'Retry the Instagram item after image generation is available, or attach/use a durable Cloudinary image.';
 
 interface QueueFromAnglesResult {
   queued: number;
@@ -906,12 +912,14 @@ async function createPipelineSummary(
       failures: 0,
       skipReasons: {},
       failureReasons: {},
+      failuresByPlatform: {},
     },
     queue: {
       openSlotsAtStart: Math.max(0, tenant.activePlatforms.length * 4 - occupiedSlots.size),
       activeSlotsAtStart: occupiedSlots.size,
       created: 0,
       ready: 0,
+      createdByPlatform: {},
     },
     errors: [],
   };
@@ -1057,6 +1065,7 @@ function terminalStatusForResult(result: JsonMap): string {
   if (requested === 'failed' || requested === 'completed_with_errors') return requested;
 
   const summary = resultSummary(result);
+  if (summary.outcome === 'completed_with_errors') return 'completed_with_errors';
   if (summary.failedStage === ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE) {
     const queue = typeof summary.queue === 'object' && summary.queue !== null && !Array.isArray(summary.queue)
       ? summary.queue as JsonMap
@@ -1067,6 +1076,13 @@ function terminalStatusForResult(result: JsonMap): string {
     const queueCreated = Number(queue.created || 0);
     const anglesCreated = Number(angles.created || 0);
     return queueCreated > 0 || anglesCreated > 0 ? 'completed_with_errors' : 'failed';
+  }
+  if (summary.failedStage === ai.OPENAI_IMAGE_GENERATION_STAGE) {
+    const queue = typeof summary.queue === 'object' && summary.queue !== null && !Array.isArray(summary.queue)
+      ? summary.queue as JsonMap
+      : {};
+    const queueCreated = Number(queue.created || 0);
+    return queueCreated > 0 ? 'completed_with_errors' : 'failed';
   }
 
   return 'completed';
@@ -1627,6 +1643,13 @@ async function saveAcceptedSourceRecords(
   );
   summary.sources.recordsUpdated += existing.size;
   summary.sources.recordsCreated += Math.max(0, sourcePayloads.length - existing.size);
+  await writeWorkerLog(job.user_id, 'info', 'source_records_saved', {
+    jobId: job.id,
+    sourceId: source.id,
+    records_created: Math.max(0, sourcePayloads.length - existing.size),
+    records_updated: existing.size,
+    records_touched: sourcePayloads.length,
+  });
   return new Map(rows.map(row => [row.url, row.id]));
 }
 
@@ -1716,20 +1739,30 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
   }
 
   if (summary.failedStage === ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE) {
-    summary.outcome = summary.queue.created > 0 ? 'queued' : 'blocked';
-    summary.message = summary.queue.created > 0
+    const partialProgress = summary.queue.created > 0 || summary.angles.created > 0;
+    summary.outcome = partialProgress ? 'completed_with_errors' : 'blocked';
+    summary.message = partialProgress
       ? 'Some queue items were created, but OpenAI angle extraction failed for additional accepted Reddit posts.'
       : ai.OPENAI_TEXT_ANGLE_EXTRACTION_MESSAGE;
     summary.nextAction = ai.OPENAI_TEXT_ANGLE_EXTRACTION_NEXT_ACTION;
     return;
   }
 
-  if (summary.queue.created > 0 && summary.drafts.failureReasons[ai.OPENAI_IMAGE_BILLING_BLOCKED_CODE]) {
-    summary.outcome = 'queued';
-    summary.message = 'Other platform drafts were created, but Instagram image generation failed because OpenAI billing/quota blocked image generation.';
-    summary.nextAction = ai.OPENAI_IMAGE_BILLING_BLOCKED_NEXT_ACTION;
-    summary.failedStage ||= ai.OPENAI_IMAGE_GENERATION_STAGE;
-    summary.failureCode ||= ai.OPENAI_IMAGE_BILLING_BLOCKED_CODE;
+  if (summary.queue.created > 0 && summary.drafts.failures > 0) {
+    const reason = primaryFailureReason(summary.drafts.failureReasons);
+    summary.outcome = 'completed_with_errors';
+    summary.message = reason.startsWith('openai_image_') || summary.drafts.failuresByPlatform.instagram
+      ? PARTIAL_INSTAGRAM_IMAGE_MESSAGE
+      : `${summary.queue.created} queue item${summary.queue.created === 1 ? '' : 's'} were created, but another platform draft failed.`;
+    summary.nextAction = reason.startsWith('openai_image_') || summary.drafts.failuresByPlatform.instagram
+      ? PARTIAL_INSTAGRAM_IMAGE_NEXT_ACTION
+      : 'Review the queued drafts, then inspect Logs for the failed platform draft.';
+    if (reason.startsWith('openai_image_') || summary.drafts.failuresByPlatform.instagram) {
+      summary.failedStage ||= ai.OPENAI_IMAGE_GENERATION_STAGE;
+      summary.failureCode ||= reason.startsWith('openai_image_') ? reason : ai.OPENAI_IMAGE_GENERATION_FAILED_CODE;
+    } else {
+      summary.failureCode ||= reason;
+    }
     return;
   }
 
@@ -2094,6 +2127,9 @@ async function queueFromBankedAngles(
       if (summary) {
         summary.queue.created += rows.length;
         summary.drafts.created += rows.length;
+        for (const row of rows) {
+          incrementCounter(summary.queue.createdByPlatform, String(row.platform || platform));
+        }
       }
       await writeWorkerLog(job.user_id, 'info', 'queued_banked_angle', {
         jobId: job.id,
@@ -2107,11 +2143,19 @@ async function queueFromBankedAngles(
       });
     } catch (error) {
       result.failures++;
-      const textError = ai.openAITextErrorDetails(error, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE);
+      const imageError = ai.openAIImageErrorDetails(error);
+      const textError = imageError ? undefined : ai.openAITextErrorDetails(error, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE);
       if (summary) {
         summary.drafts.failures++;
-        incrementCounter(summary.drafts.failureReasons, textError?.code || errorFailureReason(error));
-        if (textError) {
+        incrementCounter(summary.drafts.failuresByPlatform, platform);
+        incrementCounter(summary.drafts.failureReasons, imageError?.code || textError?.code || errorFailureReason(error));
+        if (imageError) {
+          if (!summary.errors.includes(imageError.userMessage)) {
+            summary.errors.push(imageError.userMessage);
+          }
+          summary.failedStage ||= imageError.stage;
+          summary.failureCode ||= imageError.code;
+        } else if (textError) {
           if (!summary.errors.includes(textError.userMessage)) {
             summary.errors.push(textError.userMessage);
           }
@@ -2133,6 +2177,7 @@ async function queueFromBankedAngles(
       await writeWorkerLog(job.user_id, 'warn', 'banked_angle_draft_failed', {
         jobId: job.id,
         angleId: currentAngle.id,
+        platform,
         error: publicError(error),
         ...(draftErrorContext || {}),
       });
@@ -3079,8 +3124,110 @@ function textFromWorkerLog(row: WorkerLogRow): string {
   return `${row.message} ${row.context ? JSON.stringify(row.context) : ''}`;
 }
 
-async function staleOpenAITextError(job: AgentJobRow): Promise<ai.OpenAITextErrorDetails | undefined> {
-  if (!job.started_at) return undefined;
+interface StaleFailureDetails {
+  code: string;
+  nextAction: string;
+  platform?: string;
+  stage: string;
+  userMessage: string;
+}
+
+function logContext(row: WorkerLogRow): JsonMap {
+  return row.context && typeof row.context === 'object' && !Array.isArray(row.context)
+    ? row.context
+    : {};
+}
+
+function logString(context: JsonMap, key: string): string {
+  const value = context[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function logNumber(context: JsonMap, key: string): number {
+  const value = context[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function logStringArray(context: JsonMap, key: string): string[] {
+  const value = context[key];
+  return Array.isArray(value) ? value.map(item => String(item || '')).filter(Boolean) : [];
+}
+
+function logCounter(context: JsonMap, key: string): Record<string, number> {
+  const value = context[key];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const counter: Record<string, number> = {};
+  for (const [name, count] of Object.entries(value)) {
+    const numeric = typeof count === 'number' && Number.isFinite(count) ? count : Number(count || 0);
+    if (numeric > 0) counter[name] = numeric;
+  }
+  return counter;
+}
+
+function imageFailureFromContext(context: JsonMap): StaleFailureDetails | undefined {
+  const stage = logString(context, 'stage');
+  const code = logString(context, 'normalized_error_code') || logString(context, 'failureCode');
+  if (stage !== ai.OPENAI_IMAGE_GENERATION_STAGE && !code.startsWith('openai_image_')) {
+    return undefined;
+  }
+
+  const userMessage = logString(context, 'user_message') || (
+    code === ai.OPENAI_IMAGE_BILLING_BLOCKED_CODE
+      ? ai.OPENAI_IMAGE_BILLING_BLOCKED_MESSAGE
+      : ai.OPENAI_IMAGE_GENERATION_FAILED_MESSAGE
+  );
+  const nextAction = logString(context, 'next_action') || (
+    code === ai.OPENAI_IMAGE_BILLING_BLOCKED_CODE
+      ? ai.OPENAI_IMAGE_BILLING_BLOCKED_NEXT_ACTION
+      : ai.OPENAI_IMAGE_GENERATION_FAILED_NEXT_ACTION
+  );
+
+  return {
+    code: code || ai.OPENAI_IMAGE_GENERATION_FAILED_CODE,
+    nextAction,
+    platform: logString(context, 'platform') || 'instagram',
+    stage: ai.OPENAI_IMAGE_GENERATION_STAGE,
+    userMessage,
+  };
+}
+
+function textFailureFromLog(row: WorkerLogRow): StaleFailureDetails | undefined {
+  const context = logContext(row);
+  const stage = logString(context, 'stage');
+  const code = logString(context, 'normalized_error_code') || logString(context, 'failureCode');
+  if (stage && stage !== ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE) {
+    return undefined;
+  }
+  if (code && !code.startsWith('openai_text_')) {
+    return undefined;
+  }
+  const details = ai.openAITextErrorDetails(
+    new Error(logString(context, 'user_message') || logString(context, 'error') || textFromWorkerLog(row)),
+    ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE
+  );
+  if (!details?.systemic) return undefined;
+  return {
+    code: details.code,
+    nextAction: details.nextAction,
+    stage: details.stage,
+    userMessage: details.userMessage,
+  };
+}
+
+function staleFailureFromLogs(logs: WorkerLogRow[]): StaleFailureDetails | undefined {
+  for (const row of logs) {
+    const imageFailure = imageFailureFromContext(logContext(row));
+    if (imageFailure) return imageFailure;
+  }
+  for (const row of logs) {
+    const textFailure = textFailureFromLog(row);
+    if (textFailure) return textFailure;
+  }
+  return undefined;
+}
+
+async function staleJobLogs(job: AgentJobRow): Promise<WorkerLogRow[]> {
+  if (!job.started_at) return [];
   const logs = await supabaseSelect<WorkerLogRow>('worker_logs', {
     select: 'level,message,context,created_at',
     filters: [
@@ -3090,63 +3237,154 @@ async function staleOpenAITextError(job: AgentJobRow): Promise<ai.OpenAITextErro
     order: 'created_at.desc',
     limit: 50,
   });
-
-  for (const row of logs) {
-    const details = ai.openAITextErrorDetails(
-      new Error(textFromWorkerLog(row)),
-      ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE
-    );
-    if (details?.systemic) return details;
-  }
-  return undefined;
+  return logs.filter(row => logString(logContext(row), 'jobId') === job.id);
 }
 
-function staleJobResult(job: AgentJobRow, details?: ai.OpenAITextErrorDetails): JsonMap {
-  if (details) {
-    return {
-      outcome: 'blocked',
-      message: details.userMessage,
-      nextAction: details.nextAction,
-      error: details.code,
-      summary: {
-        outcome: 'blocked',
-        message: details.userMessage,
-        nextAction: details.nextAction,
-        failedStage: details.stage,
-        failureCode: details.code,
-        errors: [details.userMessage],
-        sources: {
-          postsFetched: 0,
-          postsAccepted: 0,
-          rejected: 0,
-          fetchFailures: 0,
-        },
-        angles: {
-          created: 0,
-          extractionFailures: 1,
-          failureReasons: { [details.code]: 1 },
-        },
-        queue: {
-          created: 0,
-          ready: 0,
-        },
-      },
-    };
+function reconstructStaleSummary(logs: WorkerLogRow[], failure?: StaleFailureDetails): JsonMap {
+  const sources: JsonMap = {
+    postsFetched: 0,
+    postsAccepted: 0,
+    rejected: 0,
+    fetchFailures: 0,
+    recordsCreated: 0,
+    recordsUpdated: 0,
+    rejectionReasons: {},
+    fetchFailureReasons: {},
+  };
+  const angles: JsonMap = {
+    created: 0,
+    extractionFailures: 0,
+    failureReasons: {},
+  };
+  const drafts: JsonMap = {
+    attempted: 0,
+    created: 0,
+    failures: 0,
+    failureReasons: {},
+    failuresByPlatform: {},
+  };
+  const queue: JsonMap = {
+    created: 0,
+    ready: 0,
+    createdByPlatform: {},
+  };
+
+  for (const row of logs) {
+    const context = logContext(row);
+    if (row.message === 'source_intent_filter_applied') {
+      sources.checked = Number(sources.checked || 0) + 1;
+      sources.postsFetched = Number(sources.postsFetched || 0) + logNumber(context, 'fetched_count');
+      sources.postsAccepted = Number(sources.postsAccepted || 0) + logNumber(context, 'accepted_count');
+      sources.rejected = Number(sources.rejected || 0) + logNumber(context, 'rejected_count');
+      for (const [reason, count] of Object.entries(logCounter(context, 'rejection_reasons'))) {
+        const target = sources.rejectionReasons as Record<string, number>;
+        target[reason] = (target[reason] || 0) + count;
+        if (reason === 'rejected_author_mismatch') {
+          sources.rejectedByAuthor = Number(sources.rejectedByAuthor || 0) + count;
+        }
+        if (reason === 'rejected_subreddit_mismatch') {
+          sources.rejectedBySubreddit = Number(sources.rejectedBySubreddit || 0) + count;
+        }
+        if (reason === 'rejected_unfiltered_rss_not_allowed') {
+          sources.rejectedUnfilteredRss = Number(sources.rejectedUnfilteredRss || 0) + count;
+        }
+      }
+    }
+    if (row.message === 'source_records_saved') {
+      sources.recordsCreated = Number(sources.recordsCreated || 0) + logNumber(context, 'records_created');
+      sources.recordsUpdated = Number(sources.recordsUpdated || 0) + logNumber(context, 'records_updated');
+    }
+    if (row.message === 'source_banked_angles') {
+      angles.created = Number(angles.created || 0) + logNumber(context, 'angleCount');
+    }
+    if (row.message === 'source_angle_extraction_failed') {
+      angles.extractionFailures = Number(angles.extractionFailures || 0) + 1;
+      const code = logString(context, 'normalized_error_code') || 'angle_extraction_failed';
+      const reasons = angles.failureReasons as Record<string, number>;
+      reasons[code] = (reasons[code] || 0) + 1;
+    }
+    if (row.message === 'queued_banked_angle') {
+      const platforms = logStringArray(context, 'platforms');
+      const created = Math.max(1, platforms.length);
+      queue.created = Number(queue.created || 0) + created;
+      queue.ready = Number(queue.ready || 0) + created;
+      drafts.created = Number(drafts.created || 0) + created;
+      for (const platform of platforms) {
+        const target = queue.createdByPlatform as Record<string, number>;
+        target[platform] = (target[platform] || 0) + 1;
+      }
+    }
+    if (row.message === 'banked_angle_draft_failed') {
+      drafts.failures = Number(drafts.failures || 0) + 1;
+      const code = logString(context, 'normalized_error_code') || errorFailureReason(new Error(logString(context, 'error')));
+      const reasons = drafts.failureReasons as Record<string, number>;
+      reasons[code] = (reasons[code] || 0) + 1;
+      const platform = logString(context, 'platform') || (code.startsWith('openai_image_') ? 'instagram' : '');
+      if (platform) {
+        const target = drafts.failuresByPlatform as Record<string, number>;
+        target[platform] = (target[platform] || 0) + 1;
+      }
+    }
   }
 
+  if (failure) {
+    if (failure.stage === ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE) {
+      angles.extractionFailures = Math.max(1, Number(angles.extractionFailures || 0));
+      const reasons = angles.failureReasons as Record<string, number>;
+      reasons[failure.code] = Math.max(1, reasons[failure.code] || 0);
+    } else {
+      drafts.failures = Math.max(1, Number(drafts.failures || 0));
+      const reasons = drafts.failureReasons as Record<string, number>;
+      reasons[failure.code] = Math.max(1, reasons[failure.code] || 0);
+      const platform = failure.platform || 'instagram';
+      const platforms = drafts.failuresByPlatform as Record<string, number>;
+      platforms[platform] = Math.max(1, platforms[platform] || 0);
+    }
+  }
+
+  const queueCreated = Number(queue.created || 0);
+  const anglesCreated = Number(angles.created || 0);
+  const partial = queueCreated > 0 || anglesCreated > 0;
+  const imageFailure = failure?.stage === ai.OPENAI_IMAGE_GENERATION_STAGE;
+  const textFailure = failure?.stage === ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE;
+  const outcome = partial ? 'completed_with_errors' : 'blocked';
+  const message = imageFailure && partial
+    ? PARTIAL_INSTAGRAM_IMAGE_MESSAGE
+    : textFailure
+    ? failure.userMessage
+    : partial
+    ? 'Automation created drafts for some platforms, but the worker timed out before finalizing the remaining work.'
+    : 'The worker job exceeded its safe runtime and was marked failed.';
+  const nextAction = imageFailure && partial
+    ? PARTIAL_INSTAGRAM_IMAGE_NEXT_ACTION
+    : partial
+    ? 'Review the available queue rows, then retry automation for any remaining platforms.'
+    : failure?.nextAction || 'Check Logs for the last recorded stage, then retry the action.';
+
   return {
-    outcome: 'blocked',
-    message: 'The worker job exceeded its safe runtime and was marked failed.',
-    nextAction: 'Check Logs for the last recorded stage, then retry the action.',
-    error: 'worker_job_timed_out',
-    summary: {
-      outcome: 'blocked',
-      message: 'The worker job exceeded its safe runtime and was marked failed.',
-      nextAction: 'Check Logs for the last recorded stage, then retry the action.',
-      failedStage: 'worker_runtime',
-      failureCode: 'worker_job_timed_out',
-      errors: ['worker_job_timed_out'],
-    },
+    outcome,
+    message,
+    nextAction,
+    failedStage: failure?.stage || 'worker_runtime',
+    failedPlatform: failure?.platform || (imageFailure ? 'instagram' : null),
+    failureCode: failure?.code || 'worker_job_timed_out',
+    errors: failure ? [failure.userMessage] : ['worker_job_timed_out'],
+    sources,
+    angles,
+    drafts,
+    queue,
+  };
+}
+
+function staleJobResult(job: AgentJobRow, logs: WorkerLogRow[], failure?: StaleFailureDetails): JsonMap {
+  const summary = reconstructStaleSummary(logs, failure);
+  return {
+    outcome: summary.outcome,
+    message: summary.message,
+    nextAction: summary.nextAction,
+    error: summary.failureCode,
+    jobStatus: summary.outcome === 'completed_with_errors' ? 'completed_with_errors' : 'failed',
+    summary,
   };
 }
 
@@ -3163,12 +3401,14 @@ async function cleanupStaleRunningJobs(stats: SchedulerStats, now: Date): Promis
   });
 
   for (const job of jobs) {
-    const details = await staleOpenAITextError(job);
-    const result = staleJobResult(job, details);
+    const logs = await staleJobLogs(job);
+    const details = staleFailureFromLogs(logs);
+    const result = staleJobResult(job, logs, details);
     const summary = resultSummary(result);
     const error = String(summary.failureCode || result.error || 'worker_job_timed_out');
+    const status = terminalStatusForResult(result);
     await supabaseUpdate('agent_jobs', {
-      status: 'failed',
+      status,
       completed_at: now.toISOString(),
       error,
       result,
@@ -3178,12 +3418,14 @@ async function cleanupStaleRunningJobs(stats: SchedulerStats, now: Date): Promis
         { column: 'status', operator: 'eq', value: 'running' },
       ],
     });
-    await recordScheduledAutomationResult(job, 'failed', result);
+    await recordScheduledAutomationResult(job, status, result);
     stats.staleJobsFailed++;
     await writeWorkerLog(job.user_id, 'warn', 'stale_running_job_failed', {
       jobId: job.id,
       kind: job.kind,
       reason: error,
+      status,
+      failedStage: typeof summary.failedStage === 'string' ? summary.failedStage : null,
       startedAt: job.started_at || null,
     });
   }
