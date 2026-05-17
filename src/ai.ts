@@ -85,6 +85,10 @@ export const OPENAI_IMAGE_GENERATION_FAILED_MESSAGE =
   'Instagram image generation failed before durable media was ready.';
 export const OPENAI_IMAGE_GENERATION_FAILED_NEXT_ACTION =
   'Retry the Instagram item after image generation is available, or attach/use a durable Cloudinary image.';
+export const OPENAI_IMAGE_GENERATION_ABORTED_MESSAGE =
+  'Instagram image generation was interrupted before durable media was ready.';
+export const OPENAI_IMAGE_GENERATION_ABORTED_NEXT_ACTION =
+  'Retry Instagram image generation later, or attach/use a durable Cloudinary image.';
 export const OPENAI_IMAGE_GENERATION_STAGE = 'instagram_image_generation';
 export const OPENAI_TEXT_QUOTA_EXCEEDED_CODE = 'openai_text_quota_exceeded';
 export const OPENAI_TEXT_BILLING_BLOCKED_CODE = 'openai_text_billing_blocked';
@@ -804,10 +808,10 @@ function createOpenAIImageGenerationError(rawMessage: string): OpenAIImageGenera
   if (isOpenAIImageAborted(message)) {
     return new OpenAIImageGenerationError({
       code: OPENAI_IMAGE_GENERATION_ABORTED_CODE,
-      nextAction: OPENAI_IMAGE_GENERATION_FAILED_NEXT_ACTION,
+      nextAction: OPENAI_IMAGE_GENERATION_ABORTED_NEXT_ACTION,
       rawMessage: message,
       stage: OPENAI_IMAGE_GENERATION_STAGE,
-      userMessage: OPENAI_IMAGE_GENERATION_FAILED_MESSAGE,
+      userMessage: OPENAI_IMAGE_GENERATION_ABORTED_MESSAGE,
     });
   }
 

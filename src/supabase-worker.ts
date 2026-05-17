@@ -278,9 +278,9 @@ const CONTENT_EXHAUSTED_MESSAGE =
 const CONTENT_EXHAUSTED_NEXT_ACTION =
   'Add another subreddit or Reddit user, enable an intentional discovery feed, paste manual Reddit URLs, or wait for new source posts.';
 const PARTIAL_INSTAGRAM_IMAGE_MESSAGE =
-  'Automation created drafts for some platforms, but Instagram image generation failed. Other platform drafts remain available.';
+  'Automation created drafts for some platforms, but Instagram image generation was interrupted. Other platform drafts remain available.';
 const PARTIAL_INSTAGRAM_IMAGE_NEXT_ACTION =
-  'Retry the Instagram item after image generation is available, or attach/use a durable Cloudinary image.';
+  'Retry Instagram image generation later, or attach/use a durable Cloudinary image.';
 const PUBLISH_UNKNOWN_STATE_CODE = 'unknown_publish_state';
 const PUBLISH_UNKNOWN_STATE_MESSAGE =
   'Scheduled publish timed out before the system could confirm whether the platform accepted the post. Review the platform account before retrying.';
@@ -368,6 +368,7 @@ const ANGLE_EXTRACTION_TIMEOUT_MS = 12_000;
 const SCHEDULER_NAME = 'cloudflare_cron';
 const SCHEDULED_SOURCE = 'scheduled';
 const STALE_RUNNING_JOB_MINUTES = 3;
+const REFRESH_QUEUE_STALE_RUNNING_JOB_MINUTES = 8;
 const redditTokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
 
 function nowIso(): string {
@@ -2014,6 +2015,7 @@ async function queueFromBankedAngles(
     failures: 0,
     rejected: 0,
   };
+  let instagramImageGenerationBlocked = false;
 
   const angles = await supabaseSelect<AngleRecordRow>('angle_records', {
     select: '*',
@@ -2053,6 +2055,21 @@ async function queueFromBankedAngles(
     }
 
     result.draftableSeen++;
+    if (platform === 'instagram' && instagramImageGenerationBlocked) {
+      if (summary) {
+        summary.drafts.skipped++;
+        incrementCounter(summary.drafts.skipReasons, 'instagram_image_generation_unavailable');
+      }
+      await writeWorkerLog(job.user_id, 'warn', 'banked_angle_draft_skipped', {
+        jobId: job.id,
+        angleId: angleRow.id,
+        platform,
+        reason: 'instagram_image_generation_unavailable',
+        next_action: ai.OPENAI_IMAGE_GENERATION_ABORTED_NEXT_ACTION,
+      });
+      continue;
+    }
+
     if (summary) summary.drafts.attempted++;
     const slot = nextOpenPlatformSlot(platform, occupiedSlots, timeZone);
 
@@ -2175,6 +2192,7 @@ async function queueFromBankedAngles(
         incrementCounter(summary.drafts.failuresByPlatform, platform);
         incrementCounter(summary.drafts.failureReasons, imageError?.code || textError?.code || errorFailureReason(error));
         if (imageError) {
+          instagramImageGenerationBlocked = platform === 'instagram';
           if (!summary.errors.includes(imageError.userMessage)) {
             summary.errors.push(imageError.userMessage);
           }
@@ -3199,11 +3217,15 @@ function imageFailureFromContext(context: JsonMap): StaleFailureDetails | undefi
   const userMessage = logString(context, 'user_message') || (
     code === ai.OPENAI_IMAGE_BILLING_BLOCKED_CODE
       ? ai.OPENAI_IMAGE_BILLING_BLOCKED_MESSAGE
+      : code === ai.OPENAI_IMAGE_GENERATION_ABORTED_CODE
+      ? ai.OPENAI_IMAGE_GENERATION_ABORTED_MESSAGE
       : ai.OPENAI_IMAGE_GENERATION_FAILED_MESSAGE
   );
   const nextAction = logString(context, 'next_action') || (
     code === ai.OPENAI_IMAGE_BILLING_BLOCKED_CODE
       ? ai.OPENAI_IMAGE_BILLING_BLOCKED_NEXT_ACTION
+      : code === ai.OPENAI_IMAGE_GENERATION_ABORTED_CODE
+      ? ai.OPENAI_IMAGE_GENERATION_ABORTED_NEXT_ACTION
       : ai.OPENAI_IMAGE_GENERATION_FAILED_NEXT_ACTION
   );
 
@@ -3375,6 +3397,8 @@ function reconstructStaleSummary(logs: WorkerLogRow[], failure?: StaleFailureDet
   const outcome = partial ? 'completed_with_errors' : 'blocked';
   const message = imageFailure && partial
     ? PARTIAL_INSTAGRAM_IMAGE_MESSAGE
+    : imageFailure
+    ? failure.userMessage
     : textFailure
     ? failure.userMessage
     : partial
@@ -3382,6 +3406,8 @@ function reconstructStaleSummary(logs: WorkerLogRow[], failure?: StaleFailureDet
     : 'The worker job exceeded its safe runtime and was marked failed.';
   const nextAction = imageFailure && partial
     ? PARTIAL_INSTAGRAM_IMAGE_NEXT_ACTION
+    : imageFailure
+    ? failure.nextAction
     : partial
     ? 'Review the available queue rows, then retry automation for any remaining platforms.'
     : failure?.nextAction || 'Check Logs for the last recorded stage, then retry the action.';
@@ -3411,6 +3437,21 @@ function staleJobResult(job: AgentJobRow, logs: WorkerLogRow[], failure?: StaleF
     jobStatus: summary.outcome === 'completed_with_errors' ? 'completed_with_errors' : 'failed',
     summary,
   };
+}
+
+function staleMinutesForJob(job: AgentJobRow): number {
+  return job.kind === 'refresh_queue'
+    ? REFRESH_QUEUE_STALE_RUNNING_JOB_MINUTES
+    : STALE_RUNNING_JOB_MINUTES;
+}
+
+function hasRecentJobActivity(logs: WorkerLogRow[], cutoffIso: string): boolean {
+  const cutoff = Date.parse(cutoffIso);
+  if (!Number.isFinite(cutoff)) return false;
+  return logs.some(row => {
+    const createdAt = Date.parse(row.created_at);
+    return Number.isFinite(createdAt) && createdAt > cutoff;
+  });
 }
 
 function publishStageStarted(logs: WorkerLogRow[], queueItemId: string): boolean {
@@ -3578,7 +3619,24 @@ async function cleanupStaleRunningJobs(stats: SchedulerStats, now: Date): Promis
   });
 
   for (const job of jobs) {
+    const staleCutoff = addMinutesIso(now, -staleMinutesForJob(job));
+    const startedAt = Date.parse(job.started_at || '');
+    const staleCutoffMs = Date.parse(staleCutoff);
+    if (
+      Number.isFinite(startedAt)
+      && Number.isFinite(staleCutoffMs)
+      && startedAt > staleCutoffMs
+    ) {
+      incrementSchedulerSkip(stats, 'stale_job_within_kind_runtime');
+      continue;
+    }
+
     const logs = await staleJobLogs(job);
+    if (job.kind === 'refresh_queue' && hasRecentJobActivity(logs, cutoff)) {
+      incrementSchedulerSkip(stats, 'stale_refresh_recent_activity');
+      continue;
+    }
+
     const details = staleFailureFromLogs(logs);
     const result = job.kind === 'publish_now'
       ? await stalePublishJobResult(job, logs)
@@ -3726,6 +3784,11 @@ export function startSupabaseWorkerLoop(log = logger): { stop: () => void } | un
     stop: () => clearInterval(timer),
   };
 }
+
+export const __test__ = {
+  hasRecentJobActivity,
+  reconstructStaleSummary,
+};
 
 if (typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module) {
   startSupabaseWorkerLoop();
