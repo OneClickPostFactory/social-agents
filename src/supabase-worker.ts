@@ -143,6 +143,16 @@ interface QueueItemRow {
   source_title?: string | null;
   angle?: string | null;
   angle_record_id?: string | null;
+  error_message?: string | null;
+}
+
+interface PublishHistoryRow {
+  id: string;
+  user_id: string;
+  platform: PlatformKey;
+  external_post_id?: string | null;
+  source_url?: string | null;
+  published_at: string;
 }
 
 interface WorkerLogRow {
@@ -271,6 +281,21 @@ const PARTIAL_INSTAGRAM_IMAGE_MESSAGE =
   'Automation created drafts for some platforms, but Instagram image generation failed. Other platform drafts remain available.';
 const PARTIAL_INSTAGRAM_IMAGE_NEXT_ACTION =
   'Retry the Instagram item after image generation is available, or attach/use a durable Cloudinary image.';
+const PUBLISH_UNKNOWN_STATE_CODE = 'unknown_publish_state';
+const PUBLISH_UNKNOWN_STATE_MESSAGE =
+  'Scheduled publish timed out before the system could confirm whether the platform accepted the post. Review the platform account before retrying.';
+const PUBLISH_UNKNOWN_STATE_NEXT_ACTION =
+  'Check the platform account for a matching post. If it is not live, retry this queue item manually.';
+const PUBLISH_INTERRUPTED_CODE = 'publish_claim_interrupted';
+const PUBLISH_INTERRUPTED_MESSAGE =
+  'Scheduled publish was interrupted before the platform publish step started. The queue item remains available for retry.';
+const PUBLISH_INTERRUPTED_NEXT_ACTION =
+  'Wait for the next scheduled run or retry the item manually.';
+const PUBLISH_RECONCILED_CODE = 'publish_state_reconciled';
+const PUBLISH_RECONCILED_MESSAGE =
+  'Scheduled publish timed out, but the queue item is already published. No retry is needed.';
+const PUBLISH_RECONCILED_NEXT_ACTION =
+  'No action is needed unless the external platform post is missing.';
 
 interface QueueFromAnglesResult {
   queued: number;
@@ -3388,6 +3413,158 @@ function staleJobResult(job: AgentJobRow, logs: WorkerLogRow[], failure?: StaleF
   };
 }
 
+function publishStageStarted(logs: WorkerLogRow[], queueItemId: string): boolean {
+  return logs.some(row => {
+    const context = logContext(row);
+    const loggedQueueItemId = logString(context, 'queueItemId');
+    if (loggedQueueItemId && loggedQueueItemId !== queueItemId) return false;
+    return row.message === 'published_queue_item'
+      || row.message === 'platform_publish_failed'
+      || row.message === 'instagram_image_generation_failed';
+  });
+}
+
+async function loadQueueItemForStalePublish(job: AgentJobRow, queueItemId: string): Promise<QueueItemRow | undefined> {
+  return (await supabaseSelect<QueueItemRow>('queue_items', {
+    select: 'id,user_id,platform,status,slot_index,scheduled_for,source_url,source_title,angle,error_message',
+    filters: [
+      { column: 'id', operator: 'eq', value: queueItemId },
+      { column: 'user_id', operator: 'eq', value: job.user_id },
+    ],
+    limit: 1,
+  }))[0];
+}
+
+async function findPublishHistoryForQueueItem(
+  job: AgentJobRow,
+  row: QueueItemRow
+): Promise<PublishHistoryRow | undefined> {
+  if (!row.source_url) return undefined;
+  return (await supabaseSelect<PublishHistoryRow>('publish_history', {
+    select: 'id,user_id,platform,external_post_id,source_url,published_at',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: job.user_id },
+      { column: 'platform', operator: 'eq', value: row.platform },
+      { column: 'source_url', operator: 'eq', value: row.source_url },
+      { column: 'published_at', operator: 'gte', value: job.started_at || job.created_at },
+    ],
+    order: 'published_at.desc',
+    limit: 1,
+  }))[0];
+}
+
+function stalePublishResult(
+  job: AgentJobRow,
+  row: QueueItemRow | undefined,
+  history: PublishHistoryRow | undefined,
+  logs: WorkerLogRow[]
+): JsonMap {
+  const queueItemId = queueItemIdFromPayload(job.payload);
+  if (!row) {
+    const message = 'Scheduled publish timed out, but the queue item no longer exists.';
+    const nextAction = 'Review Logs and publish history before retrying scheduled publishing.';
+    return {
+      outcome: 'blocked',
+      message,
+      nextAction,
+      error: 'queue_item_missing',
+      jobStatus: 'failed',
+      summary: {
+        outcome: 'blocked',
+        message,
+        nextAction,
+        failedStage: 'scheduled_publish',
+        failureCode: 'queue_item_missing',
+        queueItemId,
+        queueItemStatus: 'missing',
+        errors: ['queue_item_missing'],
+      },
+    };
+  }
+  const platform = row?.platform || 'unknown';
+  const reconciled = row?.status === 'published' || Boolean(history);
+  const stageStarted = row?.status === 'publishing' || (queueItemId ? publishStageStarted(logs, queueItemId) : false);
+  const code = reconciled
+    ? PUBLISH_RECONCILED_CODE
+    : stageStarted
+    ? PUBLISH_UNKNOWN_STATE_CODE
+    : PUBLISH_INTERRUPTED_CODE;
+  const message = reconciled
+    ? PUBLISH_RECONCILED_MESSAGE
+    : stageStarted
+    ? PUBLISH_UNKNOWN_STATE_MESSAGE
+    : PUBLISH_INTERRUPTED_MESSAGE;
+  const nextAction = reconciled
+    ? PUBLISH_RECONCILED_NEXT_ACTION
+    : stageStarted
+    ? PUBLISH_UNKNOWN_STATE_NEXT_ACTION
+    : PUBLISH_INTERRUPTED_NEXT_ACTION;
+  const outcome = reconciled ? 'completed_with_errors' : 'blocked';
+
+  const summary: JsonMap = {
+    outcome,
+    message,
+    nextAction,
+    failedStage: reconciled ? 'publish_state_reconciliation' : stageStarted ? 'scheduled_publish' : 'publish_claim',
+    failureCode: code,
+    platform,
+    queueItemId,
+    queueItemStatus: row?.status || 'missing',
+    scheduledFor: row?.scheduled_for || null,
+    publishHistoryId: history?.id || null,
+    externalPostId: history?.external_post_id || null,
+    errors: [message],
+  };
+
+  return {
+    outcome,
+    message,
+    nextAction,
+    error: code,
+    jobStatus: reconciled ? 'completed_with_errors' : 'failed',
+    summary,
+  };
+}
+
+async function stalePublishJobResult(job: AgentJobRow, logs: WorkerLogRow[]): Promise<JsonMap> {
+  const queueItemId = queueItemIdFromPayload(job.payload);
+  if (!queueItemId) {
+    return {
+      outcome: 'blocked',
+      message: 'Scheduled publish timed out and did not include a queue item id.',
+      nextAction: 'Review the job payload before retrying scheduled publishing.',
+      error: 'missing_queue_item_id',
+      jobStatus: 'failed',
+      summary: {
+        outcome: 'blocked',
+        message: 'Scheduled publish timed out and did not include a queue item id.',
+        nextAction: 'Review the job payload before retrying scheduled publishing.',
+        failedStage: 'scheduled_publish',
+        failureCode: 'missing_queue_item_id',
+        errors: ['missing_queue_item_id'],
+      },
+    };
+  }
+
+  const row = await loadQueueItemForStalePublish(job, queueItemId);
+  const history = row ? await findPublishHistoryForQueueItem(job, row) : undefined;
+  const result = stalePublishResult(job, row, history, logs);
+  const summary = resultSummary(result);
+  if (row && summary.failureCode === PUBLISH_UNKNOWN_STATE_CODE) {
+    await supabaseUpdate('queue_items', {
+      status: 'failed',
+      error_message: PUBLISH_UNKNOWN_STATE_MESSAGE,
+    }, {
+      filters: [
+        { column: 'id', operator: 'eq', value: row.id },
+        { column: 'user_id', operator: 'eq', value: job.user_id },
+        { column: 'status', operator: 'eq', value: 'publishing' },
+      ],
+    });
+  }
+  return result;
+}
+
 async function cleanupStaleRunningJobs(stats: SchedulerStats, now: Date): Promise<void> {
   const cutoff = addMinutesIso(now, -STALE_RUNNING_JOB_MINUTES);
   const jobs = await supabaseSelect<AgentJobRow>('agent_jobs', {
@@ -3403,7 +3580,9 @@ async function cleanupStaleRunningJobs(stats: SchedulerStats, now: Date): Promis
   for (const job of jobs) {
     const logs = await staleJobLogs(job);
     const details = staleFailureFromLogs(logs);
-    const result = staleJobResult(job, logs, details);
+    const result = job.kind === 'publish_now'
+      ? await stalePublishJobResult(job, logs)
+      : staleJobResult(job, logs, details);
     const summary = resultSummary(result);
     const error = String(summary.failureCode || result.error || 'worker_job_timed_out');
     const status = terminalStatusForResult(result);
