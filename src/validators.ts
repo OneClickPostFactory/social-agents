@@ -210,6 +210,7 @@ export function parseRuntimeSettingsPatch(settings: UnknownRecord): UnknownRecor
   if ('REDDIT_LIMIT' in settings) next.REDDIT_LIMIT = asInteger(settings.REDDIT_LIMIT, 'settings.REDDIT_LIMIT', { min: 1, max: 100 });
   if ('OPENAI_MODEL' in settings) next.OPENAI_MODEL = asTrimmedString(settings.OPENAI_MODEL, 'settings.OPENAI_MODEL', { maxLength: 128 });
   if ('OPENAI_IMAGE_MODEL' in settings) next.OPENAI_IMAGE_MODEL = asTrimmedString(settings.OPENAI_IMAGE_MODEL, 'settings.OPENAI_IMAGE_MODEL', { maxLength: 128 });
+  if ('OPENAI_IMAGE_TIMEOUT_MS' in settings) next.OPENAI_IMAGE_TIMEOUT_MS = asInteger(settings.OPENAI_IMAGE_TIMEOUT_MS, 'settings.OPENAI_IMAGE_TIMEOUT_MS', { min: 1000, max: 300000 });
   if ('AI_STYLE' in settings) next.AI_STYLE = asTrimmedString(settings.AI_STYLE, 'settings.AI_STYLE', { maxLength: 128 });
   if ('CUSTOM_PROMPT' in settings) next.CUSTOM_PROMPT = asTrimmedString(settings.CUSTOM_PROMPT, 'settings.CUSTOM_PROMPT', { allowEmpty: true, maxLength: 8000 });
   if ('ENABLE_LINKEDIN' in settings) next.ENABLE_LINKEDIN = asBoolean(settings.ENABLE_LINKEDIN, 'settings.ENABLE_LINKEDIN');

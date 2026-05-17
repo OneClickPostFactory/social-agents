@@ -3,6 +3,7 @@ import config from '../config';
 
 import * as cloudinary from './cloudinary';
 import { requestJson } from './http-client';
+import * as logger from './logger';
 
 import type {
   AngleCandidate,
@@ -102,26 +103,41 @@ export const OPENAI_TEXT_ANGLE_EXTRACTION_NEXT_ACTION =
   'Fix OpenAI billing/quota or wait for rate limits to reset, then rerun Fetch Sources.';
 
 export interface OpenAIImageErrorDetails {
+  attempt?: number;
   code: string;
+  elapsedMs?: number;
+  model?: string;
   nextAction: string;
+  promptLength?: number;
   rawMessage: string;
   stage: typeof OPENAI_IMAGE_GENERATION_STAGE;
+  timeoutMs?: number;
   userMessage: string;
 }
 
 export class OpenAIImageGenerationError extends Error {
+  public readonly attempt?: number;
   public readonly code: string;
+  public readonly elapsedMs?: number;
+  public readonly model?: string;
   public readonly nextAction: string;
+  public readonly promptLength?: number;
   public readonly rawMessage: string;
   public readonly stage = OPENAI_IMAGE_GENERATION_STAGE;
+  public readonly timeoutMs?: number;
   public readonly userMessage: string;
 
   constructor(details: OpenAIImageErrorDetails) {
     super(details.userMessage);
     this.name = 'OpenAIImageGenerationError';
+    this.attempt = details.attempt;
     this.code = details.code;
+    this.elapsedMs = details.elapsedMs;
+    this.model = details.model;
     this.nextAction = details.nextAction;
+    this.promptLength = details.promptLength;
     this.rawMessage = details.rawMessage;
+    this.timeoutMs = details.timeoutMs;
     this.userMessage = details.userMessage;
   }
 }
@@ -753,6 +769,11 @@ function imageGenerationBody(imagePrompt: string): Record<string, unknown> {
   return body;
 }
 
+export function openAIImageTimeoutMs(): number {
+  const configured = Number(config.OPENAI_IMAGE_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? Math.round(configured) : 120000;
+}
+
 function isOpenAIImageBillingBlocked(rawMessage: string): boolean {
   const normalized = rawMessage.toLowerCase();
   return (
@@ -785,10 +806,14 @@ function isOpenAIImageAborted(rawMessage: string): boolean {
   );
 }
 
-function createOpenAIImageGenerationError(rawMessage: string): OpenAIImageGenerationError {
+function createOpenAIImageGenerationError(
+  rawMessage: string,
+  diagnostics: Partial<OpenAIImageErrorDetails> = {}
+): OpenAIImageGenerationError {
   const message = rawMessage.trim() || 'Unknown error';
   if (isOpenAIImageBillingBlocked(message)) {
     return new OpenAIImageGenerationError({
+      ...diagnostics,
       code: OPENAI_IMAGE_BILLING_BLOCKED_CODE,
       nextAction: OPENAI_IMAGE_BILLING_BLOCKED_NEXT_ACTION,
       rawMessage: message,
@@ -798,6 +823,7 @@ function createOpenAIImageGenerationError(rawMessage: string): OpenAIImageGenera
   }
   if (isOpenAIImageRateLimited(message)) {
     return new OpenAIImageGenerationError({
+      ...diagnostics,
       code: OPENAI_IMAGE_RATE_LIMITED_CODE,
       nextAction: 'Wait for OpenAI image rate limits to reset, then retry the Instagram item.',
       rawMessage: message,
@@ -807,6 +833,7 @@ function createOpenAIImageGenerationError(rawMessage: string): OpenAIImageGenera
   }
   if (isOpenAIImageAborted(message)) {
     return new OpenAIImageGenerationError({
+      ...diagnostics,
       code: OPENAI_IMAGE_GENERATION_ABORTED_CODE,
       nextAction: OPENAI_IMAGE_GENERATION_ABORTED_NEXT_ACTION,
       rawMessage: message,
@@ -819,6 +846,7 @@ function createOpenAIImageGenerationError(rawMessage: string): OpenAIImageGenera
     ? message
     : `GPT Image generation failed: ${message}`;
   return new OpenAIImageGenerationError({
+    ...diagnostics,
     code: OPENAI_IMAGE_GENERATION_FAILED_CODE,
     nextAction: OPENAI_IMAGE_GENERATION_FAILED_NEXT_ACTION,
     rawMessage: message,
@@ -830,10 +858,15 @@ function createOpenAIImageGenerationError(rawMessage: string): OpenAIImageGenera
 export function openAIImageErrorDetails(error: unknown): OpenAIImageErrorDetails | undefined {
   if (error instanceof OpenAIImageGenerationError) {
     return {
+      attempt: error.attempt,
       code: error.code,
+      elapsedMs: error.elapsedMs,
+      model: error.model,
       nextAction: error.nextAction,
+      promptLength: error.promptLength,
       rawMessage: error.rawMessage,
       stage: error.stage,
+      timeoutMs: error.timeoutMs,
       userMessage: error.userMessage,
     };
   }
@@ -922,7 +955,20 @@ export function openAITextErrorDetails(
 }
 
 async function generateImageFromPrompt(imagePrompt: string): Promise<GeneratedImageAsset> {
+  const model = config.OPENAI_IMAGE_MODEL || 'gpt-image-2';
+  const promptLength = imagePrompt.length;
+  const timeoutMs = openAIImageTimeoutMs();
+  const attempt = 1;
+  const startedAt = Date.now();
   const body = JSON.stringify(imageGenerationBody(imagePrompt));
+
+  logger.info('openai_image_generation_started', {
+    attempt,
+    model,
+    promptLength,
+    stage: OPENAI_IMAGE_GENERATION_STAGE,
+    timeoutMs,
+  });
 
   try {
     const { data } = await requestJson<ImageGenerationResponse>('https://api.openai.com/v1/images/generations', {
@@ -932,13 +978,12 @@ async function generateImageFromPrompt(imagePrompt: string): Promise<GeneratedIm
         'Authorization': `Bearer ${config.OPENAI_API_KEY}`,
       },
       body,
-      timeoutMs: Math.max(config.HTTP_TIMEOUT_MS, 60000),
-      retryCount: 1,
-      retryDelayMs: 500,
+      timeoutMs,
+      retryCount: 0,
     });
 
     if (data.error) {
-      throw createOpenAIImageGenerationError(
+      throw new Error(
         [data.error.message, data.error.code, data.error.type].filter(Boolean).join(' ') || 'Unknown error'
       );
     }
@@ -957,13 +1002,29 @@ async function generateImageFromPrompt(imagePrompt: string): Promise<GeneratedIm
       };
     }
 
-    throw createOpenAIImageGenerationError('OpenAI image response did not include image data');
+    throw new Error('OpenAI image response did not include image data');
   } catch (error) {
-    if (error instanceof OpenAIImageGenerationError) {
-      throw error;
-    }
     const message = error instanceof Error ? error.message : String(error);
-    throw createOpenAIImageGenerationError(message);
+    const elapsedMs = Date.now() - startedAt;
+    const normalized = error instanceof OpenAIImageGenerationError
+      ? error
+      : createOpenAIImageGenerationError(message, {
+        attempt,
+        elapsedMs,
+        model,
+        promptLength,
+        timeoutMs,
+      });
+    logger.warn('openai_image_generation_failed', {
+      attempt: normalized.attempt ?? attempt,
+      elapsedMs: normalized.elapsedMs ?? elapsedMs,
+      model: normalized.model ?? model,
+      normalized_error_code: normalized.code,
+      promptLength: normalized.promptLength ?? promptLength,
+      stage: normalized.stage,
+      timeoutMs: normalized.timeoutMs ?? timeoutMs,
+    });
+    throw normalized;
   }
 }
 

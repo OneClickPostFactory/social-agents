@@ -57,7 +57,12 @@ Configured in `wrangler.toml`:
 - `SUPABASE_WORKER_BATCH_SIZE=5`
 - `HTTP_TIMEOUT_MS=45000`
 - `OPENAI_IMAGE_MODEL=gpt-image-2`
+- `OPENAI_IMAGE_TIMEOUT_MS=120000`
 - `CLOUDINARY_FOLDER=social-agent/instagram`
+
+`OPENAI_IMAGE_TIMEOUT_MS` is separate from the generic HTTP timeout and applies
+only to OpenAI image generation. Keep it finite; image timeouts must fail as
+`instagram_image_generation` errors rather than worker-runtime failures.
 
 The Worker derives a tenant-specific Cloudinary subfolder from `job.user_id`
 using a hash. This keeps assets grouped per tenant without exposing raw user

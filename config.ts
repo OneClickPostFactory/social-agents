@@ -28,6 +28,7 @@ export interface AppConfig {
   OPENAI_API_KEY: string;
   OPENAI_MODEL: string;
   OPENAI_IMAGE_MODEL: string;
+  OPENAI_IMAGE_TIMEOUT_MS: number;
   AI_STYLE: string;
   CUSTOM_PROMPT: string;
   ENABLE_LINKEDIN: boolean;
@@ -157,6 +158,7 @@ function buildBaseConfig(): AppConfig {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
     OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o',
     OPENAI_IMAGE_MODEL: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
+    OPENAI_IMAGE_TIMEOUT_MS: Number.parseInt(process.env.OPENAI_IMAGE_TIMEOUT_MS || '120000', 10),
     AI_STYLE: process.env.AI_STYLE || 'conversational',
     CUSTOM_PROMPT: process.env.CUSTOM_PROMPT || '',
     ENABLE_LINKEDIN: parseBooleanEnv(process.env.ENABLE_LINKEDIN, false),
@@ -242,6 +244,9 @@ export function applyRuntimeConfig(patch: Record<string, unknown>): AppConfig {
   if (typeof patch.OPENAI_API_KEY === 'string') config.OPENAI_API_KEY = patch.OPENAI_API_KEY;
   if (typeof patch.OPENAI_MODEL === 'string') config.OPENAI_MODEL = patch.OPENAI_MODEL;
   if (typeof patch.OPENAI_IMAGE_MODEL === 'string') config.OPENAI_IMAGE_MODEL = patch.OPENAI_IMAGE_MODEL;
+  if (typeof patch.OPENAI_IMAGE_TIMEOUT_MS === 'number' && Number.isFinite(patch.OPENAI_IMAGE_TIMEOUT_MS)) {
+    config.OPENAI_IMAGE_TIMEOUT_MS = patch.OPENAI_IMAGE_TIMEOUT_MS;
+  }
   if (typeof patch.AI_STYLE === 'string') config.AI_STYLE = patch.AI_STYLE;
   if (typeof patch.CUSTOM_PROMPT === 'string') config.CUSTOM_PROMPT = patch.CUSTOM_PROMPT;
   if (typeof patch.ENABLE_LINKEDIN === 'boolean') config.ENABLE_LINKEDIN = patch.ENABLE_LINKEDIN;

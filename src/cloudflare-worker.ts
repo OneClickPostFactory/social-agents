@@ -13,6 +13,7 @@ interface Env {
   REDDIT_USER_AGENT?: string;
   OPENAI_MODEL?: string;
   OPENAI_IMAGE_MODEL?: string;
+  OPENAI_IMAGE_TIMEOUT_MS?: string;
   CLOUDINARY_CLOUD_NAME?: string;
   CLOUDINARY_API_KEY?: string;
   CLOUDINARY_API_SECRET?: string;

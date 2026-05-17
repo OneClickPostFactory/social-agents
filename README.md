@@ -76,6 +76,7 @@ SUPABASE_URL=https://<your-owned-project-ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<sb_secret_... or legacy service_role JWT>
 CREDENTIAL_ENCRYPTION_KEY=<same-key-used-by-lovable-server-runtime>
 OPENAI_IMAGE_MODEL=gpt-image-2
+OPENAI_IMAGE_TIMEOUT_MS=120000
 REDDIT_CLIENT_ID=<reddit-script-app-client-id>
 REDDIT_CLIENT_SECRET=<reddit-script-app-secret>
 REDDIT_USER_AGENT=oneclickpostfactory-agent/1.0 by u/<your-reddit-operator-user>
@@ -111,8 +112,10 @@ npm run deploy:cloudflare
 
 Cloudflare runs `src/cloudflare-worker.ts` from a cron trigger every minute. Each scheduled tick claims a small batch of Supabase jobs, processes them, and exits. The local `setInterval` loop remains available for development through `npm run worker:supabase`.
 
-Set Cloudinary credentials as Cloudflare Worker secrets. `OPENAI_IMAGE_MODEL`
-and `CLOUDINARY_FOLDER` are non-secret Worker vars in `wrangler.toml`.
+Set Cloudinary credentials as Cloudflare Worker secrets. `OPENAI_IMAGE_MODEL`,
+`OPENAI_IMAGE_TIMEOUT_MS`, and `CLOUDINARY_FOLDER` are non-secret Worker vars
+in `wrangler.toml`. `OPENAI_IMAGE_TIMEOUT_MS` controls only OpenAI image
+generation; do not remove image timeouts entirely.
 
 Local SQLite remains for local admin/dev control-plane state. It is not the SaaS tenant source of truth.
 

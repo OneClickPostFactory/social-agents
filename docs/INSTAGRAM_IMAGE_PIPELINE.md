@@ -9,7 +9,7 @@ or publish Instagram posts using temporary OpenAI provider URLs.
 2. The Worker drafts from one tenant-scoped Angle Bank row.
 3. `src/ai.ts` builds an image prompt for the selected angle.
 4. OpenAI generates the image with `OPENAI_IMAGE_MODEL` (`gpt-image-2` by
-   default).
+   default) and the image-specific `OPENAI_IMAGE_TIMEOUT_MS` timeout.
 5. The Worker immediately uploads the generated image asset to Cloudinary.
 6. The Cloudinary secure URL is saved to `queue_items.instagram_image_url`.
 7. Publishing verifies that the image URL is a Cloudinary URL before calling the
@@ -31,6 +31,13 @@ The production runtime now fails closed:
   worker records `openai_image_billing_blocked`, keeps Instagram failed/blocked,
   and tells the user to add image-generation credits or raise the OpenAI billing
   hard limit before retrying.
+- If OpenAI image generation times out or is aborted, the worker records an
+  `instagram_image_generation` failure such as
+  `openai_image_generation_aborted`; do not relabel it as text generation or
+  `worker_runtime`.
+- If no Instagram slot is open, the Worker skips Instagram image generation
+  before calling OpenAI and records `instagram_no_open_slot`; that is a deferred
+  scheduling state, not a media failure.
 - If an existing queue row has a non-Cloudinary image URL, publishing tries to
   persist or regenerate the image first. If that fails, the row is marked failed
   with a tenant-scoped error.
@@ -40,6 +47,7 @@ The production runtime now fails closed:
 Required in the Worker runtime:
 
 - `OPENAI_IMAGE_MODEL=gpt-image-2`
+- `OPENAI_IMAGE_TIMEOUT_MS=120000`
 - `CLOUDINARY_CLOUD_NAME`
 - `CLOUDINARY_API_KEY`
 - `CLOUDINARY_API_SECRET`
@@ -47,6 +55,10 @@ Required in the Worker runtime:
 
 `CLOUDINARY_UPLOAD_PRESET` is supported for unsigned upload mode, but signed
 uploads using API key and secret are preferred for production.
+
+`OPENAI_IMAGE_TIMEOUT_MS` is deliberately separate from `HTTP_TIMEOUT_MS` so
+image generation can take longer than normal API calls without waiting forever.
+Do not remove the timeout completely.
 
 ## Tenant Safety
 

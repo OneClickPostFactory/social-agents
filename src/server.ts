@@ -359,6 +359,7 @@ function getEffectiveSettings(): Record<string, unknown> {
     REDDIT_LIMIT: config.REDDIT_LIMIT,
     OPENAI_MODEL: config.OPENAI_MODEL,
     OPENAI_IMAGE_MODEL: config.OPENAI_IMAGE_MODEL,
+    OPENAI_IMAGE_TIMEOUT_MS: config.OPENAI_IMAGE_TIMEOUT_MS,
     AI_STYLE: config.AI_STYLE,
     CUSTOM_PROMPT: config.CUSTOM_PROMPT,
     ENABLE_LINKEDIN: config.ENABLE_LINKEDIN,

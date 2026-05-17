@@ -35,6 +35,7 @@ import {
   type RedditPublicJsonUsedTransport,
 } from './reddit-public-json';
 import {
+  DAILY_SLOT_HOURS,
   buildPlatformSlotOccupancy,
   nextOpenPlatformSlot,
   platformSlotOccupancyKey,
@@ -610,6 +611,11 @@ function safeErrorContext(error: unknown): JsonMap | null {
   const imageError = ai.openAIImageErrorDetails(error);
   if (imageError) {
     return {
+      ...(typeof imageError.model === 'string' ? { model: imageError.model } : {}),
+      ...(typeof imageError.promptLength === 'number' ? { prompt_length: imageError.promptLength } : {}),
+      ...(typeof imageError.timeoutMs === 'number' ? { timeout_ms: imageError.timeoutMs } : {}),
+      ...(typeof imageError.attempt === 'number' ? { attempt: imageError.attempt } : {}),
+      ...(typeof imageError.elapsedMs === 'number' ? { elapsed_ms: imageError.elapsedMs } : {}),
       stage: imageError.stage,
       normalized_error_code: imageError.code,
       user_message: imageError.userMessage,
@@ -638,6 +644,16 @@ function hasDateInFuture(value: string | null | undefined): boolean {
 function incrementCounter(counter: Record<string, number>, key: string | undefined): void {
   const normalized = String(key || 'unknown').trim() || 'unknown';
   counter[normalized] = (counter[normalized] || 0) + 1;
+}
+
+function activeSlotCountForPlatform(platform: PlatformKey | string, occupiedSlots: PlatformSlotOccupancy): number {
+  const prefix = `${String(platform || '').trim()}:`;
+  if (!prefix.trim()) return 0;
+  return [...occupiedSlots].filter(key => key.startsWith(prefix)).length;
+}
+
+function hasOpenActiveSlotForPlatform(platform: PlatformKey | string, occupiedSlots: PlatformSlotOccupancy): boolean {
+  return activeSlotCountForPlatform(platform, occupiedSlots) < DAILY_SLOT_HOURS.length;
 }
 
 function addSummaryError(summary: PipelineSummary, error: unknown): void {
@@ -960,6 +976,7 @@ function snapshotConfig(): Partial<AppConfig> {
     OPENAI_API_KEY: config.OPENAI_API_KEY,
     OPENAI_MODEL: config.OPENAI_MODEL,
     OPENAI_IMAGE_MODEL: config.OPENAI_IMAGE_MODEL,
+    OPENAI_IMAGE_TIMEOUT_MS: config.OPENAI_IMAGE_TIMEOUT_MS,
     REDDIT_CLIENT_ID: config.REDDIT_CLIENT_ID,
     REDDIT_CLIENT_SECRET: config.REDDIT_CLIENT_SECRET,
     REDDIT_PUBLIC_JSON_TRANSPORT: config.REDDIT_PUBLIC_JSON_TRANSPORT,
@@ -2135,6 +2152,21 @@ async function queueFromBankedAngles(
         platform,
         reason: 'instagram_image_generation_unavailable',
         next_action: ai.OPENAI_IMAGE_GENERATION_ABORTED_NEXT_ACTION,
+      });
+      continue;
+    }
+
+    if (platform === 'instagram' && !hasOpenActiveSlotForPlatform(platform, occupiedSlots)) {
+      if (summary) {
+        summary.drafts.skipped++;
+        incrementCounter(summary.drafts.skipReasons, 'instagram_no_open_slot');
+      }
+      await writeWorkerLog(job.user_id, 'info', 'banked_angle_draft_skipped', {
+        jobId: job.id,
+        angleId: angleRow.id,
+        platform,
+        reason: 'instagram_no_open_slot',
+        message: 'Instagram image generation was skipped because no Instagram slot is open.',
       });
       continue;
     }
@@ -3859,6 +3891,7 @@ export function startSupabaseWorkerLoop(log = logger): { stop: () => void } | un
 }
 
 export const __test__ = {
+  hasOpenActiveSlotForPlatform,
   hasRecentJobActivity,
   publishSuccessResult,
   reconstructStaleSummary,
