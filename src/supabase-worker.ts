@@ -154,6 +154,7 @@ interface PublishHistoryRow {
   user_id: string;
   platform: PlatformKey;
   external_post_id?: string | null;
+  external_url?: string | null;
   source_url?: string | null;
   published_at: string;
 }
@@ -1142,6 +1143,69 @@ function queueItemIdFromPayload(payload: JsonMap | null | undefined): string {
 function isScheduledJob(job: AgentJobRow): boolean {
   return payloadSource(job.payload) === SCHEDULED_SOURCE
     && job.payload?.scheduler === SCHEDULER_NAME;
+}
+
+function publishSuccessMessage(platform: PlatformKey, origin: string): string {
+  return origin === 'scheduled'
+    ? `Scheduled post published to ${platform}. External post ID recorded.`
+    : `Published to ${platform}. External post ID recorded.`;
+}
+
+function publishSuccessResult(
+  job: AgentJobRow,
+  row: QueueItemRow,
+  history: PublishHistoryRow | undefined,
+  externalPostId: string,
+  completedAt: string,
+  authMode?: string
+): JsonMap {
+  const origin = jobOrigin(job);
+  const scheduler = typeof job.payload?.scheduler === 'string' ? job.payload.scheduler : undefined;
+  const scheduledFor = row.scheduled_for || (typeof job.payload?.due_at === 'string' ? job.payload.due_at : undefined);
+  const message = publishSuccessMessage(row.platform, origin);
+  const nextAction = 'Review the published post in Publish History or on the platform.';
+  const summary: JsonMap = {
+    outcome: 'published',
+    platform: row.platform,
+    queue_item_id: row.id,
+    job_id: job.id,
+    origin,
+    ...(scheduler ? { scheduler } : {}),
+    ...(scheduledFor ? { scheduled_for: scheduledFor } : {}),
+    started_at: job.started_at || null,
+    completed_at: completedAt,
+    final_queue_status: 'published',
+    publish_history_id: history?.id || null,
+    external_post_id: externalPostId,
+    ...(history?.external_url ? { external_url: history.external_url } : {}),
+    message,
+    nextAction,
+  };
+
+  return {
+    authMode,
+    completedAt,
+    externalPostId,
+    external_post_id: externalPostId,
+    finalQueueStatus: 'published',
+    final_queue_status: 'published',
+    jobId: job.id,
+    job_id: job.id,
+    message,
+    nextAction,
+    origin,
+    platform: row.platform,
+    publishHistoryId: history?.id || null,
+    publish_history_id: history?.id || null,
+    queueItemId: row.id,
+    queue_item_id: row.id,
+    scheduledFor,
+    scheduled_for: scheduledFor,
+    ...(scheduler ? { scheduler } : {}),
+    startedAt: job.started_at || null,
+    started_at: job.started_at || null,
+    summary,
+  };
 }
 
 function automationResultPayload(job: AgentJobRow, status: string, result: JsonMap): JsonMap {
@@ -2628,14 +2692,16 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<Jso
         { column: 'user_id', operator: 'eq', value: job.user_id },
       ],
     });
-    await supabaseInsert('publish_history', {
+    const publishedAt = nowIso();
+    const publishHistoryRows = await supabaseInsert<PublishHistoryRow>('publish_history', {
       user_id: job.user_id,
       platform: current.platform,
       post_text: current.draft_text || null,
       external_post_id: externalPostId,
       source_url: current.source_url || null,
-      published_at: nowIso(),
-    });
+      published_at: publishedAt,
+    }, true);
+    const publishHistory = publishHistoryRows[0];
     if (current.angle_record_id) {
       await supabaseUpdate('angle_records', {
         status: 'published',
@@ -2653,8 +2719,9 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<Jso
       platform: current.platform,
       ...(authMode ? { auth_mode: authMode } : {}),
       externalPostId,
+      publishHistoryId: publishHistory?.id || null,
     });
-    return { queueItemId: current.id, platform: current.platform, ...(authMode ? { authMode } : {}), externalPostId };
+    return publishSuccessResult(job, current, publishHistory, externalPostId, nowIso(), authMode);
   } catch (error) {
     const message = publicError(error);
     const imageErrorContext = safeErrorContext(error);
@@ -3793,6 +3860,7 @@ export function startSupabaseWorkerLoop(log = logger): { stop: () => void } | un
 
 export const __test__ = {
   hasRecentJobActivity,
+  publishSuccessResult,
   reconstructStaleSummary,
 };
 
