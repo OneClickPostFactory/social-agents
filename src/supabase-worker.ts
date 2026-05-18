@@ -3587,7 +3587,7 @@ async function findPublishHistoryForQueueItem(
 ): Promise<PublishHistoryRow | undefined> {
   if (!row.source_url) return undefined;
   return (await supabaseSelect<PublishHistoryRow>('publish_history', {
-    select: 'id,user_id,platform,external_post_id,source_url,published_at',
+    select: 'id,user_id,platform,external_post_id,external_url,source_url,published_at',
     filters: [
       { column: 'user_id', operator: 'eq', value: job.user_id },
       { column: 'platform', operator: 'eq', value: row.platform },
@@ -3628,6 +3628,16 @@ function stalePublishResult(
     };
   }
   const platform = row?.platform || 'unknown';
+  const externalPostId = String(history?.external_post_id || '').trim();
+  if (row.status === 'published' && history?.id && externalPostId) {
+    return publishSuccessResult(
+      job,
+      row,
+      history,
+      externalPostId,
+      history.published_at || nowIso()
+    );
+  }
   const reconciled = row?.status === 'published' || Boolean(history);
   const stageStarted = row?.status === 'publishing' || (queueItemId ? publishStageStarted(logs, queueItemId) : false);
   const code = reconciled
@@ -3895,6 +3905,7 @@ export const __test__ = {
   hasRecentJobActivity,
   publishSuccessResult,
   reconstructStaleSummary,
+  stalePublishResult,
 };
 
 if (typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module) {
