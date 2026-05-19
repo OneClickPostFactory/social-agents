@@ -82,6 +82,10 @@ interface ProfileRow {
 interface UserSettingsRow {
   user_id?: string | null;
   ai_model?: string | null;
+  openai_text_daily_call_limit?: number | null;
+  openai_image_daily_call_limit?: number | null;
+  openai_image_generation_enabled?: boolean | null;
+  openai_image_requires_manual_approval?: boolean | null;
   posting_timezone?: string | null;
   threads_enabled?: boolean | null;
   instagram_enabled?: boolean | null;
@@ -165,6 +169,81 @@ interface WorkerLogRow {
   message: string;
   context?: JsonMap | null;
   created_at: string;
+}
+
+interface OpenAIUsageSummaryEvent {
+  angleId?: string;
+  callStatus: ai.OpenAIUsageCallStatus;
+  createdAt: string;
+  elapsedMs?: number;
+  inputSizeEstimate: number;
+  jobId?: string;
+  jobKind?: string;
+  model: string;
+  normalizedErrorCode?: string;
+  outputSizeEstimate?: number;
+  platform?: string;
+  queueItemId?: string;
+  sourceRecordId?: string;
+  stage: string;
+  type: ai.OpenAIUsageCallType;
+}
+
+interface OpenAIGenerationPauseSummary {
+  active: boolean;
+  backoffUntil?: string;
+  code?: string;
+  message?: string;
+  nextAction?: string;
+  stage?: string;
+}
+
+interface OpenAIUsageDailySummary {
+  title: 'OpenAI usage today';
+  labels: {
+    textGenerations: 'Text generations';
+    imageGenerations: 'Image generations';
+    mostUsedStage: 'Most used stage';
+    latestFailure: 'Latest failure';
+  };
+  textCallCountToday: number;
+  imageCallCountToday: number;
+  textGenerations: number;
+  imageGenerations: number;
+  imageGenerationAttemptsToday: number;
+  platformDraftsCreatedToday: number;
+  callsByStage: Record<string, number>;
+  callsByModel: Record<string, number>;
+  failuresByStage: Record<string, number>;
+  successesByStage: Record<string, number>;
+  mostUsedStage: string | null;
+  latestFailure: OpenAIUsageSummaryEvent | null;
+  latestSuccessfulGeneration: OpenAIUsageSummaryEvent | null;
+  imageGenerationEnabled: boolean;
+  imageRequiresManualApproval: boolean;
+  configuredLimits: {
+    textDailyCallLimit: number | null;
+    imageDailyCallLimit: number | null;
+  };
+  generationPaused: OpenAIGenerationPauseSummary;
+}
+
+interface OpenAIGenerationGuardDecision {
+  allowed: boolean;
+  backoffUntil?: string;
+  code?: string;
+  message?: string;
+  nextAction?: string;
+  stage?: string;
+}
+
+interface OpenAIGenerationGuardRequest {
+  angleId?: string;
+  platform?: string;
+  queueItemId?: string;
+  sourceRecordId?: string;
+  stage: string;
+  type: ai.OpenAIUsageCallType;
 }
 
 export interface SchedulerStats {
@@ -278,6 +357,7 @@ interface PipelineSummary {
     byStage: Record<string, number>;
     failuresByStage: Record<string, number>;
   };
+  openaiUsageToday: OpenAIUsageDailySummary;
   errors: string[];
   failedStage?: string;
   failureCode?: string;
@@ -307,6 +387,24 @@ const PUBLISH_RECONCILED_MESSAGE =
   'Scheduled publish timed out, but the queue item is already published. No retry is needed.';
 const PUBLISH_RECONCILED_NEXT_ACTION =
   'No action is needed unless the external platform post is missing.';
+const OPENAI_GENERATION_PAUSED_REPEATED_FAILURES_CODE = 'openai_generation_paused_repeated_failures';
+const OPENAI_IMAGE_PAUSED_REPEATED_ABORTS_CODE = 'openai_image_paused_repeated_aborts';
+const OPENAI_SOURCE_EXTRACTION_BACKOFF_ACTIVE_CODE = 'openai_source_extraction_backoff_active';
+const OPENAI_IMAGE_DAILY_LIMIT_REACHED_CODE = 'openai_image_daily_limit_reached';
+const OPENAI_TEXT_DAILY_LIMIT_REACHED_CODE = 'openai_text_daily_limit_reached';
+const OPENAI_IMAGE_GENERATION_DISABLED_CODE = 'openai_image_generation_disabled';
+const OPENAI_IMAGE_REQUIRES_MANUAL_APPROVAL_CODE = 'openai_image_requires_manual_approval';
+const OPENAI_GENERATION_PAUSED_MESSAGE =
+  'Generation is paused for this item because the same OpenAI step failed repeatedly. Existing queue items can still publish.';
+const OPENAI_GENERATION_PAUSED_NEXT_ACTION =
+  'Review the failed item, wait for backoff, or manually retry after checking your OpenAI account.';
+const OPENAI_REPEATED_FAILURE_THRESHOLD = 3;
+const OPENAI_REPEATED_FAILURE_WINDOW_MS = 60 * 60_000;
+const OPENAI_IMAGE_ABORT_THRESHOLD = 2;
+const OPENAI_IMAGE_ABORT_WINDOW_MS = 15 * 60_000;
+const OPENAI_SOURCE_BACKOFF_THRESHOLD = 2;
+const OPENAI_SOURCE_BACKOFF_WINDOW_MS = 6 * 60 * 60_000;
+const OPENAI_GENERATION_BACKOFF_MS = 30 * 60_000;
 
 interface QueueFromAnglesResult {
   queued: number;
@@ -652,15 +750,404 @@ function incrementCounter(counter: Record<string, number>, key: string | undefin
   counter[normalized] = (counter[normalized] || 0) + 1;
 }
 
+function configuredPositiveInteger(value: number | null | undefined): number | null {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return Math.floor(numeric);
+}
+
+function imageGenerationEnabled(settings: UserSettingsRow): boolean {
+  return settings.openai_image_generation_enabled !== false;
+}
+
+function imageRequiresManualApproval(settings: UserSettingsRow): boolean {
+  return settings.openai_image_requires_manual_approval === true;
+}
+
+function emptyOpenAIUsageDailySummary(settings: UserSettingsRow): OpenAIUsageDailySummary {
+  return {
+    title: 'OpenAI usage today',
+    labels: {
+      textGenerations: 'Text generations',
+      imageGenerations: 'Image generations',
+      mostUsedStage: 'Most used stage',
+      latestFailure: 'Latest failure',
+    },
+    textCallCountToday: 0,
+    imageCallCountToday: 0,
+    textGenerations: 0,
+    imageGenerations: 0,
+    imageGenerationAttemptsToday: 0,
+    platformDraftsCreatedToday: 0,
+    callsByStage: {},
+    callsByModel: {},
+    failuresByStage: {},
+    successesByStage: {},
+    mostUsedStage: null,
+    latestFailure: null,
+    latestSuccessfulGeneration: null,
+    imageGenerationEnabled: imageGenerationEnabled(settings),
+    imageRequiresManualApproval: imageRequiresManualApproval(settings),
+    configuredLimits: {
+      textDailyCallLimit: configuredPositiveInteger(settings.openai_text_daily_call_limit),
+      imageDailyCallLimit: configuredPositiveInteger(settings.openai_image_daily_call_limit),
+    },
+    generationPaused: {
+      active: false,
+    },
+  };
+}
+
+function contextString(context: JsonMap, snakeKey: string, camelKey?: string): string | undefined {
+  const value = context[snakeKey] ?? (camelKey ? context[camelKey] : undefined);
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function contextNumber(context: JsonMap, snakeKey: string, camelKey?: string): number | undefined {
+  const value = context[snakeKey] ?? (camelKey ? context[camelKey] : undefined);
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return value;
+}
+
+function openAIUsageEventFromLog(row: WorkerLogRow): OpenAIUsageSummaryEvent | undefined {
+  if (row.message !== 'openai_call_recorded') return undefined;
+  const context = logContext(row);
+  const callStatus = contextString(context, 'call_status', 'callStatus');
+  const type = contextString(context, 'type');
+  const stage = contextString(context, 'stage');
+  const model = contextString(context, 'model');
+  if (
+    (callStatus !== 'started' && callStatus !== 'completed' && callStatus !== 'failed')
+    || (type !== 'text' && type !== 'image')
+    || !stage
+    || !model
+  ) {
+    return undefined;
+  }
+
+  return {
+    angleId: contextString(context, 'angle_id', 'angleId'),
+    callStatus,
+    createdAt: contextString(context, 'timestamp') || row.created_at,
+    elapsedMs: contextNumber(context, 'elapsed_ms', 'elapsedMs'),
+    inputSizeEstimate: contextNumber(context, 'input_size_estimate', 'inputSizeEstimate') || 0,
+    jobId: contextString(context, 'job_id', 'jobId'),
+    jobKind: contextString(context, 'job_kind', 'jobKind'),
+    model,
+    normalizedErrorCode: contextString(context, 'normalized_error_code', 'normalizedErrorCode'),
+    outputSizeEstimate: contextNumber(context, 'output_size_estimate', 'outputSizeEstimate'),
+    platform: contextString(context, 'platform'),
+    queueItemId: contextString(context, 'queue_item_id', 'queueItemId'),
+    sourceRecordId: contextString(context, 'source_record_id', 'sourceRecordId'),
+    stage,
+    type,
+  };
+}
+
+function openAIUsageSummaryEventFromUsageEvent(event: ai.OpenAIUsageEvent): OpenAIUsageSummaryEvent {
+  return {
+    angleId: event.angle_id,
+    callStatus: event.call_status,
+    createdAt: event.timestamp,
+    elapsedMs: event.elapsed_ms,
+    inputSizeEstimate: event.input_size_estimate,
+    jobId: event.job_id,
+    jobKind: event.job_kind,
+    model: event.model,
+    normalizedErrorCode: event.normalized_error_code,
+    outputSizeEstimate: event.output_size_estimate,
+    platform: event.platform,
+    queueItemId: event.queue_item_id,
+    sourceRecordId: event.source_record_id,
+    stage: event.stage,
+    type: event.type,
+  };
+}
+
+function latestOpenAIEvent(
+  current: OpenAIUsageSummaryEvent | null,
+  candidate: OpenAIUsageSummaryEvent
+): OpenAIUsageSummaryEvent {
+  if (!current) return candidate;
+  return Date.parse(candidate.createdAt) >= Date.parse(current.createdAt) ? candidate : current;
+}
+
+function mostUsedCounterKey(counter: Record<string, number>): string | null {
+  const [entry] = Object.entries(counter).sort((a, b) => b[1] - a[1]);
+  return entry?.[0] || null;
+}
+
+function countQueuedPlatformsFromLog(row: WorkerLogRow): number {
+  if (row.message !== 'queued_banked_angle') return 0;
+  const platforms = logStringArray(logContext(row), 'platforms');
+  return Math.max(1, platforms.length);
+}
+
+function buildOpenAIUsageDailySummary(
+  logs: WorkerLogRow[],
+  settings: UserSettingsRow
+): OpenAIUsageDailySummary {
+  const summary = emptyOpenAIUsageDailySummary(settings);
+
+  for (const row of logs) {
+    summary.platformDraftsCreatedToday += countQueuedPlatformsFromLog(row);
+    const event = openAIUsageEventFromLog(row);
+    if (!event) continue;
+
+    if (event.callStatus === 'started') {
+      if (event.type === 'image') {
+        summary.imageCallCountToday++;
+        summary.imageGenerations++;
+        summary.imageGenerationAttemptsToday++;
+      } else {
+        summary.textCallCountToday++;
+        summary.textGenerations++;
+      }
+      incrementCounter(summary.callsByStage, event.stage);
+      incrementCounter(summary.callsByModel, event.model);
+    }
+
+    if (event.callStatus === 'failed') {
+      incrementCounter(summary.failuresByStage, event.stage);
+      summary.latestFailure = latestOpenAIEvent(summary.latestFailure, event);
+    }
+
+    if (event.callStatus === 'completed') {
+      incrementCounter(summary.successesByStage, event.stage);
+      summary.latestSuccessfulGeneration = latestOpenAIEvent(summary.latestSuccessfulGeneration, event);
+    }
+  }
+
+  summary.mostUsedStage = mostUsedCounterKey(summary.callsByStage);
+  return summary;
+}
+
+function openAIUsageDayStartIso(now = new Date()): string {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+}
+
+async function loadOpenAIActivityLogsToday(userId: string, now = new Date()): Promise<WorkerLogRow[]> {
+  return supabaseSelect<WorkerLogRow>('worker_logs', {
+    select: 'level,message,context,created_at',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'message', operator: 'in', value: ['openai_call_recorded', 'queued_banked_angle'] },
+      { column: 'created_at', operator: 'gte', value: openAIUsageDayStartIso(now) },
+    ],
+    order: 'created_at.desc',
+    limit: 1000,
+  });
+}
+
+function backoffUntilFromEvents(events: OpenAIUsageSummaryEvent[], now: Date): string {
+  const latest = events
+    .map(event => Date.parse(event.createdAt))
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0] || now.getTime();
+  return new Date(latest + OPENAI_GENERATION_BACKOFF_MS).toISOString();
+}
+
+function eventsMatchingGuardRequest(
+  logs: WorkerLogRow[],
+  request: OpenAIGenerationGuardRequest,
+  now: Date,
+  windowMs: number
+): OpenAIUsageSummaryEvent[] {
+  const cutoff = now.getTime() - windowMs;
+  return logs
+    .map(openAIUsageEventFromLog)
+    .filter((event): event is OpenAIUsageSummaryEvent => Boolean(event))
+    .filter(event => {
+      const timestamp = Date.parse(event.createdAt);
+      if (!Number.isFinite(timestamp) || timestamp < cutoff) return false;
+      if (event.callStatus !== 'failed') return false;
+      if (event.type !== request.type || event.stage !== request.stage) return false;
+      if (request.platform && event.platform && event.platform !== request.platform) return false;
+      if (request.angleId && event.angleId !== request.angleId) return false;
+      if (request.queueItemId && event.queueItemId !== request.queueItemId) return false;
+      if (request.sourceRecordId && event.sourceRecordId !== request.sourceRecordId) return false;
+      return true;
+    });
+}
+
+function blockedOpenAIGuard(
+  code: string,
+  stage: string,
+  backoffUntil?: string,
+  message = OPENAI_GENERATION_PAUSED_MESSAGE,
+  nextAction = OPENAI_GENERATION_PAUSED_NEXT_ACTION
+): OpenAIGenerationGuardDecision {
+  return {
+    allowed: false,
+    backoffUntil,
+    code,
+    message,
+    nextAction,
+    stage,
+  };
+}
+
+function allowedOpenAIGuard(): OpenAIGenerationGuardDecision {
+  return { allowed: true };
+}
+
+function openAIConfiguredLimitDecision(
+  settings: UserSettingsRow,
+  usageToday: OpenAIUsageDailySummary,
+  request: OpenAIGenerationGuardRequest
+): OpenAIGenerationGuardDecision | undefined {
+  if (request.type === 'image') {
+    if (!imageGenerationEnabled(settings)) {
+      return blockedOpenAIGuard(
+        OPENAI_IMAGE_GENERATION_DISABLED_CODE,
+        request.stage,
+        undefined,
+        'Instagram image generation is disabled for this workspace. Existing queue items can still publish.',
+        'Enable image generation in settings, or use an existing durable Cloudinary image.'
+      );
+    }
+    if (imageRequiresManualApproval(settings)) {
+      return blockedOpenAIGuard(
+        OPENAI_IMAGE_REQUIRES_MANUAL_APPROVAL_CODE,
+        request.stage,
+        undefined,
+        'Instagram image generation is waiting for manual approval. Existing queue items can still publish.',
+        'Approve or attach an image before retrying generation for this item.'
+      );
+    }
+    const limit = configuredPositiveInteger(settings.openai_image_daily_call_limit);
+    if (limit !== null && usageToday.imageCallCountToday >= limit) {
+      return blockedOpenAIGuard(
+        OPENAI_IMAGE_DAILY_LIMIT_REACHED_CODE,
+        request.stage,
+        undefined,
+        'The configured daily OpenAI image generation limit has been reached. Existing queue items can still publish.',
+        'Raise the image generation limit, disable the limit, or wait until tomorrow.'
+      );
+    }
+  }
+
+  if (request.type === 'text') {
+    const limit = configuredPositiveInteger(settings.openai_text_daily_call_limit);
+    if (limit !== null && usageToday.textCallCountToday >= limit) {
+      return blockedOpenAIGuard(
+        OPENAI_TEXT_DAILY_LIMIT_REACHED_CODE,
+        request.stage,
+        undefined,
+        'The configured daily OpenAI text generation limit has been reached. Existing queue items can still publish.',
+        'Raise the text generation limit, disable the limit, or wait until tomorrow.'
+      );
+    }
+  }
+
+  return undefined;
+}
+
+function openAIRunawayProtectionDecision(
+  logs: WorkerLogRow[],
+  request: OpenAIGenerationGuardRequest,
+  now = new Date()
+): OpenAIGenerationGuardDecision | undefined {
+  if (request.stage === ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE && request.sourceRecordId) {
+    const sourceFailures = eventsMatchingGuardRequest(logs, request, now, OPENAI_SOURCE_BACKOFF_WINDOW_MS);
+    if (sourceFailures.length >= OPENAI_SOURCE_BACKOFF_THRESHOLD) {
+      return blockedOpenAIGuard(
+        OPENAI_SOURCE_EXTRACTION_BACKOFF_ACTIVE_CODE,
+        request.stage,
+        backoffUntilFromEvents(sourceFailures, now)
+      );
+    }
+  }
+
+  if (request.type === 'image') {
+    const imageFailures = eventsMatchingGuardRequest(logs, request, now, OPENAI_IMAGE_ABORT_WINDOW_MS);
+    const aborts = imageFailures.filter(event => event.normalizedErrorCode === ai.OPENAI_IMAGE_GENERATION_ABORTED_CODE);
+    if (aborts.length >= OPENAI_IMAGE_ABORT_THRESHOLD) {
+      return blockedOpenAIGuard(
+        OPENAI_IMAGE_PAUSED_REPEATED_ABORTS_CODE,
+        request.stage,
+        backoffUntilFromEvents(aborts, now)
+      );
+    }
+  }
+
+  const repeatedFailures = eventsMatchingGuardRequest(logs, {
+    platform: request.platform,
+    stage: request.stage,
+    type: request.type,
+  }, now, OPENAI_REPEATED_FAILURE_WINDOW_MS);
+  if (repeatedFailures.length >= OPENAI_REPEATED_FAILURE_THRESHOLD) {
+    return blockedOpenAIGuard(
+      OPENAI_GENERATION_PAUSED_REPEATED_FAILURES_CODE,
+      request.stage,
+      backoffUntilFromEvents(repeatedFailures, now)
+    );
+  }
+
+  return undefined;
+}
+
+function preflightOpenAIGeneration(
+  settings: UserSettingsRow,
+  usageToday: OpenAIUsageDailySummary,
+  logs: WorkerLogRow[],
+  request: OpenAIGenerationGuardRequest,
+  now = new Date()
+): OpenAIGenerationGuardDecision {
+  return openAIConfiguredLimitDecision(settings, usageToday, request)
+    || openAIRunawayProtectionDecision(logs, request, now)
+    || allowedOpenAIGuard();
+}
+
+function setSummaryGenerationPaused(summary: PipelineSummary | undefined, decision: OpenAIGenerationGuardDecision): void {
+  if (!summary || decision.allowed || !decision.code) return;
+  summary.openaiUsageToday.generationPaused = {
+    active: true,
+    backoffUntil: decision.backoffUntil,
+    code: decision.code,
+    message: decision.message,
+    nextAction: decision.nextAction,
+    stage: decision.stage,
+  };
+}
+
+function isPauseCode(code: string | undefined): boolean {
+  return code === OPENAI_GENERATION_PAUSED_REPEATED_FAILURES_CODE
+    || code === OPENAI_IMAGE_PAUSED_REPEATED_ABORTS_CODE
+    || code === OPENAI_SOURCE_EXTRACTION_BACKOFF_ACTIVE_CODE;
+}
+
 function recordOpenAIUsageOnSummary(summary: PipelineSummary | undefined, event: ai.OpenAIUsageEvent): void {
   if (!summary) return;
+  summary.openaiUsageToday ||= emptyOpenAIUsageDailySummary({});
+  const dailyEvent = openAIUsageSummaryEventFromUsageEvent(event);
   if (event.call_status === 'started') {
     if (event.type === 'image') summary.openaiUsage.imageCalls++;
     else summary.openaiUsage.textCalls++;
     incrementCounter(summary.openaiUsage.byStage, event.stage);
+    if (event.type === 'image') {
+      summary.openaiUsageToday.imageCallCountToday++;
+      summary.openaiUsageToday.imageGenerations++;
+      summary.openaiUsageToday.imageGenerationAttemptsToday++;
+    } else {
+      summary.openaiUsageToday.textCallCountToday++;
+      summary.openaiUsageToday.textGenerations++;
+    }
+    incrementCounter(summary.openaiUsageToday.callsByStage, event.stage);
+    incrementCounter(summary.openaiUsageToday.callsByModel, event.model);
+    summary.openaiUsageToday.mostUsedStage = mostUsedCounterKey(summary.openaiUsageToday.callsByStage);
   }
   if (event.call_status === 'failed') {
     incrementCounter(summary.openaiUsage.failuresByStage, event.stage);
+    incrementCounter(summary.openaiUsageToday.failuresByStage, event.stage);
+    summary.openaiUsageToday.latestFailure = latestOpenAIEvent(summary.openaiUsageToday.latestFailure, dailyEvent);
+  }
+  if (event.call_status === 'completed') {
+    incrementCounter(summary.openaiUsageToday.successesByStage, event.stage);
+    summary.openaiUsageToday.latestSuccessfulGeneration = latestOpenAIEvent(
+      summary.openaiUsageToday.latestSuccessfulGeneration,
+      dailyEvent
+    );
   }
 }
 
@@ -710,6 +1197,39 @@ function platformSlotCapacitySnapshot(
     hasOpenSlots: Object.values(openSlotsByPlatform).some(count => count > 0),
     openSlotsByPlatform,
   };
+}
+
+function anglePlatformDraftKey(angleId: string | null | undefined, platform: string | null | undefined): string {
+  return `${String(angleId || '').trim()}:${String(platform || '').trim()}`;
+}
+
+function draftCreationPreflightForAngle(input: {
+  angleId: string;
+  occupiedSlots: PlatformSlotOccupancy;
+  platform: PlatformKey;
+  queuedAnglePlatformKeys?: Set<string>;
+}): OpenAIGenerationGuardDecision {
+  if (!hasOpenActiveSlotForPlatform(input.platform, input.occupiedSlots)) {
+    return blockedOpenAIGuard(
+      `${input.platform}_no_open_slot`,
+      'platform_draft',
+      undefined,
+      `No ${input.platform} slot is open, so generation was skipped before OpenAI.`,
+      'Publish, skip, or release an existing queue item to open a slot.'
+    );
+  }
+
+  if (input.queuedAnglePlatformKeys?.has(anglePlatformDraftKey(input.angleId, input.platform))) {
+    return blockedOpenAIGuard(
+      'angle_platform_draft_already_queued',
+      'platform_draft',
+      undefined,
+      'This angle already has a queued draft for this platform, so generation was skipped before OpenAI.',
+      'Review the existing queue item before retrying generation.'
+    );
+  }
+
+  return allowedOpenAIGuard();
 }
 
 function addSummaryError(summary: PipelineSummary, error: unknown): void {
@@ -943,7 +1463,8 @@ async function createPipelineSummary(
   job: AgentJobRow,
   tenant: TenantContext,
   sources: UserSourceRow[],
-  occupiedSlots: PlatformSlotOccupancy
+  occupiedSlots: PlatformSlotOccupancy,
+  openAIActivityLogsToday: WorkerLogRow[] = []
 ): Promise<PipelineSummary> {
   const entitlement = await loadEntitlement(job.user_id);
   const enabledSources = sources.filter(source => source.enabled);
@@ -1034,6 +1555,7 @@ async function createPipelineSummary(
       byStage: {},
       failuresByStage: {},
     },
+    openaiUsageToday: buildOpenAIUsageDailySummary(openAIActivityLogsToday, tenant.settings),
     errors: [],
   };
 }
@@ -1295,6 +1817,16 @@ function publishSuccessResult(
 function automationResultPayload(job: AgentJobRow, status: string, result: JsonMap): JsonMap {
   const summary = resultSummary(result);
   const outcome = typeof summary.outcome === 'string' ? summary.outcome : '';
+  const openaiUsageToday = typeof summary.openaiUsageToday === 'object'
+    && summary.openaiUsageToday !== null
+    && !Array.isArray(summary.openaiUsageToday)
+    ? summary.openaiUsageToday as JsonMap
+    : null;
+  const openaiUsage = typeof summary.openaiUsage === 'object'
+    && summary.openaiUsage !== null
+    && !Array.isArray(summary.openaiUsage)
+    ? summary.openaiUsage as JsonMap
+    : null;
   return {
     jobId: job.id,
     kind: job.kind,
@@ -1307,6 +1839,8 @@ function automationResultPayload(job: AgentJobRow, status: string, result: JsonM
     nextAction: String(summary.nextAction || result.nextAction || ''),
     failedStage: typeof summary.failedStage === 'string' ? summary.failedStage : null,
     failureCode: typeof summary.failureCode === 'string' ? summary.failureCode : null,
+    ...(openaiUsage ? { openaiUsage } : {}),
+    ...(openaiUsageToday ? { openaiUsageToday } : {}),
   };
 }
 
@@ -1845,6 +2379,22 @@ async function hasActiveBankedAngles(userId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+async function loadQueuedAnglePlatformKeys(userId: string): Promise<Set<string>> {
+  const rows = await supabaseSelect<{ angle_record_id?: string | null; platform?: string | null }>('queue_items', {
+    select: 'angle_record_id,platform',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'status', operator: 'in', value: ACTIVE_QUEUE_STATUSES },
+    ],
+    limit: 500,
+  });
+  return new Set(
+    rows
+      .map(row => anglePlatformDraftKey(row.angle_record_id, row.platform))
+      .filter(key => !key.startsWith(':') && !key.endsWith(':'))
+  );
+}
+
 async function refreshPipelineInventory(job: AgentJobRow, summary: PipelineSummary): Promise<void> {
   const [angles, queue] = await Promise.all([
     supabaseSelect<{ status?: string | null }>('angle_records', {
@@ -1902,6 +2452,15 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     summary.outcome = 'deferred';
     summary.message = 'The queue already had active items, so the worker did not create another draft.';
     summary.nextAction = 'Publish, skip, or release an existing queue item to open a slot.';
+    return;
+  }
+
+  if (summary.openaiUsageToday.generationPaused.active && summary.queue.created === 0) {
+    summary.outcome = 'blocked';
+    summary.message = summary.openaiUsageToday.generationPaused.message || OPENAI_GENERATION_PAUSED_MESSAGE;
+    summary.nextAction = summary.openaiUsageToday.generationPaused.nextAction || OPENAI_GENERATION_PAUSED_NEXT_ACTION;
+    summary.failedStage ||= summary.openaiUsageToday.generationPaused.stage;
+    summary.failureCode ||= summary.openaiUsageToday.generationPaused.code;
     return;
   }
 
@@ -2158,12 +2717,53 @@ function isDraftableAngle(row: AngleRecordRow): boolean {
   );
 }
 
+function applyDraftPreflightSkip(
+  summary: PipelineSummary | undefined,
+  decision: OpenAIGenerationGuardDecision,
+  platform: PlatformKey
+): void {
+  if (!summary || decision.allowed) return;
+  summary.drafts.skipped++;
+  incrementCounter(summary.drafts.skipReasons, decision.code || 'openai_generation_preflight_blocked');
+  if (decision.code?.startsWith('openai_')) {
+    setSummaryGenerationPaused(summary, decision);
+    summary.failedStage ||= decision.stage;
+    summary.failureCode ||= decision.code;
+  }
+  if (platform === 'instagram' && decision.code?.startsWith('openai_image_')) {
+    summary.failedStage ||= decision.stage;
+    summary.failureCode ||= decision.code;
+  }
+}
+
+async function writeOpenAIPreflightSkip(
+  job: AgentJobRow,
+  decision: OpenAIGenerationGuardDecision,
+  request: OpenAIGenerationGuardRequest
+): Promise<void> {
+  await writeWorkerLog(job.user_id, 'info', 'openai_generation_preflight_blocked', {
+    jobId: job.id,
+    kind: job.kind,
+    angleId: request.angleId,
+    platform: request.platform,
+    queueItemId: request.queueItemId,
+    sourceRecordId: request.sourceRecordId,
+    stage: decision.stage || request.stage,
+    type: request.type,
+    normalized_error_code: decision.code || 'openai_generation_preflight_blocked',
+    message: decision.message,
+    next_action: decision.nextAction,
+    backoff_until: decision.backoffUntil,
+  });
+}
+
 async function queueFromBankedAngles(
   job: AgentJobRow,
   tenant: TenantContext,
   occupiedSlots: PlatformSlotOccupancy,
   timeZone: string,
-  summary?: PipelineSummary
+  summary?: PipelineSummary,
+  openAIActivityLogsToday: WorkerLogRow[] = []
 ): Promise<QueueFromAnglesResult> {
   const result: QueueFromAnglesResult = {
     queued: 0,
@@ -2172,6 +2772,7 @@ async function queueFromBankedAngles(
     rejected: 0,
   };
   let instagramImageGenerationBlocked = false;
+  const queuedAnglePlatformKeys = await loadQueuedAnglePlatformKeys(job.user_id);
 
   const angles = await supabaseSelect<AngleRecordRow>('angle_records', {
     select: '*',
@@ -2226,18 +2827,62 @@ async function queueFromBankedAngles(
       continue;
     }
 
-    if (platform === 'instagram' && !hasOpenActiveSlotForPlatform(platform, occupiedSlots)) {
-      if (summary) {
-        summary.drafts.skipped++;
-        incrementCounter(summary.drafts.skipReasons, 'instagram_no_open_slot');
-      }
+    const draftPreflight = draftCreationPreflightForAngle({
+      angleId: angleRow.id,
+      occupiedSlots,
+      platform,
+      queuedAnglePlatformKeys,
+    });
+    if (!draftPreflight.allowed) {
+      applyDraftPreflightSkip(summary, draftPreflight, platform);
       await writeWorkerLog(job.user_id, 'info', 'banked_angle_draft_skipped', {
         jobId: job.id,
         angleId: angleRow.id,
         platform,
-        reason: 'instagram_no_open_slot',
-        message: 'Instagram image generation was skipped because no Instagram slot is open.',
+        reason: draftPreflight.code || 'generation_preflight_blocked',
+        message: draftPreflight.message,
+        next_action: draftPreflight.nextAction,
       });
+      continue;
+    }
+
+    const imageGuardRequest: OpenAIGenerationGuardRequest | undefined = platform === 'instagram'
+      ? {
+        angleId: angleRow.id,
+        platform,
+        sourceRecordId: angleRow.source_record_id || undefined,
+        stage: ai.OPENAI_IMAGE_GENERATION_STAGE,
+        type: 'image',
+      }
+      : undefined;
+    const imageGuard = imageGuardRequest
+      ? preflightOpenAIGeneration(tenant.settings, summary?.openaiUsageToday || emptyOpenAIUsageDailySummary(tenant.settings), openAIActivityLogsToday, imageGuardRequest)
+      : allowedOpenAIGuard();
+    if (!imageGuard.allowed && imageGuardRequest) {
+      applyDraftPreflightSkip(summary, imageGuard, platform);
+      await writeOpenAIPreflightSkip(job, imageGuard, imageGuardRequest);
+      if (platform === 'instagram') {
+        instagramImageGenerationBlocked = true;
+      }
+      continue;
+    }
+
+    const textGuardRequest: OpenAIGenerationGuardRequest = {
+      angleId: angleRow.id,
+      platform,
+      sourceRecordId: angleRow.source_record_id || undefined,
+      stage: 'platform_draft',
+      type: 'text',
+    };
+    const textGuard = preflightOpenAIGeneration(
+      tenant.settings,
+      summary?.openaiUsageToday || emptyOpenAIUsageDailySummary(tenant.settings),
+      openAIActivityLogsToday,
+      textGuardRequest
+    );
+    if (!textGuard.allowed) {
+      applyDraftPreflightSkip(summary, textGuard, platform);
+      await writeOpenAIPreflightSkip(job, textGuard, textGuardRequest);
       continue;
     }
 
@@ -2345,10 +2990,12 @@ async function queueFromBankedAngles(
         ],
       });
       occupiedSlots.add(platformSlotOccupancyKey(platform, slot.localDate, slot.slotIndex));
+      queuedAnglePlatformKeys.add(anglePlatformDraftKey(currentAngle.id, platform));
       result.queued += rows.length;
       if (summary) {
         summary.queue.created += rows.length;
         summary.drafts.created += rows.length;
+        summary.openaiUsageToday.platformDraftsCreatedToday += rows.length;
         for (const row of rows) {
           incrementCounter(summary.queue.createdByPlatform, String(row.platform || platform));
         }
@@ -2429,7 +3076,8 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
   });
   const timeZone = tenantAutomationTimeZone(tenant);
   const occupiedSlots = await loadActiveSlotOccupancy(job.user_id, timeZone);
-  const summary = await createPipelineSummary(job, tenant, sources, occupiedSlots);
+  const openAIActivityLogsToday = await loadOpenAIActivityLogsToday(job.user_id);
+  const summary = await createPipelineSummary(job, tenant, sources, occupiedSlots, openAIActivityLogsToday);
   const fillExistingAnglesOnly = job.payload?.fill_existing_angles_only === true;
   if (fillExistingAnglesOnly) {
     summary.mode = 'fill_existing_angles';
@@ -2449,7 +3097,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
   let queued = 0;
 
   if (summary.angles.activeAtStart > 0) {
-    const bankedResult = await queueFromBankedAngles(job, tenant, occupiedSlots, timeZone, summary);
+    const bankedResult = await queueFromBankedAngles(job, tenant, occupiedSlots, timeZone, summary, openAIActivityLogsToday);
     queued += bankedResult.queued;
     if (queued > 0) {
       return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued, deferredFetch: true });
@@ -2596,6 +3244,31 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
         continue;
       }
 
+      const extractionGuardRequest: OpenAIGenerationGuardRequest = {
+        sourceRecordId: sourceRecordId || undefined,
+        stage: ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE,
+        type: 'text',
+      };
+      const extractionGuard = preflightOpenAIGeneration(
+        tenant.settings,
+        summary.openaiUsageToday,
+        openAIActivityLogsToday,
+        extractionGuardRequest
+      );
+      if (!extractionGuard.allowed) {
+        summary.sources.withoutAngles++;
+        summary.angles.extractionFailures++;
+        incrementCounter(summary.angles.failureReasons, extractionGuard.code || 'openai_generation_preflight_blocked');
+        if (extractionGuard.code?.startsWith('openai_')) {
+          setSummaryGenerationPaused(summary, extractionGuard);
+          summary.failedStage ||= extractionGuard.stage;
+          summary.failureCode ||= extractionGuard.code;
+        }
+        await writeOpenAIPreflightSkip(job, extractionGuard, extractionGuardRequest);
+        stopSourceProcessing = true;
+        break;
+      }
+
       let extraction: Awaited<ReturnType<typeof ai.extractSourceBank>>;
       try {
         extraction = await extractSourceBankWithJobTimeout(post, openAIUsageContext(job, summary, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE, {
@@ -2683,7 +3356,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
       summary.angles.created += angleRows.length;
       sourceUrlsWithAngles.add(sourceUrl);
 
-      const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, timeZone, summary);
+      const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, timeZone, summary, openAIActivityLogsToday);
       queued += queuedFromAngles.queued;
       await writeWorkerLog(job.user_id, 'info', 'source_banked_angles', {
         jobId: job.id,
@@ -2699,7 +3372,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
   }
 
   if (queued === 0) {
-    const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, timeZone, summary);
+    const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, timeZone, summary, openAIActivityLogsToday);
     queued += queuedFromAngles.queued;
   }
 
@@ -2748,7 +3421,38 @@ async function publishPlatform(row: QueueItemRow): Promise<string> {
   }
 }
 
-async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<JsonMap> {
+function publishRequiresOpenAIMediaRepair(row: Pick<QueueItemRow, 'instagram_image_url' | 'platform'>): boolean {
+  return row.platform === 'instagram' && !cloudinary.isCloudinaryUrl(row.instagram_image_url || undefined);
+}
+
+async function assertOpenAIRepairAllowedForPublish(
+  job: AgentJobRow,
+  row: QueueItemRow,
+  settings: UserSettingsRow
+): Promise<void> {
+  const openAIActivityLogsToday = await loadOpenAIActivityLogsToday(job.user_id);
+  const usageToday = buildOpenAIUsageDailySummary(openAIActivityLogsToday, settings);
+  const request: OpenAIGenerationGuardRequest = {
+    angleId: row.angle_record_id || undefined,
+    platform: row.platform,
+    queueItemId: row.id,
+    stage: 'instagram_publish_media_repair',
+    type: 'image',
+  };
+  const decision = preflightOpenAIGeneration(settings, usageToday, openAIActivityLogsToday, request);
+  if (decision.allowed) return;
+
+  await writeOpenAIPreflightSkip(job, decision, request);
+  throw new WorkerJobError(decision.code || 'openai_generation_preflight_blocked', decision.message || OPENAI_GENERATION_PAUSED_MESSAGE, {
+    backoff_until: decision.backoffUntil,
+    next_action: decision.nextAction,
+    normalized_error_code: decision.code,
+    queueItemId: row.id,
+    stage: decision.stage || request.stage,
+  });
+}
+
+async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, settings: UserSettingsRow): Promise<JsonMap> {
   const locked = await supabaseUpdate<QueueItemRow>('queue_items', {
     status: 'publishing',
     error_message: null,
@@ -2767,7 +3471,8 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<Jso
   }
 
   try {
-    if (current.platform === 'instagram' && !cloudinary.isCloudinaryUrl(current.instagram_image_url || undefined)) {
+    if (publishRequiresOpenAIMediaRepair(current)) {
+      await assertOpenAIRepairAllowedForPublish(job, current, settings);
       const image = await ai.ensurePersistentInstagramImage({
         imageUrl: current.instagram_image_url,
         imagePrompt: current.instagram_image_prompt,
@@ -2873,7 +3578,7 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<Jso
   }
 }
 
-async function handlePublishNow(job: AgentJobRow): Promise<JsonMap> {
+async function handlePublishNow(job: AgentJobRow, tenant: TenantContext): Promise<JsonMap> {
   const queueItemId = requirePayloadId(job.payload, 'queue_item_id');
   const row = (await supabaseSelect<QueueItemRow>('queue_items', {
     select: '*',
@@ -2886,10 +3591,10 @@ async function handlePublishNow(job: AgentJobRow): Promise<JsonMap> {
   if (!row) {
     throw new WorkerJobError('queue_item_not_found', 'queue_item_not_found', { queueItemId });
   }
-  return publishQueueRow(job, row);
+  return publishQueueRow(job, row, tenant.settings);
 }
 
-async function handlePublishAll(job: AgentJobRow): Promise<JsonMap> {
+async function handlePublishAll(job: AgentJobRow, tenant: TenantContext): Promise<JsonMap> {
   const rows = await supabaseSelect<QueueItemRow>('queue_items', {
     select: '*',
     filters: [
@@ -2904,7 +3609,7 @@ async function handlePublishAll(job: AgentJobRow): Promise<JsonMap> {
   const failures: JsonMap[] = [];
   for (const row of rows) {
     try {
-      published.push(await publishQueueRow(job, row));
+      published.push(await publishQueueRow(job, row, tenant.settings));
     } catch (error) {
       failures.push({
         queueItemId: row.id,
@@ -3069,10 +3774,10 @@ function hasRecentOpenAIAutomationFailure(settings: AutomationSettingsRow, now: 
   const result = settings.last_automation_result;
   if (!result || result.status !== 'failed') return false;
   const failureCode = String(result.failureCode || '');
-  if (!failureCode.startsWith('openai_')) return false;
+  if (!isPauseCode(failureCode)) return false;
   const completedAt = Date.parse(String(result.completedAt || ''));
   if (!Number.isFinite(completedAt)) return false;
-  return now.getTime() - completedAt < 15 * 60_000;
+  return now.getTime() - completedAt < OPENAI_GENERATION_BACKOFF_MS;
 }
 
 async function updateAutomationResult(
@@ -3220,7 +3925,7 @@ async function enqueueDueSlotFillJobs(stats: SchedulerStats, now: Date): Promise
     stats.tenantsChecked++;
 
     if (hasRecentOpenAIAutomationFailure(settings, now)) {
-      incrementSchedulerSkip(stats, 'fill_recent_openai_failure');
+      incrementSchedulerSkip(stats, 'fill_openai_generation_pause_active');
       continue;
     }
 
@@ -3936,9 +4641,9 @@ async function handleClaimedJob(job: AgentJobRow): Promise<JsonMap> {
       case 'refresh_queue':
         return handleRefreshQueue(job, tenant);
       case 'publish_now':
-        return handlePublishNow(job);
+        return handlePublishNow(job, tenant);
       case 'publish_all':
-        return handlePublishAll(job);
+        return handlePublishAll(job, tenant);
       case 'skip_slot':
         return handleSkipSlot(job);
       case 'release_slot':
@@ -4019,9 +4724,17 @@ export function startSupabaseWorkerLoop(log = logger): { stop: () => void } | un
 }
 
 export const __test__ = {
+  buildOpenAIUsageDailySummary,
+  draftCreationPreflightForAngle,
   hasOpenActiveSlotForPlatform,
   hasRecentJobActivity,
+  OPENAI_GENERATION_PAUSED_REPEATED_FAILURES_CODE,
+  OPENAI_IMAGE_DAILY_LIMIT_REACHED_CODE,
+  OPENAI_IMAGE_PAUSED_REPEATED_ABORTS_CODE,
+  OPENAI_SOURCE_EXTRACTION_BACKOFF_ACTIVE_CODE,
+  preflightOpenAIGeneration,
   platformSlotCapacitySnapshot,
+  publishRequiresOpenAIMediaRepair,
   publishSuccessResult,
   recordOpenAIUsageOnSummary,
   reconstructStaleSummary,
