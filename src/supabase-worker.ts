@@ -272,6 +272,12 @@ interface PipelineSummary {
     ready: number;
     createdByPlatform: Record<string, number>;
   };
+  openaiUsage: {
+    textCalls: number;
+    imageCalls: number;
+    byStage: Record<string, number>;
+    failuresByStage: Record<string, number>;
+  };
   errors: string[];
   failedStage?: string;
   failureCode?: string;
@@ -646,6 +652,34 @@ function incrementCounter(counter: Record<string, number>, key: string | undefin
   counter[normalized] = (counter[normalized] || 0) + 1;
 }
 
+function recordOpenAIUsageOnSummary(summary: PipelineSummary | undefined, event: ai.OpenAIUsageEvent): void {
+  if (!summary) return;
+  if (event.call_status === 'started') {
+    if (event.type === 'image') summary.openaiUsage.imageCalls++;
+    else summary.openaiUsage.textCalls++;
+    incrementCounter(summary.openaiUsage.byStage, event.stage);
+  }
+  if (event.call_status === 'failed') {
+    incrementCounter(summary.openaiUsage.failuresByStage, event.stage);
+  }
+}
+
+function openAIUsageContext(
+  job: AgentJobRow,
+  summary: PipelineSummary | undefined,
+  stage: string,
+  extra: Partial<ai.OpenAIUsageContext> = {}
+): ai.OpenAIUsageContext {
+  return {
+    ...extra,
+    jobId: job.id,
+    jobKind: job.kind,
+    onUsageEvent: event => recordOpenAIUsageOnSummary(summary, event),
+    stage,
+    userId: job.user_id,
+  };
+}
+
 function activeSlotCountForPlatform(platform: PlatformKey | string, occupiedSlots: PlatformSlotOccupancy): number {
   const prefix = `${String(platform || '').trim()}:`;
   if (!prefix.trim()) return 0;
@@ -654,6 +688,28 @@ function activeSlotCountForPlatform(platform: PlatformKey | string, occupiedSlot
 
 function hasOpenActiveSlotForPlatform(platform: PlatformKey | string, occupiedSlots: PlatformSlotOccupancy): boolean {
   return activeSlotCountForPlatform(platform, occupiedSlots) < DAILY_SLOT_HOURS.length;
+}
+
+function platformSlotCapacitySnapshot(
+  platforms: PlatformKey[],
+  occupiedSlots: PlatformSlotOccupancy
+): {
+  activeSlotsByPlatform: Record<string, number>;
+  hasOpenSlots: boolean;
+  openSlotsByPlatform: Record<string, number>;
+} {
+  const activeSlotsByPlatform: Record<string, number> = {};
+  const openSlotsByPlatform: Record<string, number> = {};
+  for (const platform of platforms) {
+    const active = activeSlotCountForPlatform(platform, occupiedSlots);
+    activeSlotsByPlatform[platform] = active;
+    openSlotsByPlatform[platform] = Math.max(0, DAILY_SLOT_HOURS.length - active);
+  }
+  return {
+    activeSlotsByPlatform,
+    hasOpenSlots: Object.values(openSlotsByPlatform).some(count => count > 0),
+    openSlotsByPlatform,
+  };
 }
 
 function addSummaryError(summary: PipelineSummary, error: unknown): void {
@@ -697,6 +753,11 @@ async function writeWorkerLog(
   else if (level === 'warn') logger.warn(logMessage, context);
   else logger.info(logMessage, context);
 }
+
+ai.setOpenAIUsageRecorder(async event => {
+  if (!event.user_id) return;
+  await writeWorkerLog(event.user_id, 'info', 'openai_call_recorded', event as unknown as JsonMap);
+});
 
 async function loadEntitlement(userId: string): Promise<{ canWrite: boolean; status: string; reason: string }> {
   const profile = (await supabaseSelect<ProfileRow>('profiles', {
@@ -966,6 +1027,12 @@ async function createPipelineSummary(
       created: 0,
       ready: 0,
       createdByPlatform: {},
+    },
+    openaiUsage: {
+      textCalls: 0,
+      imageCalls: 0,
+      byStage: {},
+      failuresByStage: {},
     },
     errors: [],
   };
@@ -1267,9 +1334,12 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
   });
 }
 
-function extractSourceBankWithJobTimeout(post: RedditPost): Promise<Awaited<ReturnType<typeof ai.extractSourceBank>>> {
+function extractSourceBankWithJobTimeout(
+  post: RedditPost,
+  usageContext?: ai.OpenAIUsageContext
+): Promise<Awaited<ReturnType<typeof ai.extractSourceBank>>> {
   return withTimeout(
-    ai.extractSourceBank(post),
+    ai.extractSourceBank(post, { usageContext }),
     Math.max(5_000, Math.min(ANGLE_EXTRACTION_TIMEOUT_MS, config.HTTP_TIMEOUT_MS - 1_000)),
     'OpenAI angle extraction timed out before the worker could finalize the job'
   );
@@ -2225,7 +2295,15 @@ async function queueFromBankedAngles(
         sourceSummary,
         selectedAngle,
         [platform],
-        { disableLearningMemory: true, disableImageGeneration: platform !== 'instagram' }
+        {
+          disableLearningMemory: true,
+          disableImageGeneration: platform !== 'instagram',
+          usageContext: openAIUsageContext(job, summary, 'platform_draft', {
+            angleId: currentAngle.id,
+            platform,
+            sourceRecordId: currentAngle.source_record_id || undefined,
+          }),
+        }
       );
       if (platform === 'instagram' && !cloudinary.isCloudinaryUrl(draft.imageUrl)) {
         throw new WorkerJobError('instagram_image_not_persisted', 'instagram_image_not_persisted');
@@ -2520,7 +2598,9 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
 
       let extraction: Awaited<ReturnType<typeof ai.extractSourceBank>>;
       try {
-        extraction = await extractSourceBankWithJobTimeout(post);
+        extraction = await extractSourceBankWithJobTimeout(post, openAIUsageContext(job, summary, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE, {
+          sourceRecordId: sourceRecordId || undefined,
+        }));
       } catch (error) {
         const textError = ai.openAITextErrorDetails(error, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE);
         const failureCode = textError?.code || 'angle_extraction_failed';
@@ -2693,6 +2773,14 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow): Promise<Jso
         imagePrompt: current.instagram_image_prompt,
         title: current.source_title || current.angle || 'Instagram post',
         text: current.draft_text || '',
+      }, {
+        angleId: current.angle_record_id || undefined,
+        jobId: job.id,
+        jobKind: job.kind,
+        platform: current.platform,
+        queueItemId: current.id,
+        stage: 'instagram_publish_media_repair',
+        userId: job.user_id,
       });
       const patched = await supabaseUpdate<QueueItemRow>('queue_items', {
         instagram_image_url: image.imageUrl,
@@ -3009,9 +3097,10 @@ async function recordAutomationSkip(
   kind: string,
   reason: string,
   message: string,
-  nextAction: string
+  nextAction: string,
+  details: JsonMap = {}
 ): Promise<void> {
-  await updateAutomationResult(userId, {
+  const result = {
     kind,
     status: 'skipped',
     origin: 'scheduled',
@@ -3019,6 +3108,15 @@ async function recordAutomationSkip(
     message,
     nextAction,
     checkedAt: nowIso(),
+    ...details,
+  };
+  await updateAutomationResult(userId, result);
+  await writeWorkerLog(userId, 'info', reason, {
+    kind,
+    reason,
+    message,
+    nextAction,
+    ...details,
   });
 }
 
@@ -3142,6 +3240,26 @@ async function enqueueDueSlotFillJobs(stats: SchedulerStats, now: Date): Promise
     const tenant = await loadTenantContext(settings.user_id);
     if (!tenant.activePlatforms.length) {
       incrementSchedulerSkip(stats, 'fill_no_enabled_platforms');
+      continue;
+    }
+
+    const timeZone = tenantAutomationTimeZone(tenant);
+    const occupiedSlots = await loadActiveSlotOccupancy(settings.user_id, timeZone);
+    const capacity = platformSlotCapacitySnapshot(tenant.activePlatforms, occupiedSlots);
+    if (!capacity.hasOpenSlots) {
+      incrementSchedulerSkip(stats, 'refresh_queue_skipped_no_open_slots');
+      await recordAutomationSkip(
+        settings.user_id,
+        'refresh_queue',
+        'refresh_queue_skipped_no_open_slots',
+        'Queue slots are full. Automation skipped drafting until a slot opens.',
+        'Wait for scheduled publishing to free slots, or add more future capacity.',
+        {
+          activeSlotsByPlatform: capacity.activeSlotsByPlatform,
+          openSlotsByPlatform: capacity.openSlotsByPlatform,
+          timezone: timeZone,
+        }
+      );
       continue;
     }
 
@@ -3903,7 +4021,9 @@ export function startSupabaseWorkerLoop(log = logger): { stop: () => void } | un
 export const __test__ = {
   hasOpenActiveSlotForPlatform,
   hasRecentJobActivity,
+  platformSlotCapacitySnapshot,
   publishSuccessResult,
+  recordOpenAIUsageOnSummary,
   reconstructStaleSummary,
   stalePublishResult,
 };

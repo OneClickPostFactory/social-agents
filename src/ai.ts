@@ -66,6 +66,7 @@ interface DraftOptions {
   disableLearningMemory?: boolean;
   disableImageGeneration?: boolean;
   learningNotesByPlatform?: Partial<Record<PlatformKey, string[]>>;
+  usageContext?: OpenAIUsageContext;
 }
 
 interface GeneratedImageAsset {
@@ -151,6 +152,52 @@ export interface OpenAITextErrorDetails {
   userMessage: string;
 }
 
+export type OpenAIUsageCallStatus = 'started' | 'completed' | 'failed';
+export type OpenAIUsageCallType = 'text' | 'image';
+
+export interface OpenAIUsageEvent {
+  angle_id?: string;
+  call_status: OpenAIUsageCallStatus;
+  elapsed_ms?: number;
+  input_size_estimate: number;
+  job_id?: string;
+  job_kind?: string;
+  model: string;
+  normalized_error_code?: string;
+  output_size_estimate?: number;
+  platform?: string;
+  prompt_version?: string;
+  queue_item_id?: string;
+  retry_attempt: number;
+  source_record_id?: string;
+  stage: string;
+  timestamp: string;
+  type: OpenAIUsageCallType;
+  user_id?: string;
+}
+
+export interface OpenAIUsageContext {
+  angleId?: string;
+  jobId?: string;
+  jobKind?: string;
+  onUsageEvent?: (event: OpenAIUsageEvent) => Promise<void> | void;
+  platform?: string;
+  promptVersion?: string;
+  queueItemId?: string;
+  retryAttempt?: number;
+  sourceRecordId?: string;
+  stage?: string;
+  userId?: string;
+}
+
+type OpenAIUsageRecorder = (event: OpenAIUsageEvent) => Promise<void> | void;
+
+let openAIUsageRecorder: OpenAIUsageRecorder | undefined;
+
+export function setOpenAIUsageRecorder(recorder?: OpenAIUsageRecorder): void {
+  openAIUsageRecorder = recorder;
+}
+
 type LocalStore = typeof import('./store');
 let localStore: LocalStore | undefined;
 
@@ -160,6 +207,8 @@ function getLocalStore(): LocalStore {
 }
 
 const MIN_SCORE = 4;
+const TEXT_PROMPT_VERSION = 'oneclickpostfactory-text-2026-05-18';
+const IMAGE_PROMPT_VERSION = 'oneclickpostfactory-image-2026-05-18';
 
 const PLATFORM_ORDER: PlatformKey[] = ['linkedin', 'threads', 'x', 'instagram', 'facebook'];
 
@@ -295,14 +344,71 @@ function getEnabledDraftPlatforms(): PlatformKey[] {
   });
 }
 
-function chatComplete(
+function cleanTelemetryString(value: string | undefined, maxLength = 160): string | undefined {
+  const normalized = String(value || '').trim();
+  return normalized ? normalized.slice(0, maxLength) : undefined;
+}
+
+function usageEvent(
+  context: OpenAIUsageContext | undefined,
+  fields: Omit<OpenAIUsageEvent, 'timestamp' | 'user_id' | 'job_id' | 'job_kind' | 'stage' | 'platform' | 'prompt_version' | 'queue_item_id' | 'angle_id' | 'source_record_id' | 'retry_attempt'>
+): OpenAIUsageEvent {
+  return {
+    ...fields,
+    timestamp: new Date().toISOString(),
+    ...(cleanTelemetryString(context?.userId) ? { user_id: cleanTelemetryString(context?.userId) } : {}),
+    ...(cleanTelemetryString(context?.jobId) ? { job_id: cleanTelemetryString(context?.jobId) } : {}),
+    ...(cleanTelemetryString(context?.jobKind) ? { job_kind: cleanTelemetryString(context?.jobKind) } : {}),
+    ...(cleanTelemetryString(context?.platform) ? { platform: cleanTelemetryString(context?.platform) } : {}),
+    ...(cleanTelemetryString(context?.queueItemId) ? { queue_item_id: cleanTelemetryString(context?.queueItemId) } : {}),
+    ...(cleanTelemetryString(context?.angleId) ? { angle_id: cleanTelemetryString(context?.angleId) } : {}),
+    ...(cleanTelemetryString(context?.sourceRecordId) ? { source_record_id: cleanTelemetryString(context?.sourceRecordId) } : {}),
+    prompt_version: cleanTelemetryString(context?.promptVersion) || (
+      fields.type === 'image' ? IMAGE_PROMPT_VERSION : TEXT_PROMPT_VERSION
+    ),
+    retry_attempt: Number.isFinite(context?.retryAttempt) ? Number(context?.retryAttempt) : 1,
+    stage: cleanTelemetryString(context?.stage) || (fields.type === 'image' ? OPENAI_IMAGE_GENERATION_STAGE : 'text_generation'),
+  };
+}
+
+async function recordOpenAIUsage(
+  context: OpenAIUsageContext | undefined,
+  fields: Omit<OpenAIUsageEvent, 'timestamp' | 'user_id' | 'job_id' | 'job_kind' | 'stage' | 'platform' | 'prompt_version' | 'queue_item_id' | 'angle_id' | 'source_record_id' | 'retry_attempt'>
+): Promise<void> {
+  const event = usageEvent(context, fields);
+  logger.info('openai_call_recorded', event as unknown as Record<string, unknown>);
+
+  try {
+    await context?.onUsageEvent?.(event);
+  } catch (error) {
+    logger.warn('openai_usage_summary_update_failed', {
+      error: error instanceof Error ? error.message : String(error),
+      stage: event.stage,
+    });
+  }
+
+  try {
+    await openAIUsageRecorder?.(event);
+  } catch (error) {
+    logger.warn('openai_usage_recorder_failed', {
+      error: error instanceof Error ? error.message : String(error),
+      stage: event.stage,
+    });
+  }
+}
+
+async function chatComplete(
   systemPrompt: string,
   userPrompt: string,
   maxTokens = 500,
-  temperature = 0.8
+  temperature = 0.8,
+  usageContext?: OpenAIUsageContext
 ): Promise<string> {
+  const model = config.OPENAI_MODEL || 'gpt-4o';
+  const startedAt = Date.now();
+  const inputSizeEstimate = systemPrompt.length + userPrompt.length;
   const body = JSON.stringify({
-    model: config.OPENAI_MODEL || 'gpt-4o',
+    model,
     max_tokens: maxTokens,
     temperature,
     messages: [
@@ -311,20 +417,48 @@ function chatComplete(
     ],
   });
 
-  return requestJson<ChatCompletionResponse>('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.OPENAI_API_KEY}`,
-    },
-    body,
-    timeoutMs: config.HTTP_TIMEOUT_MS,
-  }).then(({ data }) => {
+  await recordOpenAIUsage(usageContext, {
+    call_status: 'started',
+    input_size_estimate: inputSizeEstimate,
+    model,
+    type: 'text',
+  });
+
+  try {
+    const { data } = await requestJson<ChatCompletionResponse>('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.OPENAI_API_KEY}`,
+      },
+      body,
+      timeoutMs: config.HTTP_TIMEOUT_MS,
+    });
     if (data.error) {
       throw new Error('OpenAI: ' + (data.error.message || 'Unknown error'));
     }
-    return data.choices?.[0]?.message?.content?.trim() || '';
-  });
+    const content = data.choices?.[0]?.message?.content?.trim() || '';
+    await recordOpenAIUsage(usageContext, {
+      call_status: 'completed',
+      elapsed_ms: Date.now() - startedAt,
+      input_size_estimate: inputSizeEstimate,
+      model,
+      output_size_estimate: content.length,
+      type: 'text',
+    });
+    return content;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await recordOpenAIUsage(usageContext, {
+      call_status: 'failed',
+      elapsed_ms: Date.now() - startedAt,
+      input_size_estimate: inputSizeEstimate,
+      model,
+      normalized_error_code: openAITextErrorCode(message).code,
+      type: 'text',
+    });
+    throw error;
+  }
 }
 
 function extractJson<T>(raw: string): T {
@@ -487,9 +621,10 @@ function chatCompleteJson<T>(
   systemPrompt: string,
   userPrompt: string,
   maxTokens = 500,
-  temperature = 0.6
+  temperature = 0.6,
+  usageContext?: OpenAIUsageContext
 ): Promise<T> {
-  return chatComplete(systemPrompt, userPrompt, maxTokens, temperature)
+  return chatComplete(systemPrompt, userPrompt, maxTokens, temperature, usageContext)
     .then(raw => extractJson<T>(raw));
 }
 
@@ -662,7 +797,8 @@ function buildLearningNotes(platform: PlatformKey, angle: AngleCandidate): strin
 async function buildImagePrompt(
   source: Pick<RedditPost, 'title' | 'selftext'>,
   summary: SourceSummary,
-  angle: AngleCandidate
+  angle: AngleCandidate,
+  usageContext?: OpenAIUsageContext
 ): Promise<string> {
   const promptContext = [
     `Topic: ${summary.topic}`,
@@ -676,20 +812,12 @@ async function buildImagePrompt(
     .filter(Boolean)
     .join('\n');
 
-  const body = JSON.stringify({
-    model: config.OPENAI_MODEL || 'gpt-4o',
-    max_tokens: 150,
-    temperature: 0.7,
-    messages: [{
-      role: 'system',
-      content: `You write prompts for GPT Image Instagram generations.
+  const systemPrompt = `You write prompts for GPT Image Instagram generations.
 You produce vivid, specific, photorealistic scene descriptions.
 Never include text, words, logos, or letters in the image.
 Never use generic concepts like "shield", "lock", "lightbulb" or "network diagram".
-Always describe a real scene with real people, objects, environments or metaphors.`,
-    }, {
-      role: 'user',
-      content: `Based on this content, write a specific GPT Image prompt for an Instagram post.
+Always describe a real scene with real people, objects, environments or metaphors.`;
+  const userPrompt = `Based on this content, write a specific GPT Image prompt for an Instagram post.
 
 Content:
 """
@@ -699,33 +827,29 @@ ${promptContext}
 Write ONE paragraph describing a vivid, photorealistic scene that visually represents the angle.
 Be specific about lighting, environment, mood, colours, and perspective.
 No text or words in the image. No generic tech icons.
-Return ONLY the image prompt, nothing else.`,
-    }],
-  });
+Return ONLY the image prompt, nothing else.`;
 
-  return requestJson<ChatCompletionResponse>('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.OPENAI_API_KEY}`,
-    },
-    body,
-    timeoutMs: config.HTTP_TIMEOUT_MS,
-  }).then(({ data }) => {
-    if (data.error) {
-      throw new Error('OpenAI: ' + (data.error.message || 'Unknown error'));
-    }
-    return data.choices?.[0]?.message?.content?.trim() || source.title;
-  });
+  return chatComplete(systemPrompt, userPrompt, 150, 0.7, {
+    ...usageContext,
+    promptVersion: usageContext?.promptVersion || IMAGE_PROMPT_VERSION,
+    retryAttempt: usageContext?.retryAttempt || 1,
+    stage: 'instagram_image_prompt',
+  }).then(prompt => prompt || source.title);
 }
 
 async function generateImage(
   source: Pick<RedditPost, 'title' | 'selftext'>,
   summary: SourceSummary,
-  angle: AngleCandidate
+  angle: AngleCandidate,
+  usageContext?: OpenAIUsageContext
 ): Promise<{ imagePrompt: string; imageUrl: string }> {
-  const imagePrompt = await buildImagePrompt(source, summary, angle);
-  const image = await generateImageFromPrompt(imagePrompt);
+  const imagePrompt = await buildImagePrompt(source, summary, angle, usageContext);
+  const image = await generateImageFromPrompt(imagePrompt, {
+    ...usageContext,
+    promptVersion: usageContext?.promptVersion || IMAGE_PROMPT_VERSION,
+    retryAttempt: usageContext?.retryAttempt || 1,
+    stage: OPENAI_IMAGE_GENERATION_STAGE,
+  });
 
   return {
     imagePrompt,
@@ -954,11 +1078,14 @@ export function openAITextErrorDetails(
   };
 }
 
-async function generateImageFromPrompt(imagePrompt: string): Promise<GeneratedImageAsset> {
+async function generateImageFromPrompt(
+  imagePrompt: string,
+  usageContext?: OpenAIUsageContext
+): Promise<GeneratedImageAsset> {
   const model = config.OPENAI_IMAGE_MODEL || 'gpt-image-2';
   const promptLength = imagePrompt.length;
   const timeoutMs = openAIImageTimeoutMs();
-  const attempt = 1;
+  const attempt = Number.isFinite(usageContext?.retryAttempt) ? Number(usageContext?.retryAttempt) : 1;
   const startedAt = Date.now();
   const body = JSON.stringify(imageGenerationBody(imagePrompt));
 
@@ -971,6 +1098,17 @@ async function generateImageFromPrompt(imagePrompt: string): Promise<GeneratedIm
   });
 
   try {
+    await recordOpenAIUsage({
+      ...usageContext,
+      promptVersion: usageContext?.promptVersion || IMAGE_PROMPT_VERSION,
+      retryAttempt: attempt,
+      stage: usageContext?.stage || OPENAI_IMAGE_GENERATION_STAGE,
+    }, {
+      call_status: 'started',
+      input_size_estimate: promptLength,
+      model,
+      type: 'image',
+    });
     const { data } = await requestJson<ImageGenerationResponse>('https://api.openai.com/v1/images/generations', {
       method: 'POST',
       headers: {
@@ -990,12 +1128,38 @@ async function generateImageFromPrompt(imagePrompt: string): Promise<GeneratedIm
 
     const image = data.data?.[0];
     if (image?.b64_json) {
+      await recordOpenAIUsage({
+        ...usageContext,
+        promptVersion: usageContext?.promptVersion || IMAGE_PROMPT_VERSION,
+        retryAttempt: attempt,
+        stage: usageContext?.stage || OPENAI_IMAGE_GENERATION_STAGE,
+      }, {
+        call_status: 'completed',
+        elapsed_ms: Date.now() - startedAt,
+        input_size_estimate: promptLength,
+        model,
+        output_size_estimate: image.b64_json.length,
+        type: 'image',
+      });
       return {
         b64Json: image.b64_json,
         mimeType: imageMimeType(data.output_format),
       };
     }
     if (image?.url) {
+      await recordOpenAIUsage({
+        ...usageContext,
+        promptVersion: usageContext?.promptVersion || IMAGE_PROMPT_VERSION,
+        retryAttempt: attempt,
+        stage: usageContext?.stage || OPENAI_IMAGE_GENERATION_STAGE,
+      }, {
+        call_status: 'completed',
+        elapsed_ms: Date.now() - startedAt,
+        input_size_estimate: promptLength,
+        model,
+        output_size_estimate: image.url.length,
+        type: 'image',
+      });
       return {
         url: image.url,
         mimeType: imageMimeType(data.output_format),
@@ -1023,6 +1187,19 @@ async function generateImageFromPrompt(imagePrompt: string): Promise<GeneratedIm
       promptLength: normalized.promptLength ?? promptLength,
       stage: normalized.stage,
       timeoutMs: normalized.timeoutMs ?? timeoutMs,
+    });
+    await recordOpenAIUsage({
+      ...usageContext,
+      promptVersion: usageContext?.promptVersion || IMAGE_PROMPT_VERSION,
+      retryAttempt: normalized.attempt ?? attempt,
+      stage: usageContext?.stage || normalized.stage,
+    }, {
+      call_status: 'failed',
+      elapsed_ms: normalized.elapsedMs ?? elapsedMs,
+      input_size_estimate: normalized.promptLength ?? promptLength,
+      model: normalized.model ?? model,
+      normalized_error_code: normalized.code,
+      type: 'image',
     });
     throw normalized;
   }
@@ -1060,7 +1237,9 @@ export async function refreshInstagramImage(item: QueueItem): Promise<QueueItem>
     if (!item.imagePrompt?.trim()) {
       throw new Error('Cannot refresh Instagram image because imagePrompt is missing');
     }
-    const image = await generateImageFromPrompt(item.imagePrompt);
+    const image = await generateImageFromPrompt(item.imagePrompt, {
+      stage: OPENAI_IMAGE_GENERATION_STAGE,
+    });
     return {
       ...item,
       imageUrl: await persistInstagramImage(image, item.imagePrompt, item.title),
@@ -1088,7 +1267,9 @@ export async function refreshInstagramImage(item: QueueItem): Promise<QueueItem>
     throw new Error('Cannot refresh Instagram image because imagePrompt is missing');
   }
 
-  const image = await generateImageFromPrompt(item.imagePrompt);
+  const image = await generateImageFromPrompt(item.imagePrompt, {
+    stage: OPENAI_IMAGE_GENERATION_STAGE,
+  });
 
   return {
     ...item,
@@ -1101,7 +1282,7 @@ export async function ensurePersistentInstagramImage(input: {
   imagePrompt?: string | null;
   title?: string | null;
   text?: string | null;
-}): Promise<{ imagePrompt: string; imageUrl: string }> {
+}, usageContext?: OpenAIUsageContext): Promise<{ imagePrompt: string; imageUrl: string }> {
   const imageUrl = input.imageUrl?.trim();
   const imagePrompt = input.imagePrompt?.trim();
   const title = input.title?.trim() || 'Instagram post';
@@ -1122,19 +1303,28 @@ export async function ensurePersistentInstagramImage(input: {
   }
 
   if (imagePrompt) {
-    const image = await generateImageFromPrompt(imagePrompt);
+    const image = await generateImageFromPrompt(imagePrompt, {
+      ...usageContext,
+      promptVersion: usageContext?.promptVersion || IMAGE_PROMPT_VERSION,
+      stage: usageContext?.stage || 'instagram_publish_media_repair',
+    });
     return {
       imagePrompt,
       imageUrl: await persistInstagramImage(image, imagePrompt, title),
     };
   }
 
-  return generateInstagramImageFromText(title, input.text || '');
+  return generateInstagramImageFromText(title, input.text || '', {
+    ...usageContext,
+    promptVersion: usageContext?.promptVersion || IMAGE_PROMPT_VERSION,
+    stage: usageContext?.stage || 'instagram_publish_media_repair',
+  });
 }
 
 export async function generateInstagramImageFromText(
   title: string,
-  text: string
+  text: string,
+  usageContext?: OpenAIUsageContext
 ): Promise<{ imagePrompt: string; imageUrl: string }> {
   const imagePrompt = [
     'Photorealistic editorial image for an Instagram post.',
@@ -1143,7 +1333,11 @@ export async function generateInstagramImageFromText(
     `Post content: ${text.substring(0, 700)}.`,
     'Show a concrete real-world scene with people, objects, environment, lighting, mood, and perspective.',
   ].join(' ');
-  const image = await generateImageFromPrompt(imagePrompt);
+  const image = await generateImageFromPrompt(imagePrompt, {
+    ...usageContext,
+    promptVersion: usageContext?.promptVersion || IMAGE_PROMPT_VERSION,
+    stage: usageContext?.stage || OPENAI_IMAGE_GENERATION_STAGE,
+  });
   return {
     imagePrompt,
     imageUrl: await persistInstagramImage(image, imagePrompt, title || text.substring(0, 80)),
@@ -1199,7 +1393,13 @@ Return JSON only in this shape:
   let draft = normalizeDraftResponse(
     angle.label,
     learningNotes,
-    await chatCompleteJson<DraftResponse>(UNIVERSAL_SYSTEM_PROMPT, userPrompt, rule.maxTokens, 0.7)
+    await chatCompleteJson<DraftResponse>(UNIVERSAL_SYSTEM_PROMPT, userPrompt, rule.maxTokens, 0.7, {
+      ...options.usageContext,
+      platform,
+      promptVersion: options.usageContext?.promptVersion || TEXT_PROMPT_VERSION,
+      retryAttempt: options.usageContext?.retryAttempt || 1,
+      stage: 'platform_draft',
+    })
   );
 
   const issues = needsRevision(platform, draft);
@@ -1239,7 +1439,13 @@ Return JSON only in the same shape:
     draft = normalizeDraftResponse(
       angle.label,
       learningNotes,
-      await chatCompleteJson<DraftResponse>(UNIVERSAL_SYSTEM_PROMPT, revisionPrompt, rule.maxTokens, 0.6)
+      await chatCompleteJson<DraftResponse>(UNIVERSAL_SYSTEM_PROMPT, revisionPrompt, rule.maxTokens, 0.6, {
+        ...options.usageContext,
+        platform,
+        promptVersion: options.usageContext?.promptVersion || TEXT_PROMPT_VERSION,
+        retryAttempt: 2,
+        stage: 'platform_draft',
+      })
     );
   }
 
@@ -1253,7 +1459,10 @@ export function getActiveDraftPlatforms(): PlatformKey[] {
   return getEnabledDraftPlatforms();
 }
 
-export async function extractSourceBank(post: RedditPost): Promise<SourceExtraction> {
+export async function extractSourceBank(
+  post: RedditPost,
+  options: { usageContext?: OpenAIUsageContext } = {}
+): Promise<SourceExtraction> {
   const source = [post.title, post.selftext].filter(Boolean).join('\n\n').substring(0, 2400);
   const userPrompt = `Return JSON only using this schema:
 {
@@ -1293,7 +1502,12 @@ ${source}
     EXTRACTION_SYSTEM_PROMPT,
     userPrompt,
     900,
-    0.4
+    0.4,
+    {
+      ...options.usageContext,
+      promptVersion: options.usageContext?.promptVersion || TEXT_PROMPT_VERSION,
+      stage: OPENAI_TEXT_ANGLE_EXTRACTION_STAGE,
+    }
   );
 
   return normalizeSourceExtraction(parsed, post);
@@ -1319,7 +1533,14 @@ export async function draftPlatforms(
   };
 
   const draftEntries = await Promise.all(
-    activePlatforms.map(platform => draftForPlatform(platform, source, summary, angle, options)
+    activePlatforms.map(platform => draftForPlatform(platform, source, summary, angle, {
+      ...options,
+      usageContext: {
+        ...options.usageContext,
+        platform,
+        stage: 'platform_draft',
+      },
+    })
       .then(draft => ({ platform, draft })))
   );
 
@@ -1351,7 +1572,11 @@ export async function draftPlatforms(
   }
 
   if (activePlatforms.includes('instagram') && !options.disableImageGeneration) {
-    const image = await generateImage(source, summary, angle);
+    const image = await generateImage(source, summary, angle, {
+      ...options.usageContext,
+      platform: 'instagram',
+      promptVersion: options.usageContext?.promptVersion || IMAGE_PROMPT_VERSION,
+    });
     transformed.imageUrl = image.imageUrl;
     transformed.imagePrompt = image.imagePrompt;
   }
