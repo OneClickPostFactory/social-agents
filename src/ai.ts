@@ -793,12 +793,44 @@ function getPlatformText(
   }
 }
 
+export function truncatePostSafely(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 0) return '';
+  if (maxChars <= 3) return '.'.repeat(maxChars);
+
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+
+  const maxBodyLength = maxChars - 3;
+  const usefulMinimum = Math.min(140, Math.floor(maxChars * 0.45));
+  const clipped = normalized.slice(0, maxBodyLength + 1);
+  const sentenceMatches = [...clipped.matchAll(/[.!?](?=\s|$)/g)];
+  const sentenceBoundary = sentenceMatches
+    .map(match => (match.index ?? -1) + 1)
+    .filter(index => index >= usefulMinimum && index <= maxChars)
+    .pop();
+
+  if (sentenceBoundary) {
+    return normalized.slice(0, sentenceBoundary).trim();
+  }
+
+  const wordBoundary = clipped.lastIndexOf(' ');
+  const bodyEnd = wordBoundary >= usefulMinimum ? wordBoundary : maxBodyLength;
+  const body = normalized
+    .slice(0, bodyEnd)
+    .trim()
+    .replace(/[.!?,;:()[\]{}"']+$/g, '')
+    .trim();
+
+  return `${body || normalized.slice(0, maxBodyLength).trim()}...`.slice(0, maxChars);
+}
+
 function capPlatformPost(platform: PlatformKey, text: string): string {
-  if (platform !== 'x' || text.length <= 280) {
+  if (platform !== 'x') {
     return text;
   }
 
-  return text.slice(0, 277).trimEnd() + '...';
+  return truncatePostSafely(text, 280);
 }
 
 function getOpening(text: string, words = 10): string {
@@ -1566,6 +1598,25 @@ ${formatAngle(angle)}
 
 Source summary:
 ${formatSourceSummary(summary)}
+
+Original source:
+"""
+${sourceText}
+"""
+
+${contentStrategyContext ? `Content strategy context:
+${contentStrategyContext}
+
+Use this profile to preserve audience, offer, positioning, voice traits, preferred words, avoided words, safe proof assets, CTA style, and taboo claims during revision.
+Do not invent proof. Do not invent testimonials, clients, numbers, metrics, revenue, growth, or guarantees.
+
+` : ''}
+${rule.rules}
+
+Write from this exact angle only.
+Do not blend in other unused angles from the same source.
+Keep the post faithful to the selected angle's practical consequence.
+Preserve source truth and do not introduce claims that are not supported by the source or user-supplied proof assets.
 
 Current draft:
 """

@@ -11,6 +11,7 @@ import {
   generateInstagramImageFromText,
   openAIImageErrorDetails,
   setOpenAIUsageRecorder,
+  truncatePostSafely,
   type OpenAIUsageEvent,
 } from '../src/ai';
 import type { AngleCandidate, SourceSummary } from '../src/types';
@@ -29,6 +30,35 @@ async function test(name: string, fn: () => Promise<void> | void): Promise<void>
 
 function fullPlatformSlots(platform: string, date = '2026-05-18'): string[] {
   return DAILY_SLOT_HOURS.map((_hour, index) => platformSlotOccupancyKey(platform, date, index));
+}
+
+function sampleSourceSummary(): SourceSummary {
+  return {
+    source_type: 'reddit_post',
+    topic: 'Queue visibility',
+    core_claim: 'Automation queues need visible state.',
+    surface_problem: 'People think publishing failed randomly.',
+    deeper_problem: 'The queue lacks operator-readable status.',
+    practical_consequence: 'Operators cannot recover quickly.',
+    specific_example: 'A due post stays invisible after a token issue.',
+    best_line: 'Invisible queues create invisible failures.',
+    audience_fit: 'operators',
+    tone_source: 'practical',
+    cta_goal: 'conversation',
+  };
+}
+
+function sampleAngle(): AngleCandidate {
+  return {
+    label: 'Visible queue',
+    thesis: 'A queue is part of the product surface.',
+    hook: 'Queues fail quietly when no one can inspect them.',
+    supportingPoints: ['status', 'proof'],
+    practicalConsequence: 'Teams recover faster when queue state is legible.',
+    specificExample: 'A failed publish row with a clear retry action.',
+    audienceFit: 'operators',
+    strength: 5,
+  };
 }
 
 function openAIUsageLog(input: {
@@ -401,6 +431,139 @@ async function main(): Promise<void> {
     assert.match(prompts[0], /Do not blend in other unused angles/);
   });
 
+  await test('revision prompt includes content strategy context and fake-proof guardrails', async () => {
+    const previousKey = config.OPENAI_API_KEY;
+    const originalFetch = globalThis.fetch;
+    const prompts: string[] = [];
+
+    config.OPENAI_API_KEY = 'test-openai-key';
+    globalThis.fetch = (async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || '{}'));
+      prompts.push(String(body.messages?.[1]?.content || ''));
+      const firstDraft = prompts.length === 1;
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              angle: 'Visible queue',
+              post: firstDraft
+                ? 'Generic launch copy with low specificity.'
+                : 'A queue is a product surface when operators can inspect blockers and proof.',
+              scores: {
+                specificity: firstDraft ? 2 : 5,
+                human_tone: firstDraft ? 2 : 5,
+                platform_fit: firstDraft ? 2 : 5,
+                clarity: 5,
+                practical_consequence: 5,
+                non_genericity: 5,
+              },
+              banned_phrases_found: [],
+            }),
+          },
+        }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    try {
+      await draftPlatforms(
+        { title: 'Queue visibility', selftext: 'A failed slot needs visible proof.' },
+        sampleSourceSummary(),
+        sampleAngle(),
+        ['x'],
+        {
+          contentStrategyProfile: {
+            primary_audience: 'technical founders',
+            business_offer: 'source-to-queue publishing system',
+            positioning_statement: 'Shows its work instead of acting like a blank AI writer.',
+            voice_traits: ['calm', 'operator-minded'],
+            words_to_use: ['publish proof', 'scheduled queue'],
+            words_to_avoid: ['viral'],
+            proof_assets: ['records external post IDs'],
+            cta_style: 'soft early-access CTA',
+            taboo_claims: ['guaranteed growth'],
+          },
+          contentStrategyProfileVersion: 'tenant-content-strategy-test',
+          disableLearningMemory: true,
+        }
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      config.OPENAI_API_KEY = previousKey;
+    }
+
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1], /Content strategy context/);
+    assert.match(prompts[1], /primary_audience: technical founders/);
+    assert.match(prompts[1], /business_offer: source-to-queue publishing system/);
+    assert.match(prompts[1], /positioning_statement: Shows its work/);
+    assert.match(prompts[1], /voice_traits: calm \| operator-minded/);
+    assert.match(prompts[1], /words_to_use: publish proof \| scheduled queue/);
+    assert.match(prompts[1], /words_to_avoid: viral/);
+    assert.match(prompts[1], /proof_assets_supplied_by_user: records external post IDs/);
+    assert.match(prompts[1], /cta_style: soft early-access CTA/);
+    assert.match(prompts[1], /taboo_claims: guaranteed growth/);
+    assert.match(prompts[1], /Do not invent proof/);
+    assert.match(prompts[1], /testimonials, clients, numbers, metrics, revenue, growth, or guarantees/);
+    assert.match(prompts[1], /Preserve source truth/);
+    assert.match(prompts[1], /Platform: X/);
+    assert.match(prompts[1], /Write from this exact angle only/);
+  });
+
+  await test('revision prompt omits content strategy context when profile is empty', async () => {
+    const previousKey = config.OPENAI_API_KEY;
+    const originalFetch = globalThis.fetch;
+    const prompts: string[] = [];
+
+    config.OPENAI_API_KEY = 'test-openai-key';
+    globalThis.fetch = (async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || '{}'));
+      prompts.push(String(body.messages?.[1]?.content || ''));
+      const firstDraft = prompts.length === 1;
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              angle: 'Visible queue',
+              post: firstDraft
+                ? 'Generic launch copy with low specificity.'
+                : 'A queue is a product surface when operators can inspect blockers and proof.',
+              scores: {
+                specificity: firstDraft ? 2 : 5,
+                human_tone: firstDraft ? 2 : 5,
+                platform_fit: firstDraft ? 2 : 5,
+                clarity: 5,
+                practical_consequence: 5,
+                non_genericity: 5,
+              },
+              banned_phrases_found: [],
+            }),
+          },
+        }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    try {
+      await draftPlatforms(
+        { title: 'Queue visibility', selftext: 'A failed slot needs visible proof.' },
+        sampleSourceSummary(),
+        sampleAngle(),
+        ['x'],
+        {
+          contentStrategyProfile: {},
+          disableLearningMemory: true,
+        }
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      config.OPENAI_API_KEY = previousKey;
+    }
+
+    assert.equal(prompts.length, 2);
+    assert.doesNotMatch(prompts[1], /Content strategy context/);
+    assert.match(prompts[1], /Platform: X/);
+    assert.match(prompts[1], /Preserve source truth/);
+  });
+
   await test('content strategy formatter truncates long fields and caps arrays', () => {
     const formatted = formatContentStrategyProfile({
       primary_audience: 'A'.repeat(1000),
@@ -560,6 +723,71 @@ async function main(): Promise<void> {
         }
       );
       assert.ok(draft.x.length <= 280);
+    } finally {
+      globalThis.fetch = originalFetch;
+      config.OPENAI_API_KEY = previousKey;
+    }
+  });
+
+  await test('X truncation stays within limit and avoids mid-word clipping', () => {
+    const truncated = truncatePostSafely(
+      'Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda',
+      30
+    );
+
+    assert.ok(truncated.length <= 30);
+    assert.equal(truncated, 'Alpha beta gamma delta...');
+    assert.doesNotMatch(truncated, /epsi\.\.\.$/);
+  });
+
+  await test('X truncation prefers sentence boundary when useful', () => {
+    const firstSentence = 'The queue should show blockers, proof, and the next posting window clearly.';
+    const truncated = truncatePostSafely(
+      `${firstSentence} This second sentence should not survive the X limit because the first one is already useful.`,
+      110
+    );
+
+    assert.equal(truncated, firstSentence);
+    assert.ok(truncated.length <= 110);
+    assert.doesNotMatch(truncated, /second sentence/);
+  });
+
+  await test('non-X platforms are not truncated by X safety cap', async () => {
+    const previousKey = config.OPENAI_API_KEY;
+    const originalFetch = globalThis.fetch;
+    const longLinkedInPost = 'LinkedIn can keep a fuller explanation about queue state, blockers, and publish proof without using the X safety cap. '.repeat(4).trim();
+
+    config.OPENAI_API_KEY = 'test-openai-key';
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            angle: 'Visible queue',
+            post: longLinkedInPost,
+            scores: {
+              specificity: 5,
+              human_tone: 5,
+              platform_fit: 5,
+              clarity: 5,
+              practical_consequence: 5,
+              non_genericity: 5,
+            },
+            banned_phrases_found: [],
+          }),
+        },
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+
+    try {
+      const draft = await draftPlatforms(
+        { title: 'Queue visibility', selftext: 'A failed slot needs visible proof.' },
+        sampleSourceSummary(),
+        sampleAngle(),
+        ['linkedin'],
+        { disableLearningMemory: true }
+      );
+      assert.equal(draft.linkedin, longLinkedInPost);
+      assert.ok(draft.linkedin.length > 280);
     } finally {
       globalThis.fetch = originalFetch;
       config.OPENAI_API_KEY = previousKey;
