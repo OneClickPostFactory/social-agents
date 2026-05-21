@@ -231,6 +231,10 @@ The repo includes a prompt pack in `content-os/`:
 - checking banned phrases
 - scoring specificity, human tone, and platform fit before finalizing
 
+For product direction around drafting quality, strategy profile, and future
+learning boundaries, read `docs/CONTENT_STRATEGY_ROADMAP.md` before changing
+angle extraction or drafting prompts.
+
 ## Data Files
 
 - `data/automation.sqlite`: queue, history, sources, angles, platform-state, and automation locks
