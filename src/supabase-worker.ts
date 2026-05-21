@@ -86,6 +86,8 @@ interface UserSettingsRow {
   openai_image_daily_call_limit?: number | null;
   openai_image_generation_enabled?: boolean | null;
   openai_image_requires_manual_approval?: boolean | null;
+  content_strategy_profile?: JsonMap | null;
+  content_strategy_profile_version?: string | null;
   posting_timezone?: string | null;
   threads_enabled?: boolean | null;
   instagram_enabled?: boolean | null;
@@ -105,6 +107,11 @@ interface UserSettingsRow {
 
 interface AutomationSettingsRow extends UserSettingsRow {
   user_id: string;
+}
+
+interface ContentStrategyPromptOptions {
+  contentStrategyProfile?: unknown;
+  contentStrategyProfileVersion?: string | null;
 }
 
 interface UserSourceRow {
@@ -1348,6 +1355,16 @@ async function loadTenantContext(userId: string): Promise<TenantContext> {
   };
 }
 
+function contentStrategyPromptOptions(settings: UserSettingsRow): ContentStrategyPromptOptions {
+  if (!ai.formatContentStrategyProfile(settings.content_strategy_profile, settings.content_strategy_profile_version)) {
+    return {};
+  }
+  return {
+    contentStrategyProfile: settings.content_strategy_profile || {},
+    contentStrategyProfileVersion: settings.content_strategy_profile_version || undefined,
+  };
+}
+
 function missingPlatformCredentials(tenant: TenantContext): string[] {
   const missing = new Set<string>();
 
@@ -1870,10 +1887,11 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
 
 function extractSourceBankWithJobTimeout(
   post: RedditPost,
-  usageContext?: ai.OpenAIUsageContext
+  usageContext?: ai.OpenAIUsageContext,
+  contentStrategyOptions: ContentStrategyPromptOptions = {}
 ): Promise<Awaited<ReturnType<typeof ai.extractSourceBank>>> {
   return withTimeout(
-    ai.extractSourceBank(post, { usageContext }),
+    ai.extractSourceBank(post, { usageContext, ...contentStrategyOptions }),
     Math.max(5_000, Math.min(ANGLE_EXTRACTION_TIMEOUT_MS, config.HTTP_TIMEOUT_MS - 1_000)),
     'OpenAI angle extraction timed out before the worker could finalize the job'
   );
@@ -2943,6 +2961,7 @@ async function queueFromBankedAngles(
         {
           disableLearningMemory: true,
           disableImageGeneration: platform !== 'instagram',
+          ...contentStrategyPromptOptions(tenant.settings),
           usageContext: openAIUsageContext(job, summary, 'platform_draft', {
             angleId: currentAngle.id,
             platform,
@@ -3271,9 +3290,13 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
 
       let extraction: Awaited<ReturnType<typeof ai.extractSourceBank>>;
       try {
-        extraction = await extractSourceBankWithJobTimeout(post, openAIUsageContext(job, summary, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE, {
-          sourceRecordId: sourceRecordId || undefined,
-        }));
+        extraction = await extractSourceBankWithJobTimeout(
+          post,
+          openAIUsageContext(job, summary, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE, {
+            sourceRecordId: sourceRecordId || undefined,
+          }),
+          contentStrategyPromptOptions(tenant.settings)
+        );
       } catch (error) {
         const textError = ai.openAITextErrorDetails(error, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE);
         const failureCode = textError?.code || 'angle_extraction_failed';
@@ -4725,6 +4748,7 @@ export function startSupabaseWorkerLoop(log = logger): { stop: () => void } | un
 
 export const __test__ = {
   buildOpenAIUsageDailySummary,
+  contentStrategyPromptOptions,
   draftCreationPreflightForAngle,
   hasOpenActiveSlotForPlatform,
   hasRecentJobActivity,

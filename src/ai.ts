@@ -62,7 +62,24 @@ interface PlatformDraft {
   learningNotes: string[];
 }
 
+export interface ContentStrategyProfile {
+  primary_audience?: string;
+  business_offer?: string;
+  positioning_statement?: string;
+  content_pillars?: string[];
+  voice_traits?: string[];
+  words_to_use?: string[];
+  words_to_avoid?: string[];
+  proof_assets?: string[];
+  cta_style?: string;
+  taboo_claims?: string[];
+  competitor_or_category_context?: string;
+  default_content_goal?: string;
+}
+
 interface DraftOptions {
+  contentStrategyProfile?: unknown;
+  contentStrategyProfileVersion?: string | null;
   disableLearningMemory?: boolean;
   disableImageGeneration?: boolean;
   learningNotesByPlatform?: Partial<Record<PlatformKey, string[]>>;
@@ -209,6 +226,8 @@ function getLocalStore(): LocalStore {
 const MIN_SCORE = 4;
 const TEXT_PROMPT_VERSION = 'oneclickpostfactory-text-2026-05-18';
 const IMAGE_PROMPT_VERSION = 'oneclickpostfactory-image-2026-05-18';
+const DEFAULT_CONTENT_STRATEGY_PROFILE_VERSION = 'tenant-content-strategy-v1';
+const CONTENT_STRATEGY_PROFILE_MAX_CHARS = 1700;
 
 const PLATFORM_ORDER: PlatformKey[] = ['linkedin', 'threads', 'x', 'instagram', 'facebook'];
 
@@ -219,6 +238,128 @@ const PLATFORM_LABELS: Record<PlatformKey, string> = {
   instagram: 'Instagram',
   facebook: 'Facebook',
 };
+
+type ContentStrategyTextField = keyof Pick<
+  ContentStrategyProfile,
+  | 'primary_audience'
+  | 'business_offer'
+  | 'positioning_statement'
+  | 'cta_style'
+  | 'competitor_or_category_context'
+  | 'default_content_goal'
+>;
+
+type ContentStrategyListField = keyof Pick<
+  ContentStrategyProfile,
+  | 'content_pillars'
+  | 'voice_traits'
+  | 'words_to_use'
+  | 'words_to_avoid'
+  | 'proof_assets'
+  | 'taboo_claims'
+>;
+
+function contentStrategyTextLimit(field: ContentStrategyTextField): number {
+  switch (field) {
+    case 'positioning_statement':
+    case 'competitor_or_category_context':
+      return 420;
+    case 'business_offer':
+    case 'cta_style':
+    case 'default_content_goal':
+    case 'primary_audience':
+      return 260;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cleanText(value: unknown, maxLength: number): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, maxLength) : '';
+}
+
+function cleanList(value: unknown, maxItems = 8, maxItemLength = 140): string[] {
+  const rawValues = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(/\n|,/)
+      : [];
+  return dedupeStrings(
+    rawValues.map(entry => cleanText(entry, maxItemLength))
+  ).slice(0, maxItems);
+}
+
+export function sanitizeContentStrategyProfile(value: unknown): ContentStrategyProfile {
+  if (!isRecord(value)) return {};
+  const profile: ContentStrategyProfile = {};
+  const textFields: ContentStrategyTextField[] = [
+    'primary_audience',
+    'business_offer',
+    'positioning_statement',
+    'cta_style',
+    'competitor_or_category_context',
+    'default_content_goal',
+  ];
+  for (const field of textFields) {
+    const cleaned = cleanText(value[field], contentStrategyTextLimit(field));
+    if (cleaned) profile[field] = cleaned;
+  }
+
+  const listFields: ContentStrategyListField[] = [
+    'content_pillars',
+    'voice_traits',
+    'words_to_use',
+    'words_to_avoid',
+    'proof_assets',
+    'taboo_claims',
+  ];
+  for (const field of listFields) {
+    const cleaned = cleanList(value[field]);
+    if (cleaned.length) profile[field] = cleaned;
+  }
+
+  return profile;
+}
+
+function hasContentStrategyProfile(profile: ContentStrategyProfile): boolean {
+  return Object.values(profile).some(value => Array.isArray(value) ? value.length > 0 : Boolean(value));
+}
+
+function formatProfileList(label: string, values: string[] | undefined): string[] {
+  return values?.length ? [`${label}: ${values.join(' | ')}`] : [];
+}
+
+export function formatContentStrategyProfile(
+  value: unknown,
+  version?: string | null
+): string {
+  const profile = sanitizeContentStrategyProfile(value);
+  if (!hasContentStrategyProfile(profile)) return '';
+
+  const safeVersion = cleanText(version, 80) || DEFAULT_CONTENT_STRATEGY_PROFILE_VERSION;
+  const lines = [
+    `profile_version: ${safeVersion}`,
+    'Guardrails: source truth wins; do not invent proof, testimonials, clients, numbers, metrics, revenue, growth, or guarantees; use proof assets only when listed; treat words_to_avoid and taboo_claims as hard constraints.',
+    profile.primary_audience ? `primary_audience: ${profile.primary_audience}` : '',
+    profile.business_offer ? `business_offer: ${profile.business_offer}` : '',
+    profile.positioning_statement ? `positioning_statement: ${profile.positioning_statement}` : '',
+    ...formatProfileList('content_pillars', profile.content_pillars),
+    ...formatProfileList('voice_traits', profile.voice_traits),
+    ...formatProfileList('words_to_use', profile.words_to_use),
+    ...formatProfileList('words_to_avoid', profile.words_to_avoid),
+    ...formatProfileList('proof_assets_supplied_by_user', profile.proof_assets),
+    profile.cta_style ? `cta_style: ${profile.cta_style}` : '',
+    ...formatProfileList('taboo_claims', profile.taboo_claims),
+    profile.competitor_or_category_context
+      ? `competitor_or_category_context: ${profile.competitor_or_category_context}`
+      : '',
+    profile.default_content_goal ? `default_content_goal: ${profile.default_content_goal}` : '',
+  ].filter(Boolean);
+
+  return lines.join('\n').slice(0, CONTENT_STRATEGY_PROFILE_MAX_CHARS);
+}
 
 const UNIVERSAL_SYSTEM_PROMPT = `You are converting source content into native posts for LinkedIn, Threads, X, Instagram, and Facebook.
 
@@ -1356,6 +1497,10 @@ async function draftForPlatform(
   const learningNotes = options.disableLearningMemory
     ? []
     : (options.learningNotesByPlatform?.[platform] || buildLearningNotes(platform, angle));
+  const contentStrategyContext = formatContentStrategyProfile(
+    options.contentStrategyProfile,
+    options.contentStrategyProfileVersion
+  );
 
   const userPrompt = `Source summary:
 ${formatSourceSummary(summary)}
@@ -1368,6 +1513,13 @@ Original source:
 ${sourceText}
 """
 
+${contentStrategyContext ? `Content strategy context:
+${contentStrategyContext}
+
+Use this profile to guide audience, voice traits, CTA style, preferred words, avoided words, safe proof assets, and taboo claims.
+Do not invent proof. Do not invent testimonials, clients, numbers, metrics, revenue, growth, or guarantees.
+
+` : ''}
 ${rule.rules}
 
 Write from this exact angle only.
@@ -1461,9 +1613,17 @@ export function getActiveDraftPlatforms(): PlatformKey[] {
 
 export async function extractSourceBank(
   post: RedditPost,
-  options: { usageContext?: OpenAIUsageContext } = {}
+  options: {
+    contentStrategyProfile?: unknown;
+    contentStrategyProfileVersion?: string | null;
+    usageContext?: OpenAIUsageContext;
+  } = {}
 ): Promise<SourceExtraction> {
   const source = [post.title, post.selftext].filter(Boolean).join('\n\n').substring(0, 2400);
+  const contentStrategyContext = formatContentStrategyProfile(
+    options.contentStrategyProfile,
+    options.contentStrategyProfileVersion
+  );
   const userPrompt = `Return JSON only using this schema:
 {
   "summary": {
@@ -1493,7 +1653,13 @@ export async function extractSourceBank(
   ]
 }
 
-Source content:
+${contentStrategyContext ? `Content strategy context:
+${contentStrategyContext}
+
+Use this profile to guide audience fit, angle selection, content pillar fit, taboo claim avoidance, and safe proof use.
+Source truth always wins. Do not invent proof. Do not overclaim. Do not force the source into the profile if it does not fit.
+
+` : ''}Source content:
 """
 ${source}
 """`;

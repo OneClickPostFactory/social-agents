@@ -5,12 +5,15 @@ import {
   OPENAI_IMAGE_GENERATION_ABORTED_CODE,
   OPENAI_IMAGE_GENERATION_STAGE,
   OPENAI_TEXT_ANGLE_EXTRACTION_STAGE,
+  draftPlatforms,
   extractSourceBank,
+  formatContentStrategyProfile,
   generateInstagramImageFromText,
   openAIImageErrorDetails,
   setOpenAIUsageRecorder,
   type OpenAIUsageEvent,
 } from '../src/ai';
+import type { AngleCandidate, SourceSummary } from '../src/types';
 import { __test__ } from '../src/supabase-worker';
 import { DAILY_SLOT_HOURS, platformSlotOccupancyKey } from '../src/slot-scheduler';
 
@@ -187,6 +190,399 @@ async function main(): Promise<void> {
     assert.ok(events.every(event => event.input_size_estimate > 0));
     assert.doesNotMatch(JSON.stringify(events), new RegExp(sentinel));
     assert.doesNotMatch(JSON.stringify(events), /test-openai-key/);
+  });
+
+  await test('missing content strategy profile preserves existing prompt shape', async () => {
+    const previousKey = config.OPENAI_API_KEY;
+    const originalFetch = globalThis.fetch;
+    const prompts: string[] = [];
+
+    config.OPENAI_API_KEY = 'test-openai-key';
+    globalThis.fetch = (async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || '{}'));
+      prompts.push(String(body.messages?.[1]?.content || ''));
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              summary: {
+                source_type: 'reddit_post',
+                topic: 'Automation',
+                core_claim: 'Queues need controls',
+              },
+              angles: [{
+                label: 'Control layer',
+                thesis: 'Scheduled publishing needs a control layer.',
+                hook: 'A queue is a control surface.',
+                practicalConsequence: 'Operators can see what will publish.',
+                strength: 5,
+              }],
+            }),
+          },
+        }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    try {
+      await extractSourceBank({
+        id: 'post-no-profile',
+        title: 'Queue control',
+        selftext: 'Operators need visible queue controls.',
+        url: 'https://reddit.example/no-profile',
+        score: 1,
+        comments: 0,
+        subreddit: 'OpenclawBot',
+        author: 'advanced_pudding9228',
+        created: 1,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      config.OPENAI_API_KEY = previousKey;
+    }
+
+    assert.equal(prompts.length, 1);
+    assert.doesNotMatch(prompts[0], /Content strategy context/);
+    assert.match(prompts[0], /Source content:/);
+  });
+
+  await test('content strategy profile fields appear in extraction prompt context', async () => {
+    const previousKey = config.OPENAI_API_KEY;
+    const originalFetch = globalThis.fetch;
+    const prompts: string[] = [];
+
+    config.OPENAI_API_KEY = 'test-openai-key';
+    globalThis.fetch = (async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || '{}'));
+      prompts.push(String(body.messages?.[1]?.content || ''));
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              summary: {
+                source_type: 'reddit_post',
+                topic: 'Reliability',
+                core_claim: 'Failures need visible controls',
+              },
+              angles: [{
+                label: 'Visible failure',
+                thesis: 'Automation needs visible failure states.',
+                hook: 'Invisible failures do not stay small.',
+                practicalConsequence: 'Operators can recover faster.',
+                strength: 5,
+              }],
+            }),
+          },
+        }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    try {
+      await extractSourceBank({
+        id: 'post-profile',
+        title: 'Queue control',
+        selftext: 'Operators need visible queue controls.',
+        url: 'https://reddit.example/profile',
+        score: 1,
+        comments: 0,
+        subreddit: 'OpenclawBot',
+        author: 'advanced_pudding9228',
+        created: 1,
+      }, {
+        contentStrategyProfile: {
+          primary_audience: 'solo operators',
+          business_offer: 'automation reliability audits',
+          content_pillars: ['operational clarity', 'visible failures'],
+          proof_assets: ['published queue audit checklist'],
+          taboo_claims: ['guaranteed growth'],
+        },
+        contentStrategyProfileVersion: 'tenant-content-strategy-test',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      config.OPENAI_API_KEY = previousKey;
+    }
+
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0], /Content strategy context/);
+    assert.match(prompts[0], /primary_audience: solo operators/);
+    assert.match(prompts[0], /business_offer: automation reliability audits/);
+    assert.match(prompts[0], /content_pillars: operational clarity \| visible failures/);
+    assert.match(prompts[0], /proof_assets_supplied_by_user: published queue audit checklist/);
+    assert.match(prompts[0], /taboo_claims: guaranteed growth/);
+    assert.match(prompts[0], /Source truth always wins/);
+  });
+
+  await test('content strategy profile fields appear in platform draft prompt context', async () => {
+    const previousKey = config.OPENAI_API_KEY;
+    const originalFetch = globalThis.fetch;
+    const prompts: string[] = [];
+
+    const summary: SourceSummary = {
+      source_type: 'reddit_post',
+      topic: 'Queue visibility',
+      core_claim: 'Automation queues need visible state.',
+      surface_problem: 'People think publishing failed randomly.',
+      deeper_problem: 'The queue lacks operator-readable status.',
+      practical_consequence: 'Operators cannot recover quickly.',
+      specific_example: 'A due post stays invisible after a token issue.',
+      best_line: 'Invisible queues create invisible failures.',
+      audience_fit: 'operators',
+      tone_source: 'practical',
+      cta_goal: 'conversation',
+    };
+    const angle: AngleCandidate = {
+      label: 'Visible queue',
+      thesis: 'A queue is part of the product surface.',
+      hook: 'Queues fail quietly when no one can inspect them.',
+      supportingPoints: ['status', 'proof'],
+      practicalConsequence: 'Teams recover faster when queue state is legible.',
+      specificExample: 'A failed publish row with a clear retry action.',
+      audienceFit: 'operators',
+      strength: 5,
+    };
+
+    config.OPENAI_API_KEY = 'test-openai-key';
+    globalThis.fetch = (async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(String(init?.body || '{}'));
+      prompts.push(String(body.messages?.[1]?.content || ''));
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              angle: 'Visible queue',
+              post: 'A queue is not backstage infrastructure. It is part of the product surface.',
+              scores: {
+                specificity: 5,
+                human_tone: 5,
+                platform_fit: 5,
+                clarity: 5,
+                practical_consequence: 5,
+                non_genericity: 5,
+              },
+              banned_phrases_found: [],
+            }),
+          },
+        }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    try {
+      await draftPlatforms(
+        { title: 'Queue visibility', selftext: 'A failed slot needs visible proof.' },
+        summary,
+        angle,
+        ['x'],
+        {
+          contentStrategyProfile: {
+            primary_audience: 'technical founders',
+            voice_traits: ['calm', 'specific'],
+            words_to_use: ['operator', 'proof'],
+            words_to_avoid: ['viral'],
+            cta_style: 'quiet question',
+            taboo_claims: ['guaranteed revenue'],
+          },
+          contentStrategyProfileVersion: 'tenant-content-strategy-test',
+          disableLearningMemory: true,
+        }
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      config.OPENAI_API_KEY = previousKey;
+    }
+
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0], /Content strategy context/);
+    assert.match(prompts[0], /primary_audience: technical founders/);
+    assert.match(prompts[0], /voice_traits: calm \| specific/);
+    assert.match(prompts[0], /words_to_use: operator \| proof/);
+    assert.match(prompts[0], /words_to_avoid: viral/);
+    assert.match(prompts[0], /taboo_claims: guaranteed revenue/);
+    assert.match(prompts[0], /Write from this exact angle only/);
+    assert.match(prompts[0], /Do not blend in other unused angles/);
+  });
+
+  await test('content strategy formatter truncates long fields and caps arrays', () => {
+    const formatted = formatContentStrategyProfile({
+      primary_audience: 'A'.repeat(1000),
+      positioning_statement: 'B'.repeat(1000),
+      content_pillars: Array.from({ length: 10 }, (_entry, index) => `pillar-${index}`),
+      voice_traits: Array.from({ length: 10 }, (_entry, index) => `trait-${index}`),
+    }, 'tenant-content-strategy-test');
+
+    assert.ok(formatted.length <= 1700);
+    assert.match(formatted, /profile_version: tenant-content-strategy-test/);
+    assert.match(formatted, /pillar-7/);
+    assert.doesNotMatch(formatted, /pillar-8/);
+    assert.match(formatted, /trait-7/);
+    assert.doesNotMatch(formatted, /trait-8/);
+    assert.match(formatted, /source truth wins/i);
+  });
+
+  await test('proof assets are represented only when supplied', () => {
+    const withoutProof = formatContentStrategyProfile({
+      primary_audience: 'operators',
+    });
+    const withProof = formatContentStrategyProfile({
+      primary_audience: 'operators',
+      proof_assets: ['public reliability checklist'],
+    });
+
+    assert.doesNotMatch(withoutProof, /proof_assets_supplied_by_user/);
+    assert.match(withProof, /proof_assets_supplied_by_user: public reliability checklist/);
+  });
+
+  await test('content strategy profile text does not leak into OpenAI telemetry', async () => {
+    const previousKey = config.OPENAI_API_KEY;
+    const originalFetch = globalThis.fetch;
+    const events: OpenAIUsageEvent[] = [];
+    const sentinel = 'DO_NOT_LOG_PROFILE_TEXT';
+
+    config.OPENAI_API_KEY = 'test-openai-key';
+    setOpenAIUsageRecorder(event => {
+      events.push(event);
+    });
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            summary: {
+              source_type: 'reddit_post',
+              topic: 'Telemetry',
+              core_claim: 'Telemetry should stay safe.',
+            },
+            angles: [{
+              label: 'Safe telemetry',
+              thesis: 'Prompt context should not leak into telemetry.',
+              hook: 'Safe telemetry records shape, not text.',
+              practicalConsequence: 'Operators can debug without exposing strategy.',
+              strength: 5,
+            }],
+          }),
+        },
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+
+    try {
+      await extractSourceBank({
+        id: 'post-profile-telemetry',
+        title: 'Safe telemetry',
+        selftext: 'Telemetry should stay safe.',
+        url: 'https://reddit.example/profile-telemetry',
+        score: 1,
+        comments: 0,
+        subreddit: 'OpenclawBot',
+        author: 'advanced_pudding9228',
+        created: 1,
+      }, {
+        contentStrategyProfile: {
+          primary_audience: sentinel,
+          proof_assets: [sentinel],
+        },
+        usageContext: {
+          jobId: 'job-profile',
+          jobKind: 'fetch_sources',
+          sourceRecordId: 'source-record-profile',
+          stage: OPENAI_TEXT_ANGLE_EXTRACTION_STAGE,
+          userId: 'tenant-1',
+        },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      config.OPENAI_API_KEY = previousKey;
+      setOpenAIUsageRecorder(undefined);
+    }
+
+    assert.equal(events.length, 2);
+    assert.doesNotMatch(JSON.stringify(events), new RegExp(sentinel));
+    assert.doesNotMatch(JSON.stringify(events), /test-openai-key/);
+  });
+
+  await test('platform length rules still apply with content strategy profile', async () => {
+    const previousKey = config.OPENAI_API_KEY;
+    const originalFetch = globalThis.fetch;
+    const summary: SourceSummary = {
+      source_type: 'reddit_post',
+      topic: 'Queue visibility',
+      core_claim: 'Automation queues need visible state.',
+      surface_problem: 'People think publishing failed randomly.',
+      deeper_problem: 'The queue lacks operator-readable status.',
+      practical_consequence: 'Operators cannot recover quickly.',
+      specific_example: 'A due post stays invisible after a token issue.',
+      best_line: 'Invisible queues create invisible failures.',
+      audience_fit: 'operators',
+      tone_source: 'practical',
+      cta_goal: 'conversation',
+    };
+    const angle: AngleCandidate = {
+      label: 'Visible queue',
+      thesis: 'A queue is part of the product surface.',
+      hook: 'Queues fail quietly when no one can inspect them.',
+      supportingPoints: ['status', 'proof'],
+      practicalConsequence: 'Teams recover faster when queue state is legible.',
+      specificExample: 'A failed publish row with a clear retry action.',
+      audienceFit: 'operators',
+      strength: 5,
+    };
+
+    config.OPENAI_API_KEY = 'test-openai-key';
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            angle: 'Visible queue',
+            post: 'A'.repeat(400),
+            scores: {
+              specificity: 5,
+              human_tone: 5,
+              platform_fit: 5,
+              clarity: 5,
+              practical_consequence: 5,
+              non_genericity: 5,
+            },
+            banned_phrases_found: [],
+          }),
+        },
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+
+    try {
+      const draft = await draftPlatforms(
+        { title: 'Queue visibility', selftext: 'A failed slot needs visible proof.' },
+        summary,
+        angle,
+        ['x'],
+        {
+          contentStrategyProfile: {
+            primary_audience: 'operators',
+            words_to_avoid: ['viral'],
+          },
+          disableLearningMemory: true,
+        }
+      );
+      assert.ok(draft.x.length <= 280);
+    } finally {
+      globalThis.fetch = originalFetch;
+      config.OPENAI_API_KEY = previousKey;
+    }
+  });
+
+  await test('worker exposes content strategy prompt options from settings', () => {
+    assert.deepEqual(__test__.contentStrategyPromptOptions({}), {});
+    const options = __test__.contentStrategyPromptOptions({
+      content_strategy_profile: {
+        primary_audience: 'operators',
+        words_to_avoid: ['viral'],
+      },
+      content_strategy_profile_version: 'tenant-content-strategy-test',
+    } as any);
+
+    assert.deepEqual(options, {
+      contentStrategyProfile: {
+        primary_audience: 'operators',
+        words_to_avoid: ['viral'],
+      },
+      contentStrategyProfileVersion: 'tenant-content-strategy-test',
+    });
   });
 
   await test('OpenAI usage telemetry records image failures without prompt text', async () => {
