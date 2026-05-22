@@ -412,6 +412,18 @@ const OPENAI_IMAGE_ABORT_WINDOW_MS = 15 * 60_000;
 const OPENAI_SOURCE_BACKOFF_THRESHOLD = 2;
 const OPENAI_SOURCE_BACKOFF_WINDOW_MS = 6 * 60 * 60_000;
 const OPENAI_GENERATION_BACKOFF_MS = 30 * 60_000;
+const RSS_FETCH_MAX_REDIRECTS = 5;
+const RSS_FETCH_MAX_BYTES = 1_048_576;
+const RSS_FETCH_TIMEOUT_CAP_MS = 15_000;
+const RSS_ALLOWED_CONTENT_TYPES = new Set([
+  'application/atom+xml',
+  'application/rdf+xml',
+  'application/rss+xml',
+  'application/x-rss+xml',
+  'application/xml',
+  'text/plain',
+  'text/xml',
+]);
 
 interface QueueFromAnglesResult {
   queued: number;
@@ -466,6 +478,21 @@ class SourceFetchError extends Error {
   ) {
     super(message);
   }
+}
+
+interface SafeRssFetchOptions {
+  fetchImpl?: typeof fetch;
+  maxBytes?: number;
+  maxRedirects?: number;
+  timeoutMs?: number;
+}
+
+interface SafeRssFetchResult {
+  text: string;
+  finalUrl: string;
+  redirects: number;
+  status: number;
+  contentType: string | null;
 }
 
 const SUPPORTED_JOB_KINDS = new Set<JobKind>([
@@ -744,6 +771,280 @@ function sourceFetchAdapterFromError(error: unknown): SourceFetchAdapter | undef
 
 function sourceFetchContextFromError(error: unknown): JsonMap | undefined {
   return error instanceof SourceFetchError ? error.context : undefined;
+}
+
+function sourceUrlFailure(
+  adapter: SourceFetchAdapter,
+  code: string,
+  context: JsonMap = {},
+  message = code
+): SourceFetchError {
+  return new SourceFetchError(adapter, code, message, context);
+}
+
+function normalizedHost(hostname: string): string {
+  return hostname
+    .trim()
+    .toLowerCase()
+    .replace(/^\[/, '')
+    .replace(/\]$/, '')
+    .replace(/\.$/, '');
+}
+
+function ipv4Parts(hostname: string): number[] | null {
+  const parts = hostname.split('.');
+  if (parts.length !== 4) return null;
+  const parsed = parts.map(part => {
+    if (!/^\d{1,3}$/.test(part)) return Number.NaN;
+    return Number(part);
+  });
+  if (parsed.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return parsed;
+}
+
+function isPrivateIpv4(hostname: string): boolean {
+  const parts = ipv4Parts(hostname);
+  if (!parts) return false;
+  const [a, b] = parts;
+  return (
+    a === 0
+    || a === 10
+    || a === 127
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || a >= 224
+  );
+}
+
+function isIpv6Literal(hostname: string): boolean {
+  return hostname.includes(':');
+}
+
+function isPrivateIpv6(hostname: string): boolean {
+  const compact = hostname.toLowerCase();
+  return (
+    compact === '::'
+    || compact === '::1'
+    || compact.startsWith('fc')
+    || compact.startsWith('fd')
+    || /^fe[89ab]/.test(compact)
+    || compact.startsWith('::ffff:0:')
+    || compact.startsWith('::ffff:10.')
+    || compact.startsWith('::ffff:127.')
+    || compact.startsWith('::ffff:169.254.')
+    || compact.startsWith('::ffff:172.16.')
+    || compact.startsWith('::ffff:172.17.')
+    || compact.startsWith('::ffff:172.18.')
+    || compact.startsWith('::ffff:172.19.')
+    || compact.startsWith('::ffff:172.2')
+    || compact.startsWith('::ffff:172.30.')
+    || compact.startsWith('::ffff:172.31.')
+    || compact.startsWith('::ffff:192.168.')
+  );
+}
+
+function isInternalHostname(hostname: string): boolean {
+  return (
+    hostname === 'localhost'
+    || hostname.endsWith('.localhost')
+    || hostname.endsWith('.local')
+    || hostname.endsWith('.localdomain')
+    || hostname.endsWith('.lan')
+    || hostname.endsWith('.home')
+    || hostname.endsWith('.internal')
+    || hostname.endsWith('.intranet')
+    || hostname.endsWith('.corp')
+    || hostname.endsWith('.private')
+  );
+}
+
+function validateRssSourceUrl(rawUrl: string, adapter: SourceFetchAdapter): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw sourceUrlFailure(adapter, 'source_url_invalid_host');
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw sourceUrlFailure(adapter, 'source_url_invalid_scheme', { scheme: parsed.protocol.replace(':', '') });
+  }
+
+  if (parsed.username || parsed.password) {
+    throw sourceUrlFailure(adapter, 'source_url_credentials_not_allowed');
+  }
+
+  const host = normalizedHost(parsed.hostname);
+  if (!host || host.includes('_')) {
+    throw sourceUrlFailure(adapter, 'source_url_invalid_host');
+  }
+
+  if (isPrivateIpv4(host) || isInternalHostname(host) || (isIpv6Literal(host) && isPrivateIpv6(host))) {
+    throw sourceUrlFailure(adapter, 'source_url_private_network_blocked', { host });
+  }
+
+  if (ipv4Parts(host) || isIpv6Literal(host)) {
+    throw sourceUrlFailure(adapter, 'source_url_invalid_host', { host });
+  }
+
+  if (!host.includes('.') || host.endsWith('.test') || host.endsWith('.invalid') || host.endsWith('.example')) {
+    throw sourceUrlFailure(adapter, 'source_url_invalid_host', { host });
+  }
+
+  return parsed;
+}
+
+function validateRssRedirectUrl(
+  location: string | null,
+  currentUrl: URL,
+  adapter: SourceFetchAdapter
+): URL {
+  if (!location) {
+    throw sourceUrlFailure(adapter, 'source_url_redirect_blocked', { reason: 'missing_location' });
+  }
+
+  let nextUrl: URL;
+  try {
+    nextUrl = new URL(location, currentUrl);
+  } catch {
+    throw sourceUrlFailure(adapter, 'source_url_redirect_blocked', { reason: 'invalid_location' });
+  }
+
+  try {
+    return validateRssSourceUrl(nextUrl.toString(), adapter);
+  } catch (error) {
+    if (error instanceof SourceFetchError) {
+      throw sourceUrlFailure(adapter, 'source_url_redirect_blocked', {
+        blocked_code: error.code,
+        host: normalizedHost(nextUrl.hostname),
+      });
+    }
+    throw error;
+  }
+}
+
+function redirectStatus(status: number): boolean {
+  return [301, 302, 303, 307, 308].includes(status);
+}
+
+function allowedRssContentType(value: string | null): boolean {
+  if (!value) return true;
+  const mediaType = value.split(';', 1)[0].trim().toLowerCase();
+  return RSS_ALLOWED_CONTENT_TYPES.has(mediaType) || mediaType.endsWith('+xml');
+}
+
+async function responseTextWithLimit(
+  response: Response,
+  adapter: SourceFetchAdapter,
+  maxBytes: number
+): Promise<string> {
+  if (!response.body) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+      throw sourceUrlFailure(adapter, 'source_response_too_large', { max_bytes: maxBytes });
+    }
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw sourceUrlFailure(adapter, 'source_response_too_large', { max_bytes: maxBytes });
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+function rssFetchTimeoutMs(options: SafeRssFetchOptions): number {
+  const configured = Number(options.timeoutMs || config.HTTP_TIMEOUT_MS || RSS_FETCH_TIMEOUT_CAP_MS);
+  if (!Number.isFinite(configured) || configured <= 0) return RSS_FETCH_TIMEOUT_CAP_MS;
+  return Math.min(configured, RSS_FETCH_TIMEOUT_CAP_MS);
+}
+
+async function fetchSafeRssText(
+  rawUrl: string,
+  adapter: SourceFetchAdapter,
+  options: SafeRssFetchOptions = {}
+): Promise<SafeRssFetchResult> {
+  let currentUrl = validateRssSourceUrl(rawUrl, adapter);
+  const fetchImpl = options.fetchImpl || fetch;
+  const maxRedirects = Math.max(0, Math.min(options.maxRedirects ?? RSS_FETCH_MAX_REDIRECTS, RSS_FETCH_MAX_REDIRECTS));
+  const maxBytes = Math.max(1, Math.min(options.maxBytes ?? RSS_FETCH_MAX_BYTES, RSS_FETCH_MAX_BYTES));
+  const timeoutMs = rssFetchTimeoutMs(options);
+  let redirects = 0;
+
+  while (true) {
+    let response: Response;
+    try {
+      response = await fetchImpl(currentUrl.toString(), {
+        headers: {
+          'User-Agent': 'oneclickpostfactory-supabase-worker/1.0',
+          Accept: 'application/rss+xml, application/atom+xml, text/xml, application/xml, text/plain',
+        },
+        redirect: 'manual',
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      const code = error instanceof Error && error.name === 'AbortError'
+        ? 'source_fetch_timeout'
+        : 'source_fetch_failed';
+      throw sourceUrlFailure(adapter, code, { host: normalizedHost(currentUrl.hostname), timeout_ms: timeoutMs });
+    }
+
+    if (redirectStatus(response.status)) {
+      if (redirects >= maxRedirects) {
+        throw sourceUrlFailure(adapter, 'source_url_too_many_redirects', { max_redirects: maxRedirects });
+      }
+      currentUrl = validateRssRedirectUrl(response.headers.get('location'), currentUrl, adapter);
+      redirects++;
+      continue;
+    }
+
+    if (!response.ok) {
+      const code = adapter === 'reddit_rss' ? `reddit_rss_http_${response.status}` : `generic_rss_http_${response.status}`;
+      throw sourceUrlFailure(adapter, code, { status: response.status });
+    }
+
+    const contentType = response.headers.get('content-type');
+    if (!allowedRssContentType(contentType)) {
+      throw sourceUrlFailure(adapter, 'source_content_type_unsupported', {
+        content_type: contentType || '',
+      });
+    }
+
+    try {
+      return {
+        text: await responseTextWithLimit(response, adapter, maxBytes),
+        finalUrl: currentUrl.toString(),
+        redirects,
+        status: response.status,
+        contentType,
+      };
+    } catch (error) {
+      if (error instanceof SourceFetchError) throw error;
+      const code = error instanceof Error && error.name === 'AbortError'
+        ? 'source_fetch_timeout'
+        : 'source_fetch_failed';
+      throw sourceUrlFailure(adapter, code, { host: normalizedHost(currentUrl.hostname), timeout_ms: timeoutMs });
+    }
+  }
 }
 
 function hasDateInFuture(value: string | null | undefined): boolean {
@@ -2263,18 +2564,13 @@ async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jo
   }
 
   const adapter: SourceFetchAdapter = sourceScopeFor(source) === 'generic_rss' ? 'generic_rss' : 'reddit_rss';
-  const response = await fetch(value, {
-    headers: {
-      'User-Agent': 'oneclickpostfactory-supabase-worker/1.0',
-      Accept: 'application/rss+xml, application/atom+xml, text/xml, */*',
-    },
-    signal: AbortSignal.timeout(config.HTTP_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    const code = adapter === 'reddit_rss' ? `reddit_rss_http_${response.status}` : `generic_rss_http_${response.status}`;
-    throw new SourceFetchError(adapter, code, code);
-  }
-  return { posts: parseRss(await response.text(), value), adapter };
+  const result = await fetchSafeRssText(value, adapter);
+  return {
+    posts: parseRss(result.text, value),
+    adapter,
+    status: result.status,
+    transport: 'fetch',
+  };
 }
 
 function canonicalSourceUrl(post: RedditPost): string {
@@ -4750,6 +5046,7 @@ export const __test__ = {
   buildOpenAIUsageDailySummary,
   contentStrategyPromptOptions,
   draftCreationPreflightForAngle,
+  fetchSafeRssText,
   hasOpenActiveSlotForPlatform,
   hasRecentJobActivity,
   OPENAI_GENERATION_PAUSED_REPEATED_FAILURES_CODE,
@@ -4762,7 +5059,9 @@ export const __test__ = {
   publishSuccessResult,
   recordOpenAIUsageOnSummary,
   reconstructStaleSummary,
+  sourceScopeFor,
   stalePublishResult,
+  validateRssSourceUrl,
 };
 
 if (typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module) {
