@@ -63,7 +63,40 @@ validation. Redirects do not bypass source safety checks.
 
 Reddit OAuth is optional and is not required for normal RSS mode. Public Reddit
 JSON remains legacy/advanced/brittle and must not be used as the normal UI
-source path or as an automatic fallback for RSS 403s.
+source path or as an automatic fallback for RSS 403s. Do not remove public JSON
+yet: it historically worked from the Cloudflare Worker runtime, and removal
+needs a focused migration/replacement plan.
+
+### Verified May 21, 2026 Runtime Truth
+
+The last known good source-fetching flow on 2026-05-21 did not use RSS. It ran
+on Cloudflare backend Worker version
+`3e2a598a-b8bc-461f-9a40-d65b3ad2e156` (likely backend commit `fc53fcb Add
+OpenAI usage visibility and runaway protection`) and persisted Worker logs with
+adapter `reddit_public_json`.
+
+That runtime path:
+
+- returned HTTP 200 from Reddit public JSON
+- fetched 20 subreddit posts
+- accepted 17 posts
+- rejected 3 posts with `rejected_author_mismatch`
+- reached OpenAI angle extraction
+- created `angle_records`
+- created platform drafts and `queue_items`
+- later completed scheduled publish jobs and `publish_history` writes
+
+The source rows carried `acquisition_mode = oauth`, but the runtime adapter was
+`reddit_public_json`, not `reddit_oauth`. Future work must not claim RSS was the
+May 21 success path, must not force Reddit OAuth as the proven fix, and must not
+delete public JSON merely because RSS is now the recommended/default UI path.
+
+RSS has worked separately from the Cloudflare Worker runtime, but it is
+best-effort and can fail with `reddit_rss_http_403`. Current strategy is:
+recommend RSS for normal UI-created Reddit sources, quarantine public JSON as an
+advanced/brittle path, keep Reddit OAuth code until a focused removal plan
+unwinds runtime dependencies, and use manual import as the dependable fallback
+when Reddit blocks server-side fetching.
 
 Legacy public JSON/API settings still exist for explicit advanced paths:
 
@@ -98,15 +131,20 @@ The production flow is:
 
 1. Load enabled tenant sources.
 2. Resolve each source's declared intent.
-3. Process manual imports that contain stored source body, then fetch via the
+3. Process manual imports that contain stored source body, or fetch via the
    declared acquisition mode when needed.
 4. Reject fetched items that do not match author, subreddit, or RSS discovery
    rules before source/angle/queue writes.
 5. Insert one tenant-scoped `source_records` row per accepted unique Reddit URL.
-6. Extract multiple angles from that source.
+6. Run OpenAI angle extraction only after accepted posts or manual imports exist.
 7. Insert one tenant-scoped `angle_records` row per angle and enabled platform.
-8. Draft one unused angle at a time into `queue_items`.
-9. Publish ready queue rows and mark their angle `published`.
+8. Draft one unused angle at a time into platform-specific `queue_items`.
+9. Publish ready queue rows on schedule.
+10. Record external proof in `publish_history`.
+
+Short form: source fetch -> accepted posts -> OpenAI angle extraction -> angle
+records -> platform drafts -> queue items -> scheduled publish -> publish
+history.
 
 The worker drains existing `unused` or `in_progress` angles before fetching new
 Reddit posts. This prevents wasting OpenAI calls on new sources while usable

@@ -7,11 +7,43 @@ Date: 2026-06-03
 The deployed Cloudflare Worker had started receiving `reddit_rss_http_403` from
 Reddit RSS while the normal UI-created Reddit source path was intended to be
 RSS-first. The old recovery pressure was to drift back toward Reddit public JSON
-or Reddit OAuth. That is not the product truth.
+or Reddit OAuth as the default path. That is not the current product strategy,
+but it is also not correct to erase the historical runtime evidence.
 
 This patch keeps Reddit RSS as the normal/default source path, makes the RSS
 request more reliable and diagnosable, adds source-level backoff for Worker-side
 403s, and adds manual Reddit import as the approved fallback when RSS is blocked.
+
+## Verified May 21 Runtime Truth
+
+Follow-up Cloudflare runtime investigation confirmed the last known good
+source-fetching flow on 2026-05-21 ran on backend Worker version
+`3e2a598a-b8bc-461f-9a40-d65b3ad2e156`, likely backend commit `fc53fcb Add
+OpenAI usage visibility and runaway protection`.
+
+That successful flow used runtime adapter `reddit_public_json`, not RSS. Reddit
+public JSON returned HTTP 200, fetched 20 subreddit posts, accepted 17 posts,
+and rejected 3 posts with `rejected_author_mismatch`. OpenAI angle extraction was
+reached, `angle_records` were created, platform drafts and `queue_items` were
+created, and scheduled publishing later completed with `publish_history` rows.
+
+The relevant source rows had `acquisition_mode = oauth`, but the runtime adapter
+was `reddit_public_json`, not `reddit_oauth`. RSS was not the May 21 success
+path. RSS has worked separately before, but Cloudflare Worker runtime can still
+receive `reddit_rss_http_403`.
+
+Guardrails for future LLM/code sessions:
+
+- Do not claim RSS was the May 21 success path.
+- Do not remove public JSON just because RSS is the current default.
+- Do not present public JSON as the recommended UI path.
+- Do not force Reddit OAuth as the fix; OAuth code should remain until a focused
+  removal plan deliberately unwinds it.
+- Do not call OpenAI when source fetching fails.
+- Do not retry Reddit fetches blindly after 403; use source health/backoff.
+- Do not fill queue directly from metadata-only `source_records`.
+- Manual import remains the dependable fallback direction when Reddit blocks
+  server-side fetching.
 
 ## Files Changed
 
