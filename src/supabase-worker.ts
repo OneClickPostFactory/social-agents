@@ -132,9 +132,9 @@ interface UserSourceRow {
 }
 
 type SourceProvider = 'reddit' | 'generic_rss' | 'manual';
-type AcquisitionMode = 'oauth' | 'rss' | 'devvit' | 'manual';
+type AcquisitionMode = 'public_json' | 'oauth' | 'rss' | 'devvit' | 'manual';
 type SourceScope = 'reddit_user' | 'subreddit' | 'reddit_search' | 'generic_rss';
-type SourceFetchAdapter = 'reddit_oauth' | 'reddit_public_json' | 'reddit_rss' | 'generic_rss';
+type SourceFetchAdapter = 'reddit_public_json' | 'reddit_rss' | 'generic_rss';
 
 interface SourceIntent {
   provider: SourceProvider;
@@ -458,12 +458,6 @@ interface WorkerStats {
   failed: number;
 }
 
-interface RedditAccessToken {
-  access_token?: string;
-  token_type?: string;
-  expires_in?: number;
-}
-
 interface RedditListingPayload {
   data?: {
     children?: Array<{ data?: Record<string, unknown> }>;
@@ -539,13 +533,11 @@ const SUPPORTED_JOB_KINDS = new Set<JobKind>([
 
 const ACTIVE_QUEUE_STATUSES = ['pending', 'ready', 'publishing'];
 const ACTIVE_ANGLE_STATUSES: AngleRecordStatus[] = ['unused', 'in_progress'];
-const REDDIT_TOKEN_SKEW_MS = 60_000;
 const ANGLE_EXTRACTION_TIMEOUT_MS = 12_000;
 const SCHEDULER_NAME = 'cloudflare_cron';
 const SCHEDULED_SOURCE = 'scheduled';
 const STALE_RUNNING_JOB_MINUTES = 3;
 const REFRESH_QUEUE_STALE_RUNNING_JOB_MINUTES = 8;
-const redditTokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -624,7 +616,9 @@ function validSourceProvider(value: string | null | undefined): SourceProvider |
 }
 
 function validAcquisitionMode(value: string | null | undefined): AcquisitionMode | '' {
-  return value === 'oauth' || value === 'rss' || value === 'devvit' || value === 'manual' ? value : '';
+  return value === 'public_json' || value === 'oauth' || value === 'rss' || value === 'devvit' || value === 'manual'
+    ? value
+    : '';
 }
 
 function validSourceScope(value: string | null | undefined): SourceScope | '' {
@@ -644,7 +638,7 @@ function sourceScopeFor(source: UserSourceRow): SourceScope {
 function acquisitionModeFor(source: UserSourceRow): AcquisitionMode {
   const explicit = validAcquisitionMode(source.acquisition_mode);
   if (explicit) return explicit;
-  return source.kind === 'rss' ? 'rss' : 'oauth';
+  return source.kind === 'rss' ? 'rss' : 'public_json';
 }
 
 function providerFor(source: UserSourceRow, sourceScope = sourceScopeFor(source)): SourceProvider {
@@ -2001,10 +1995,7 @@ function snapshotConfig(): Partial<AppConfig> {
     OPENAI_MODEL: config.OPENAI_MODEL,
     OPENAI_IMAGE_MODEL: config.OPENAI_IMAGE_MODEL,
     OPENAI_IMAGE_TIMEOUT_MS: config.OPENAI_IMAGE_TIMEOUT_MS,
-    REDDIT_CLIENT_ID: config.REDDIT_CLIENT_ID,
-    REDDIT_CLIENT_SECRET: config.REDDIT_CLIENT_SECRET,
     REDDIT_PUBLIC_JSON_TRANSPORT: config.REDDIT_PUBLIC_JSON_TRANSPORT,
-    REDDIT_USER_AGENT: config.REDDIT_USER_AGENT,
     CLOUDINARY_FOLDER: config.CLOUDINARY_FOLDER,
     ENABLE_THREADS: config.ENABLE_THREADS,
     ENABLE_INSTAGRAM: config.ENABLE_INSTAGRAM,
@@ -2062,9 +2053,6 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
   config.OPENAI_API_KEY = tenant.credentials.openaiApiKey || previous.OPENAI_API_KEY || '';
   config.OPENAI_MODEL = tenant.settings.ai_model || 'gpt-4o-mini';
   config.OPENAI_IMAGE_MODEL = previous.OPENAI_IMAGE_MODEL || config.OPENAI_IMAGE_MODEL || 'gpt-image-2';
-  config.REDDIT_CLIENT_ID = tenant.credentials.redditClientId || previous.REDDIT_CLIENT_ID || '';
-  config.REDDIT_CLIENT_SECRET = tenant.credentials.redditClientSecret || previous.REDDIT_CLIENT_SECRET || '';
-  config.REDDIT_USER_AGENT = previous.REDDIT_USER_AGENT || config.REDDIT_USER_AGENT;
   config.CLOUDINARY_FOLDER = tenantCloudinaryFolder(previous.CLOUDINARY_FOLDER || config.CLOUDINARY_FOLDER, tenant.userId);
   config.ENABLE_THREADS = tenant.activePlatforms.includes('threads');
   config.ENABLE_INSTAGRAM = tenant.activePlatforms.includes('instagram');
@@ -2422,16 +2410,6 @@ function parseRss(xml: string, sourceUrl: string): RedditPost[] {
   });
 }
 
-function redditUserAgent(): string {
-  return config.REDDIT_USER_AGENT.trim() || 'oneclickpostfactory-agent/1.0';
-}
-
-function redditOauthListingUrl(publicUrl: string): string {
-  const parsed = new URL(publicUrl);
-  const path = parsed.pathname.replace(/\.json$/i, '');
-  return `https://oauth.reddit.com${path}${parsed.search}`;
-}
-
 function parseRedditListing(payload: RedditListingPayload): RedditPost[] {
   return (payload.data?.children || [])
     .map(child => child.data || {})
@@ -2447,92 +2425,6 @@ function parseRedditListing(payload: RedditListingPayload): RedditPost[] {
       author: String(post.author || ''),
       created: Number(post.created_utc || Date.now() / 1000),
     }));
-}
-
-async function redditResponseError(response: Response, adapter: SourceFetchAdapter): Promise<SourceFetchError> {
-  let body = '';
-  try {
-    body = (await response.text()).replace(/\s+/g, ' ').slice(0, 220);
-  } catch {
-    body = '';
-  }
-  let code = `${adapter}_http_${response.status}`;
-  if (response.status === 403) code = adapter === 'reddit_public_json'
-    ? 'reddit_public_json_blocked_403'
-    : `${adapter}_forbidden_403`;
-  if (response.status === 404) code = `${adapter}_not_found_404`;
-  if (response.status === 429) code = `${adapter}_rate_limited_429`;
-  return new SourceFetchError(adapter, code, body ? `${code}: ${body}` : code, {
-    status: response.status,
-    body_snippet: body || undefined,
-    transport: 'fetch',
-  });
-}
-
-async function getRedditAccessToken(): Promise<string> {
-  const clientId = config.REDDIT_CLIENT_ID.trim();
-  const clientSecret = config.REDDIT_CLIENT_SECRET.trim();
-  if (!clientId || !clientSecret) {
-    throw new Error('reddit_oauth_credentials_missing');
-  }
-
-  const cached = redditTokenCache.get(clientId);
-  if (cached && cached.expiresAt > Date.now() + REDDIT_TOKEN_SKEW_MS) {
-    return cached.accessToken;
-  }
-
-  const response = await fetch('https://www.reddit.com/api/v1/access_token', {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': redditUserAgent(),
-      Accept: 'application/json',
-    },
-    body: new URLSearchParams({ grant_type: 'client_credentials' }).toString(),
-    signal: AbortSignal.timeout(config.HTTP_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw await redditResponseError(response, 'reddit_oauth');
-  }
-
-  const token = await response.json() as RedditAccessToken;
-  if (!token.access_token) {
-    throw new Error('reddit_oauth_token_missing');
-  }
-
-  const expiresInMs = Math.max(60, Number(token.expires_in || 3600)) * 1000;
-  redditTokenCache.set(clientId, {
-    accessToken: token.access_token,
-    expiresAt: Date.now() + expiresInMs,
-  });
-  return token.access_token;
-}
-
-async function readRedditListingJson(
-  url: string,
-  adapter: SourceFetchAdapter,
-  headers: Record<string, string>
-): Promise<SourceFetchResult> {
-  const response = await fetch(url, {
-    headers,
-    redirect: 'follow',
-    signal: AbortSignal.timeout(config.HTTP_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    throw await redditResponseError(response, adapter);
-  }
-
-  try {
-    return {
-      posts: parseRedditListing(await response.json() as RedditListingPayload),
-      adapter,
-      status: response.status,
-      transport: 'fetch',
-    };
-  } catch (error) {
-    throw new SourceFetchError(adapter, `${adapter}_json_parse_failed`, `Failed to parse Reddit response: ${publicError(error)}`);
-  }
 }
 
 async function readRedditPublicJsonListing(
@@ -2574,26 +2466,6 @@ async function fetchRedditListing(
   url: string,
   endpointKind: RedditPublicJsonEndpointKind
 ): Promise<SourceFetchResult> {
-  const oauthHeaders: Record<string, string> = {
-    'User-Agent': redditUserAgent(),
-    Accept: 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Cache-Control': 'no-cache',
-  };
-
-  let requestUrl = url;
-  if (config.REDDIT_CLIENT_ID.trim() && config.REDDIT_CLIENT_SECRET.trim()) {
-    try {
-      oauthHeaders.Authorization = `Bearer ${await getRedditAccessToken()}`;
-      requestUrl = redditOauthListingUrl(url);
-      return readRedditListingJson(requestUrl, 'reddit_oauth', oauthHeaders);
-    } catch (error) {
-      if (error instanceof SourceFetchError && error.adapter !== 'reddit_oauth') {
-        throw error;
-      }
-    }
-  }
-
   return readRedditPublicJsonListing(url, endpointKind);
 }
 
@@ -3156,8 +3028,8 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     const reason = primaryFailureReason(summary.sources.fetchFailureReasons);
     summary.outcome = 'blocked';
     if (reason === 'reddit_public_json_rate_limited_429') {
-      summary.message = 'Reddit rate-limited public JSON from this runtime. RSS sources are still supported and are the recommended path. Reddit OAuth is optional only if you want API-backed Reddit access later.';
-      summary.nextAction = 'Use a Reddit RSS author/subreddit feed, Devvit, or manual import. Wait and retry public JSON only if you intentionally use the advanced JSON/API path.';
+      summary.message = 'Reddit rate-limited public JSON from this runtime. Public JSON is the proven historical Reddit path, but it remains brittle.';
+      summary.nextAction = 'Wait and retry public JSON later, use RSS only as a best-effort source, or paste a manual import with source text.';
       return;
     }
     if (reason === 'reddit_rss_http_403') {
@@ -3169,9 +3041,9 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     }
     summary.message = `Source fetching failed closed: ${reason}.`;
     summary.nextAction = reason === 'reddit_public_json_blocked_403'
-      ? 'Reddit public JSON was blocked from this runtime. RSS sources are still supported and are the recommended path. Reddit OAuth is optional only if you want API-backed Reddit access later.'
+      ? 'Reddit public JSON was blocked from this runtime. Wait and retry later, use RSS only as a best-effort source, or paste a manual import with source text.'
       : reason.toLowerCase().includes('reddit')
-      ? 'Check Reddit API credentials and retry Fetch sources.'
+      ? 'Open Logs, check the Reddit source status, and retry only after the block or source issue is resolved.'
       : 'Open Logs, fix the source connection, and retry Fetch sources.';
     return;
   }

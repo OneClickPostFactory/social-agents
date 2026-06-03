@@ -61,11 +61,11 @@ The RSS path keeps SSRF validation, manual redirect handling, redirect target
 revalidation, max redirects, timeout caps, body size caps, and content-type
 validation. Redirects do not bypass source safety checks.
 
-Reddit OAuth is optional and is not required for normal RSS mode. Public Reddit
-JSON remains legacy/advanced/brittle and must not be used as the normal UI
-source path or as an automatic fallback for RSS 403s. Do not remove public JSON
-yet: it historically worked from the Cloudflare Worker runtime, and removal
-needs a focused migration/replacement plan.
+Reddit OAuth is removed/quarantined from the product source path. Public Reddit
+JSON is preserved as the only proven end-to-end Reddit fetch path in persisted
+Cloudflare Worker evidence. RSS remains available as a best-effort feed path,
+but RSS has not yet produced accepted posts, angles, queue rows, or publishes
+from the Worker runtime.
 
 ### Verified May 21, 2026 Runtime Truth
 
@@ -87,29 +87,27 @@ That runtime path:
 - later completed scheduled publish jobs and `publish_history` writes
 
 The source rows carried `acquisition_mode = oauth`, but the runtime adapter was
-`reddit_public_json`, not `reddit_oauth`. Future work must not claim RSS was the
-May 21 success path, must not force Reddit OAuth as the proven fix, and must not
-delete public JSON merely because RSS is now the recommended/default UI path.
+`reddit_public_json`, not `reddit_oauth`. That label was misleading and has been
+renamed to `public_json` for Reddit public JSON rows. Future work must not claim
+RSS was the May 21 success path, must not force Reddit OAuth as the proven fix,
+and must not delete public JSON.
 
-RSS has worked separately from the Cloudflare Worker runtime, but it is
-best-effort and can fail with `reddit_rss_http_403`. Current strategy is:
-recommend RSS for normal UI-created Reddit sources, quarantine public JSON as an
-advanced/brittle path, keep Reddit OAuth code until a focused removal plan
-unwinds runtime dependencies, and use manual import as the dependable fallback
-when Reddit blocks server-side fetching.
+RSS has returned HTTP 200 separately from the Cloudflare Worker runtime, but the
+persisted Worker evidence shows zero RSS accepted posts and zero downstream
+angle/queue/publish rows. Current strategy is: preserve public JSON as the
+proven historical path, keep RSS best-effort, keep manual import as the fallback
+when Reddit blocks server-side fetching, and keep source-fetch failures from
+calling OpenAI.
 
-Legacy public JSON/API settings still exist for explicit advanced paths:
+Public JSON settings still exist for explicit advanced/runtime control:
 
-- `REDDIT_CLIENT_ID`
-- `REDDIT_CLIENT_SECRET`
-- `REDDIT_USER_AGENT`
 - `REDDIT_PUBLIC_JSON_TRANSPORT=auto|fetch|node_https`
 
-Those values authenticate the Reddit API client only. They are not tenant
-settings, they do not provide a global Reddit author or subreddit fallback, and
-they must not be treated as required for RSS-backed sources. The tenant's source
-intent rows remain the only inputs that decide which Reddit posts may enter that
-tenant's workflow.
+Reddit client ID/secret values are not part of the product source path and must
+not be presented as required setup. Existing encrypted columns may remain
+temporarily for non-destructive compatibility, but the worker does not use them
+to choose source-fetch behavior. The tenant's source intent rows remain the only
+inputs that decide which Reddit posts may enter that tenant's workflow.
 
 `REDDIT_PUBLIC_JSON_TRANSPORT=auto` uses `node:https` in local Node and `fetch`
 in Cloudflare. Forcing `node_https` in a runtime that cannot use it fails clearly

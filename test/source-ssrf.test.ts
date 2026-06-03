@@ -427,11 +427,33 @@ async function main(): Promise<void> {
     assert.match(manualBody, /queueFromBankedAngles/);
   });
 
-  await test('public JSON 403 guidance presents RSS as recommended and OAuth as optional', () => {
+  await test('public JSON source fetching does not use the deprecated Reddit OAuth branch', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
-    assert.match(worker, /RSS sources are still supported and are the recommended path/);
-    assert.match(worker, /Reddit OAuth is optional only if you want API-backed Reddit access later/);
-    assert.doesNotMatch(worker, /Configure Reddit OAuth, use an author RSS feed/);
+    const tenantCredentials = fs.readFileSync(path.join(process.cwd(), 'src', 'tenant-credentials.ts'), 'utf8');
+    assert.doesNotMatch(worker, /reddit_oauth/);
+    assert.doesNotMatch(worker, /oauth\.reddit\.com/);
+    assert.doesNotMatch(worker, /api\/v1\/access_token/);
+    assert.doesNotMatch(worker, /getRedditAccessToken/);
+    assert.doesNotMatch(worker, /REDDIT_CLIENT_ID[\s\S]{0,160}fetchRedditListing/);
+    assert.doesNotMatch(tenantCredentials, /redditClientId|redditClientSecret/);
+    assert.match(worker, /readRedditPublicJsonListing\(url, endpointKind\)/);
+  });
+
+  await test('public JSON 403 guidance does not recommend Reddit OAuth', () => {
+    const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
+    assert.match(worker, /Reddit public JSON was blocked from this runtime/);
+    assert.match(worker, /manual import with source text/);
+    assert.doesNotMatch(worker, /Configure Reddit OAuth/);
+    assert.doesNotMatch(worker, /Reddit OAuth is optional/);
+    assert.doesNotMatch(worker, /Check Reddit API credentials/);
+  });
+
+  await test('May 21 style Reddit sources use public_json acquisition mode without requiring OAuth', () => {
+    const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
+    assert.match(worker, /type AcquisitionMode = 'public_json' \| 'oauth' \| 'rss' \| 'devvit' \| 'manual'/);
+    assert.match(worker, /value === 'public_json'/);
+    assert.match(worker, /source\.kind === 'rss' \? 'rss' : 'public_json'/);
+    assert.match(worker, /adapter: 'reddit_public_json'/);
   });
 
   await test('filtered RSS messaging is distinct from OpenAI quota errors', () => {

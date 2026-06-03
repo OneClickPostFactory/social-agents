@@ -16,8 +16,6 @@ export interface TenantCredentials {
   linkedinToken?: string;
   linkedinPersonUrn?: string;
   metaAccessToken?: string;
-  redditClientId?: string;
-  redditClientSecret?: string;
   xClientId?: string;
   xClientSecret?: string;
   xOAuth2AccessToken?: string;
@@ -117,8 +115,6 @@ export function decryptTenantCredentials(row: TenantCredentialRow | null | undef
       linkedinToken: compact(decryptCredential(row.linkedin_token_enc)),
       linkedinPersonUrn: compact(decryptCredential(row.linkedin_person_urn_enc)),
       metaAccessToken: compact(decryptCredential(row.meta_access_token_enc)),
-      redditClientId: compact(decryptCredential(row.reddit_client_id_enc)),
-      redditClientSecret: compact(decryptCredential(row.reddit_client_secret_enc)),
       xClientId: compact(decryptCredential(row.x_client_id_enc)),
       xClientSecret: compact(decryptCredential(row.x_client_secret_enc)),
       xOAuth2AccessToken: compact(decryptCredential(row.x_oauth2_access_token_enc)),

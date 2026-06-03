@@ -77,19 +77,19 @@ SUPABASE_SERVICE_ROLE_KEY=<sb_secret_... or legacy service_role JWT>
 CREDENTIAL_ENCRYPTION_KEY=<same-key-used-by-lovable-server-runtime>
 OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_IMAGE_TIMEOUT_MS=120000
-REDDIT_CLIENT_ID=<reddit-script-app-client-id>
-REDDIT_CLIENT_SECRET=<reddit-script-app-secret>
-REDDIT_USER_AGENT=oneclickpostfactory-agent/1.0 by u/<your-reddit-operator-user>
+REDDIT_PUBLIC_JSON_TRANSPORT=auto
 CLOUDINARY_CLOUD_NAME=<cloudinary-cloud-name>
 CLOUDINARY_API_KEY=<cloudinary-api-key>
 CLOUDINARY_API_SECRET=<cloudinary-api-secret>
 CLOUDINARY_FOLDER=social-agent/instagram
 ```
 
-Cloudflare production uses Reddit OAuth for subreddit listing reads. The
-tenant's Reddit username and allowed subreddits still come from `user_sources`;
-these Reddit app credentials only authenticate the API client and must not be
-used as a global tenant author/subreddit fallback.
+Cloudflare production does not use Reddit OAuth for source fetching. Reddit
+public JSON is preserved as the proven historical source path, while Reddit RSS
+remains best-effort and manual import is the dependable fallback direction when
+server-side Reddit fetches are blocked. The tenant's Reddit username and allowed
+subreddits still come from `user_sources`; runtime env must not be used as a
+global tenant author/subreddit fallback.
 
 Run only the worker loop with:
 

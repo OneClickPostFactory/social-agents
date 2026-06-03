@@ -5,14 +5,16 @@ Date: 2026-06-03
 ## Problem Solved
 
 The deployed Cloudflare Worker had started receiving `reddit_rss_http_403` from
-Reddit RSS while the normal UI-created Reddit source path was intended to be
-RSS-first. The old recovery pressure was to drift back toward Reddit public JSON
-or Reddit OAuth as the default path. That is not the current product strategy,
-but it is also not correct to erase the historical runtime evidence.
+Reddit RSS while later investigation showed the proven end-to-end Reddit runtime
+path was actually public JSON. The old recovery pressure was to force Reddit
+OAuth or rewrite history as RSS-first. That is not the current product strategy,
+and it is also not correct to erase the historical public JSON evidence.
 
-This patch keeps Reddit RSS as the normal/default source path, makes the RSS
-request more reliable and diagnosable, adds source-level backoff for Worker-side
-403s, and adds manual Reddit import as the approved fallback when RSS is blocked.
+The RSS recovery patch made RSS safer and diagnosable, added source-level
+backoff for Worker-side 403s, and added manual Reddit import as the approved
+fallback when server-side fetching is blocked. A later focused patch removed
+Reddit OAuth from the product source path and renamed misleading Reddit
+`acquisition_mode = oauth` rows to `public_json`.
 
 ## Verified May 21 Runtime Truth
 
@@ -28,17 +30,19 @@ reached, `angle_records` were created, platform drafts and `queue_items` were
 created, and scheduled publishing later completed with `publish_history` rows.
 
 The relevant source rows had `acquisition_mode = oauth`, but the runtime adapter
-was `reddit_public_json`, not `reddit_oauth`. RSS was not the May 21 success
-path. RSS has worked separately before, but Cloudflare Worker runtime can still
-receive `reddit_rss_http_403`.
+was `reddit_public_json`, not `reddit_oauth`. That acquisition label was
+misleading and has been replaced by `public_json` for Reddit public JSON rows.
+RSS was not the May 21 success path. RSS has returned HTTP 200 separately, but
+persisted Worker evidence shows zero RSS accepted posts, angle records, queue
+rows, or publishes.
 
 Guardrails for future LLM/code sessions:
 
 - Do not claim RSS was the May 21 success path.
-- Do not remove public JSON just because RSS is the current default.
-- Do not present public JSON as the recommended UI path.
-- Do not force Reddit OAuth as the fix; OAuth code should remain until a focused
-  removal plan deliberately unwinds it.
+- Do not remove public JSON; it is the only proven end-to-end Reddit fetch path.
+- Do not present RSS as the proven May 21 path; keep it best-effort.
+- Do not force Reddit OAuth as the fix; it is removed/quarantined from the
+  product source path.
 - Do not call OpenAI when source fetching fails.
 - Do not retry Reddit fetches blindly after 403; use source health/backoff.
 - Do not fill queue directly from metadata-only `source_records`.
@@ -107,10 +111,26 @@ Database migration:
 - Queue slot logic was not changed.
 - Platform publisher payloads were not changed.
 - OpenAI prompts were not changed.
-- OAuth behavior was not changed.
-- Credential handling was not changed.
 - Tenant security/RLS policies were not loosened.
 - Reddit public JSON was not made the normal fallback path.
+
+## Focused Public JSON / OAuth Removal Update
+
+Later on 2026-06-03, Reddit OAuth was removed/quarantined from the product source
+path without destructively dropping credential columns. Existing misleading
+Reddit `acquisition_mode = oauth` rows are migrated to `public_json`, preserving
+source ids, ownership, values, filters, timestamps, and enabled/disabled state.
+
+This update:
+
+- preserves the `reddit_public_json` adapter and May 21 working path
+- stops normal source fetching from attempting a Reddit OAuth token exchange
+- stops the backend worker from decrypting tenant Reddit client id/secret for
+  source fetching
+- removes Reddit client id/secret from the browser credential UI
+- removes Reddit OAuth recommendation/warning copy
+- keeps RSS available as best-effort
+- does not build new manual import behavior in this patch
 
 ## Local Tests Passed Before Deploy
 
