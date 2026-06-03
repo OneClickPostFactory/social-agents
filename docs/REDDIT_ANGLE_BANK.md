@@ -32,8 +32,10 @@ Rules:
 - `source_scope = generic_rss` is broad discovery only. It is ingested only when
   `allow_unfiltered_rss = true`; otherwise the source is rejected as
   `rejected_unfiltered_rss_not_allowed`.
-- Manual Reddit URL import must also pass any configured `target_author` and
-  `allowed_subreddits` checks before downstream queue work.
+- Manual Reddit import is a first-class fallback for RSS blocks. It stores a
+  tenant-scoped `source_records` row with `origin = manual` and enough
+  `source_text` for angle extraction. Metadata-only source records are not
+  draftable shortcuts.
 
 Legacy `rss` rows are treated as blocked generic RSS until a user explicitly
 confirms Discovery Feed mode. RSS should never silently bypass a tenant's
@@ -43,12 +45,27 @@ Usernames and subreddits are normalized before comparison, so values such as
 `u/example`, `@example`, `r/builders`, and full reddit.com URLs compare by their
 canonical names.
 
-## Reddit API Access
+## Reddit RSS And API Access
 
-The worker supports Reddit OAuth when credentials are available, then falls back
-to public Reddit JSON for `reddit_user` and `subreddit` sources. Public JSON uses
-the old local request shape as closely as each runtime allows. Node/local can use
-`node:https`; Cloudflare Workers use runtime `fetch`.
+Normal UI-created Reddit author and subreddit sources use Reddit RSS. The worker
+canonicalizes Reddit RSS URLs to `https://www.reddit.com/.../.rss` before fetch
+and sends the honest app user agent:
+
+`OneClickPostFactory/early-access (+https://www.oneclickpostfactory.com)`
+
+It also preserves the RSS/XML Accept header:
+
+`application/rss+xml, application/atom+xml, text/xml, application/xml, text/plain`
+
+The RSS path keeps SSRF validation, manual redirect handling, redirect target
+revalidation, max redirects, timeout caps, body size caps, and content-type
+validation. Redirects do not bypass source safety checks.
+
+Reddit OAuth is optional and is not required for normal RSS mode. Public Reddit
+JSON remains legacy/advanced/brittle and must not be used as the normal UI
+source path or as an automatic fallback for RSS 403s.
+
+Legacy public JSON/API settings still exist for explicit advanced paths:
 
 - `REDDIT_CLIENT_ID`
 - `REDDIT_CLIENT_SECRET`
@@ -56,9 +73,10 @@ the old local request shape as closely as each runtime allows. Node/local can us
 - `REDDIT_PUBLIC_JSON_TRANSPORT=auto|fetch|node_https`
 
 Those values authenticate the Reddit API client only. They are not tenant
-settings and they do not provide a global Reddit author or subreddit fallback.
-The tenant's source intent rows remain the only inputs that decide which Reddit
-posts may enter that tenant's workflow.
+settings, they do not provide a global Reddit author or subreddit fallback, and
+they must not be treated as required for RSS-backed sources. The tenant's source
+intent rows remain the only inputs that decide which Reddit posts may enter that
+tenant's workflow.
 
 `REDDIT_PUBLIC_JSON_TRANSPORT=auto` uses `node:https` in local Node and `fetch`
 in Cloudflare. Forcing `node_https` in a runtime that cannot use it fails clearly
@@ -66,13 +84,22 @@ with `reddit_node_https_unavailable_in_runtime`. If Reddit returns `429`, the
 worker records `reddit_public_json_rate_limited_429` with transport, runtime,
 endpoint kind, status, and a safe body snippet.
 
+If Cloudflare Worker egress receives `reddit_rss_http_403`, the worker records
+safe diagnostic metadata only: source id, job id, adapter, status, attempted
+host, final host, content type, canonicalized flag, and stable error code. It
+does not log response bodies or provider payloads. The source is marked
+`needs_attention` with temporary `blocked_until` backoff so scheduled fetches do
+not retry aggressively. No public JSON fallback is attempted. OpenAI is not
+called unless accepted posts or manual imports with stored `source_text` exist.
+
 ## Source To Angle Flow
 
 The production flow is:
 
 1. Load enabled tenant sources.
 2. Resolve each source's declared intent.
-3. Fetch via the declared acquisition mode.
+3. Process manual imports that contain stored source body, then fetch via the
+   declared acquisition mode when needed.
 4. Reject fetched items that do not match author, subreddit, or RSS discovery
    rules before source/angle/queue writes.
 5. Insert one tenant-scoped `source_records` row per accepted unique Reddit URL.
@@ -101,7 +128,10 @@ the job must finalize with an OpenAI blocker instead of retrying every cron tick
 Accepted source records are saved before OpenAI angle extraction starts. A
 `source_records` row without matching tenant-scoped `angle_records` is preserved
 evidence, not a completed source. It must not block future angle extraction after
-OpenAI billing, quota, rate-limit, or model-access issues are fixed.
+OpenAI billing, quota, rate-limit, or model-access issues are fixed. Existing
+banked RSS records that only contain metadata such as title, URL, author, and
+subreddit are not enough for high-quality drafting. Manual imports are draftable
+only because they store source body in `source_records.source_text`.
 
 If the only active angles are legacy/incomplete rows that cannot be proven to
 have source URL, subreddit, author, and intended platform metadata, the worker
@@ -134,13 +164,16 @@ Common empty outcomes:
 
 - RSS source fetched posts, but none matched the selected Reddit user
 - RSS source fetched posts, but none matched the allowed subreddit list
+- Reddit RSS returned `reddit_rss_http_403`; the source is temporarily paused as
+  `needs_attention`, public JSON is not attempted, and the next action is manual
+  import with source text or retry after the backoff clears
 - an unfiltered RSS feed needs explicit Discovery Feed confirmation
 - no Reddit posts matched the configured author filter
 - `content_exhausted`: automation is working, but current Reddit sources have
   no new usable posts and there are no unused angles to schedule. This is a
   healthy terminal state, not a Reddit/platform failure. The next action is to
   add another subreddit or Reddit user, enable an intentional discovery feed,
-  paste manual Reddit URLs, or wait for new source posts.
+  paste manual Reddit imports with source text, or wait for new source posts.
 - Reddit/API access failed closed
 - Reddit fetch succeeded, but OpenAI text angle extraction failed
 - no usable angles were extracted

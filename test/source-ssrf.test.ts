@@ -220,6 +220,77 @@ async function main(): Promise<void> {
     assert.equal(result.redirects, 0);
   });
 
+  await test('Reddit RSS URLs canonicalize to www.reddit.com before fetch', async () => {
+    let requestedUrl = '';
+    const fetchImpl = (async (input: string | URL | Request) => {
+      requestedUrl = String(input);
+      return rssResponse('<rss />', 'application/rss+xml');
+    }) as typeof fetch;
+
+    const result = await __test__.fetchSafeRssText('https://reddit.com/user/Advanced_pudding9228/.rss', 'reddit_rss', {
+      fetchImpl,
+    });
+
+    assert.equal(requestedUrl, 'https://www.reddit.com/user/Advanced_pudding9228/.rss');
+    assert.equal(result.attemptedUrl, 'https://www.reddit.com/user/Advanced_pudding9228/.rss');
+    assert.equal(result.finalUrl, 'https://www.reddit.com/user/Advanced_pudding9228/.rss');
+    assert.equal(result.canonicalized, true);
+  });
+
+  await test('non-Reddit RSS URLs are not rewritten before fetch', async () => {
+    let requestedUrl = '';
+    const fetchImpl = (async (input: string | URL | Request) => {
+      requestedUrl = String(input);
+      return rssResponse('<rss />', 'application/rss+xml');
+    }) as typeof fetch;
+
+    const result = await __test__.fetchSafeRssText('https://feeds.example.com/feed.xml?topic=saas', 'generic_rss', {
+      fetchImpl,
+    });
+
+    assert.equal(requestedUrl, 'https://feeds.example.com/feed.xml?topic=saas');
+    assert.equal(result.attemptedUrl, 'https://feeds.example.com/feed.xml?topic=saas');
+    assert.equal(result.finalUrl, 'https://feeds.example.com/feed.xml?topic=saas');
+    assert.equal(result.canonicalized, false);
+  });
+
+  await test('Reddit RSS fetch uses honest User-Agent and preserves RSS Accept header', async () => {
+    const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get('User-Agent'), __test__.REDDIT_RSS_USER_AGENT);
+      assert.equal(headers.get('Accept'), __test__.RSS_ACCEPT_HEADER);
+      return rssResponse('<rss />', 'application/rss+xml');
+    }) as typeof fetch;
+
+    await __test__.fetchSafeRssText('https://www.reddit.com/user/advanced_pudding9228/.rss', 'reddit_rss', {
+      fetchImpl,
+    });
+  });
+
+  await test('Reddit RSS HTTP 403 maps to stable error and safe metadata', async () => {
+    const fetchImpl = (async () => new Response('<html>blocked</html>', {
+      status: 403,
+      headers: { 'content-type': 'text/html' },
+    })) as typeof fetch;
+
+    await assert.rejects(
+      __test__.fetchSafeRssText('https://reddit.com/user/Advanced_pudding9228/.rss', 'reddit_rss', {
+        fetchImpl,
+      }),
+      (error: any) => {
+        assert.equal(error.code, 'reddit_rss_http_403');
+        assert.equal(error.context.status, 403);
+        assert.equal(error.context.original_host, 'reddit.com');
+        assert.equal(error.context.attempted_host, 'www.reddit.com');
+        assert.equal(error.context.final_host, 'www.reddit.com');
+        assert.equal(error.context.content_type, 'text/html');
+        assert.equal(error.context.canonicalized_url, true);
+        assert.doesNotMatch(JSON.stringify(error.context), /blocked/);
+        return true;
+      }
+    );
+  });
+
   await test('Reddit author RSS accepts casing differences and source URL author fallback', () => {
     const parsed = __test__.parseRss(`
       <rss><channel><item>
@@ -329,6 +400,31 @@ async function main(): Promise<void> {
     const helperBody = source.match(/async function fetchSafeRssText[\s\S]*?\n}\n\nfunction hasDateInFuture/)?.[0] || '';
     assert.doesNotMatch(helperBody, /extractSourceBank|draftPlatforms|openAI/i);
     assert.doesNotMatch(helperBody, /supabaseInsert\('source_records'/);
+    assert.doesNotMatch(helperBody, /fetchRedditListing|readRedditPublicJsonListing|reddit_public_json/i);
+  });
+
+  await test('Reddit RSS 403 marks source needs_attention without public JSON fallback', () => {
+    const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
+    assert.match(worker, /reddit_rss_http_403/);
+    assert.match(worker, /health_status:\s*'needs_attention'/);
+    assert.match(worker, /blocked_until/);
+    assert.match(worker, /source_marked_needs_attention/);
+    assert.doesNotMatch(worker, /reddit_rss_http_403[\s\S]{0,500}readRedditPublicJsonListing/);
+  });
+
+  await test('queue fill reports no draftable angles when Reddit RSS is blocked', () => {
+    const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
+    assert.match(worker, /Source blocked by reddit_rss_http_403 and no draftable angle_records were available/);
+    assert.match(worker, /Paste a manual import with source text/);
+  });
+
+  await test('manual import processing only uses source records with stored source text', () => {
+    const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
+    const manualBody = worker.match(/async function processManualSourceRecords[\s\S]*?\n}\n\nasync function hasActiveBankedAngles/)?.[0] || '';
+    assert.match(manualBody, /source_text/);
+    assert.match(manualBody, /if \(!sourceText \|\| sourceUrlsWithAngles\.has\(record\.url\)\) continue/);
+    assert.match(manualBody, /extractSourceBankWithJobTimeout/);
+    assert.match(manualBody, /queueFromBankedAngles/);
   });
 
   await test('public JSON 403 guidance presents RSS as recommended and OAuth as optional', () => {

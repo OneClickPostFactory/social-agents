@@ -126,6 +126,9 @@ interface UserSourceRow {
   target_author?: string | null;
   allowed_subreddits?: string[] | null;
   allow_unfiltered_rss?: boolean | null;
+  health_status?: string | null;
+  last_error_code?: string | null;
+  blocked_until?: string | null;
 }
 
 type SourceProvider = 'reddit' | 'generic_rss' | 'manual';
@@ -416,6 +419,9 @@ const OPENAI_GENERATION_BACKOFF_MS = 30 * 60_000;
 const RSS_FETCH_MAX_REDIRECTS = 5;
 const RSS_FETCH_MAX_BYTES = 1_048_576;
 const RSS_FETCH_TIMEOUT_CAP_MS = 15_000;
+const REDDIT_RSS_USER_AGENT = 'OneClickPostFactory/early-access (+https://www.oneclickpostfactory.com)';
+const RSS_ACCEPT_HEADER = 'application/rss+xml, application/atom+xml, text/xml, application/xml, text/plain';
+const REDDIT_RSS_BLOCKED_BACKOFF_MS = 6 * 60 * 60_000;
 const RSS_ALLOWED_CONTENT_TYPES = new Set([
   'application/atom+xml',
   'application/rdf+xml',
@@ -440,6 +446,10 @@ interface SourceFetchResult {
   runtime?: RedditPublicJsonRuntime;
   status?: number;
   transport?: RedditPublicJsonUsedTransport;
+  finalUrl?: string;
+  attemptedUrl?: string;
+  contentType?: string | null;
+  canonicalizedUrl?: boolean;
 }
 
 interface WorkerStats {
@@ -491,9 +501,31 @@ interface SafeRssFetchOptions {
 interface SafeRssFetchResult {
   text: string;
   finalUrl: string;
+  attemptedUrl: string;
+  originalUrl: string;
+  canonicalized: boolean;
   redirects: number;
   status: number;
   contentType: string | null;
+}
+
+interface SourceRecordRow {
+  id: string;
+  user_id: string;
+  url: string;
+  title?: string | null;
+  origin?: string | null;
+  score?: number | null;
+  used: boolean;
+  fetched_at: string;
+  created_at: string;
+  updated_at: string;
+  reddit_post_id?: string | null;
+  subreddit?: string | null;
+  reddit_author?: string | null;
+  content_hash?: string | null;
+  status?: string | null;
+  source_text?: string | null;
 }
 
 const SUPPORTED_JOB_KINDS = new Set<JobKind>([
@@ -802,6 +834,12 @@ function sourceFetchContextFromError(error: unknown): JsonMap | undefined {
   return error instanceof SourceFetchError ? error.context : undefined;
 }
 
+function isRedditRssBlockedError(error: unknown): boolean {
+  return error instanceof SourceFetchError
+    && error.adapter === 'reddit_rss'
+    && error.code === 'reddit_rss_http_403';
+}
+
 function sourceUrlFailure(
   adapter: SourceFetchAdapter,
   code: string,
@@ -818,6 +856,14 @@ function normalizedHost(hostname: string): string {
     .replace(/^\[/, '')
     .replace(/\]$/, '')
     .replace(/\.$/, '');
+}
+
+function safeUrlHost(value: string | null | undefined): string {
+  try {
+    return normalizedHost(new URL(String(value || '')).hostname);
+  } catch {
+    return '';
+  }
 }
 
 function ipv4Parts(hostname: string): number[] | null {
@@ -957,6 +1003,34 @@ function redirectStatus(status: number): boolean {
   return [301, 302, 303, 307, 308].includes(status);
 }
 
+function redditRssUrlMetadata(url: URL): { kind: 'user' | 'subreddit'; value: string } | undefined {
+  const host = normalizedHost(url.hostname);
+  if (host !== 'reddit.com' && host !== 'www.reddit.com') return undefined;
+  const parts = url.pathname.split('/').filter(Boolean);
+  if (parts.length !== 3 || parts[2] !== '.rss') return undefined;
+  const scope = parts[0]?.toLowerCase();
+  const value = parts[1]?.trim();
+  if (!value) return undefined;
+  if (scope === 'user') return { kind: 'user', value };
+  if (scope === 'r') return { kind: 'subreddit', value };
+  return undefined;
+}
+
+function canonicalizeRedditRssUrl(url: URL): { url: URL; canonicalized: boolean } {
+  const metadata = redditRssUrlMetadata(url);
+  if (!metadata) return { url, canonicalized: false };
+
+  const path = metadata.kind === 'user'
+    ? `/user/${encodeURIComponent(metadata.value)}/.rss`
+    : `/r/${encodeURIComponent(metadata.value)}/.rss`;
+  const next = new URL(`https://www.reddit.com${path}`);
+  next.search = url.search;
+  return {
+    url: next,
+    canonicalized: next.toString() !== url.toString(),
+  };
+}
+
 function allowedRssContentType(value: string | null): boolean {
   if (!value) return true;
   const mediaType = value.split(';', 1)[0].trim().toLowerCase();
@@ -1012,7 +1086,11 @@ async function fetchSafeRssText(
   adapter: SourceFetchAdapter,
   options: SafeRssFetchOptions = {}
 ): Promise<SafeRssFetchResult> {
-  let currentUrl = validateRssSourceUrl(rawUrl, adapter);
+  const validatedUrl = validateRssSourceUrl(rawUrl, adapter);
+  const canonical = adapter === 'reddit_rss'
+    ? canonicalizeRedditRssUrl(validatedUrl)
+    : { url: validatedUrl, canonicalized: false };
+  let currentUrl = canonical.url;
   const fetchImpl = options.fetchImpl || fetch;
   const maxRedirects = Math.max(0, Math.min(options.maxRedirects ?? RSS_FETCH_MAX_REDIRECTS, RSS_FETCH_MAX_REDIRECTS));
   const maxBytes = Math.max(1, Math.min(options.maxBytes ?? RSS_FETCH_MAX_BYTES, RSS_FETCH_MAX_BYTES));
@@ -1024,8 +1102,8 @@ async function fetchSafeRssText(
     try {
       response = await fetchImpl(currentUrl.toString(), {
         headers: {
-          'User-Agent': 'oneclickpostfactory-supabase-worker/1.0',
-          Accept: 'application/rss+xml, application/atom+xml, text/xml, application/xml, text/plain',
+          'User-Agent': REDDIT_RSS_USER_AGENT,
+          Accept: RSS_ACCEPT_HEADER,
         },
         redirect: 'manual',
         signal: AbortSignal.timeout(timeoutMs),
@@ -1048,7 +1126,14 @@ async function fetchSafeRssText(
 
     if (!response.ok) {
       const code = adapter === 'reddit_rss' ? `reddit_rss_http_${response.status}` : `generic_rss_http_${response.status}`;
-      throw sourceUrlFailure(adapter, code, { status: response.status });
+      throw sourceUrlFailure(adapter, code, {
+        status: response.status,
+        original_host: normalizedHost(validatedUrl.hostname),
+        attempted_host: normalizedHost(canonical.url.hostname),
+        final_host: normalizedHost(currentUrl.hostname),
+        content_type: response.headers.get('content-type') || '',
+        canonicalized_url: canonical.canonicalized,
+      });
     }
 
     const contentType = response.headers.get('content-type');
@@ -1062,6 +1147,9 @@ async function fetchSafeRssText(
       return {
         text: await responseTextWithLimit(response, adapter, maxBytes),
         finalUrl: currentUrl.toString(),
+        attemptedUrl: canonical.url.toString(),
+        originalUrl: validatedUrl.toString(),
+        canonicalized: canonical.canonicalized,
         redirects,
         status: response.status,
         contentType,
@@ -2599,6 +2687,10 @@ async function fetchTenantSourcePosts(source: UserSourceRow, userId?: string, jo
     adapter,
     status: result.status,
     transport: 'fetch',
+    finalUrl: result.finalUrl,
+    attemptedUrl: result.attemptedUrl,
+    contentType: result.contentType,
+    canonicalizedUrl: result.canonicalized,
   };
 }
 
@@ -2708,6 +2800,194 @@ async function saveAcceptedSourceRecords(
     records_touched: sourcePayloads.length,
   });
   return new Map(rows.map(row => [row.url, row.id]));
+}
+
+async function markRedditRssSourceBlocked(source: UserSourceRow, error: SourceFetchError): Promise<void> {
+  if (error.adapter !== 'reddit_rss' || error.code !== 'reddit_rss_http_403') return;
+  await supabaseUpdate('user_sources', {
+    health_status: 'needs_attention',
+    last_error_code: error.code,
+    blocked_until: new Date(Date.now() + REDDIT_RSS_BLOCKED_BACKOFF_MS).toISOString(),
+  }, {
+    filters: [
+      { column: 'id', operator: 'eq', value: source.id },
+      { column: 'user_id', operator: 'eq', value: source.user_id },
+    ],
+  });
+}
+
+async function processManualSourceRecords(
+  job: AgentJobRow,
+  tenant: TenantContext,
+  occupiedSlots: PlatformSlotOccupancy,
+  timeZone: string,
+  summary: PipelineSummary,
+  openAIActivityLogsToday: WorkerLogRow[],
+  sourceUrlsWithAngles: Set<string>
+): Promise<{ banked: number; queued: number }> {
+  const records = await supabaseSelect<SourceRecordRow>('source_records', {
+    select: 'id,user_id,url,title,origin,score,used,fetched_at,created_at,updated_at,reddit_post_id,subreddit,reddit_author,content_hash,status,source_text',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: job.user_id },
+      { column: 'origin', operator: 'eq', value: 'manual' },
+      { column: 'status', operator: 'eq', value: 'banked' },
+      { column: 'used', operator: 'eq', value: false },
+    ],
+    order: 'created_at.asc',
+    limit: 10,
+  });
+
+  let banked = 0;
+  let queued = 0;
+
+  for (const record of records) {
+    const sourceText = String(record.source_text || '').trim();
+    if (!sourceText || sourceUrlsWithAngles.has(record.url)) continue;
+
+    summary.sources.postsFetched++;
+    summary.sources.postsAccepted++;
+    summary.sources.accepted++;
+
+    const post: RedditPost = {
+      id: record.reddit_post_id || record.id,
+      title: record.title || 'Manual source',
+      selftext: sourceText,
+      url: record.url,
+      score: Number(record.score || 0),
+      comments: 0,
+      subreddit: record.subreddit || 'manual',
+      author: record.reddit_author || 'manual',
+      created: Date.parse(record.created_at || '') / 1000 || Date.now() / 1000,
+    };
+
+    await writeWorkerLog(job.user_id, 'info', 'manual_source_record_selected', {
+      jobId: job.id,
+      sourceRecordId: record.id,
+      source_url_host: safeUrlHost(record.url),
+    });
+
+    const extractionGuardRequest: OpenAIGenerationGuardRequest = {
+      sourceRecordId: record.id,
+      stage: ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE,
+      type: 'text',
+    };
+    const extractionGuard = preflightOpenAIGeneration(
+      tenant.settings,
+      summary.openaiUsageToday,
+      openAIActivityLogsToday,
+      extractionGuardRequest
+    );
+    if (!extractionGuard.allowed) {
+      summary.sources.withoutAngles++;
+      summary.angles.extractionFailures++;
+      incrementCounter(summary.angles.failureReasons, extractionGuard.code || 'openai_generation_preflight_blocked');
+      if (extractionGuard.code?.startsWith('openai_')) {
+        setSummaryGenerationPaused(summary, extractionGuard);
+        summary.failedStage ||= extractionGuard.stage;
+        summary.failureCode ||= extractionGuard.code;
+      }
+      await writeOpenAIPreflightSkip(job, extractionGuard, extractionGuardRequest);
+      break;
+    }
+
+    let extraction: Awaited<ReturnType<typeof ai.extractSourceBank>>;
+    try {
+      extraction = await extractSourceBankWithJobTimeout(
+        post,
+        openAIUsageContext(job, summary, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE, {
+          sourceRecordId: record.id,
+        }),
+        contentStrategyPromptOptions(tenant.settings)
+      );
+    } catch (error) {
+      const textError = ai.openAITextErrorDetails(error, ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE);
+      const failureCode = textError?.code || 'angle_extraction_failed';
+      summary.sources.withoutAngles++;
+      summary.angles.extractionFailures++;
+      incrementCounter(summary.angles.failureReasons, failureCode);
+      if (textError) {
+        if (!summary.errors.includes(textError.userMessage)) summary.errors.push(textError.userMessage);
+        summary.failedStage ||= textError.stage;
+        summary.failureCode ||= textError.code;
+      } else {
+        addSummaryError(summary, error);
+        summary.failedStage ||= ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE;
+        summary.failureCode ||= failureCode;
+      }
+      await writeWorkerLog(job.user_id, 'warn', 'manual_source_angle_extraction_failed', {
+        jobId: job.id,
+        sourceRecordId: record.id,
+        source_url_host: safeUrlHost(record.url),
+        error: textError?.userMessage || publicError(error),
+        normalized_error_code: failureCode,
+        stage: ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE,
+        next_action: textError?.nextAction || 'Review the manual import text, then retry Fetch sources.',
+        systemic: textError?.systemic === true,
+      });
+      if (textError?.systemic) break;
+      continue;
+    }
+
+    const angles = extraction.angles.slice(0, 5);
+    if (!angles.length) {
+      summary.sources.withoutAngles++;
+      continue;
+    }
+
+    const angleRows = angles.flatMap(angle => tenant.activePlatforms.map(platform => ({
+      user_id: job.user_id,
+      source_record_id: record.id,
+      source_reddit_post_id: record.reddit_post_id || record.id,
+      subreddit: record.subreddit || 'manual',
+      reddit_author: record.reddit_author || 'manual',
+      source_url: record.url,
+      angle: `${angle.label}: ${angle.thesis}`,
+      angle_title: angle.label,
+      angle_summary: angle.thesis,
+      intended_platform: platform,
+      status: 'unused',
+      priority: angle.strength || null,
+      topic: extraction.summary.topic || record.title || null,
+      used_count: 0,
+      last_used_at: null,
+    })));
+
+    try {
+      await supabaseInsert('angle_records', angleRows);
+      await supabaseUpdate('source_records', {
+        used: true,
+        status: 'exhausted',
+      }, {
+        filters: [
+          { column: 'id', operator: 'eq', value: record.id },
+          { column: 'user_id', operator: 'eq', value: job.user_id },
+        ],
+      });
+    } catch (error) {
+      addSummaryError(summary, error);
+      await writeWorkerLog(job.user_id, 'warn', 'manual_angle_insert_failed', {
+        jobId: job.id,
+        sourceRecordId: record.id,
+        error: publicError(error),
+      });
+      continue;
+    }
+
+    banked += angleRows.length;
+    summary.angles.created += angleRows.length;
+    sourceUrlsWithAngles.add(record.url);
+    await writeWorkerLog(job.user_id, 'info', 'manual_source_banked_angles', {
+      jobId: job.id,
+      sourceRecordId: record.id,
+      angleCount: angleRows.length,
+    });
+
+    const queuedFromAngles = await queueFromBankedAngles(job, tenant, occupiedSlots, timeZone, summary, openAIActivityLogsToday);
+    queued += queuedFromAngles.queued;
+    if (queued > 0 || await hasActiveBankedAngles(job.user_id)) break;
+  }
+
+  return { banked, queued };
 }
 
 async function hasActiveBankedAngles(userId: string): Promise<boolean> {
@@ -2878,6 +3158,13 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     if (reason === 'reddit_public_json_rate_limited_429') {
       summary.message = 'Reddit rate-limited public JSON from this runtime. RSS sources are still supported and are the recommended path. Reddit OAuth is optional only if you want API-backed Reddit access later.';
       summary.nextAction = 'Use a Reddit RSS author/subreddit feed, Devvit, or manual import. Wait and retry public JSON only if you intentionally use the advanced JSON/API path.';
+      return;
+    }
+    if (reason === 'reddit_rss_http_403') {
+      summary.message = summary.angles.activeAtStart > 0
+        ? 'Source blocked by reddit_rss_http_403 before new RSS posts could be accepted.'
+        : 'Source blocked by reddit_rss_http_403 and no draftable angle_records were available.';
+      summary.nextAction = 'Paste a manual import with source text, or retry the RSS source later after the temporary block clears.';
       return;
     }
     summary.message = `Source fetching failed closed: ${reason}.`;
@@ -3462,12 +3749,32 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     });
   }
 
+  const sourceUrlsWithAngles = await loadSourceUrlsWithAngles(job.user_id);
+  const manualResult = await processManualSourceRecords(
+    job,
+    tenant,
+    occupiedSlots,
+    timeZone,
+    summary,
+    openAIActivityLogsToday,
+    sourceUrlsWithAngles
+  );
+  queued += manualResult.queued;
+  if (manualResult.banked > 0 || queued > 0) {
+    return finishRefreshResult(job, summary, {
+      fetched: 0,
+      banked: manualResult.banked,
+      queued,
+      manualImport: true,
+      deferredFetch: true,
+    });
+  }
+
   const enabledSources = sources.filter(source => source.enabled);
   if (!enabledSources.length) {
     return finishRefreshResult(job, summary, { fetched: 0, banked: 0, queued: 0 });
   }
 
-  const sourceUrlsWithAngles = await loadSourceUrlsWithAngles(job.user_id);
   const { author: tenantAuthor, allowedSubreddits: tenantAllowedSubreddits, processingSources } = tenantRedditConfig(enabledSources);
   if (!processingSources.length) {
     summary.drafts.skipped++;
@@ -3481,6 +3788,20 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
 
   for (const source of processingSources) {
     if (stopSourceProcessing) break;
+    if (hasDateInFuture(source.blocked_until)) {
+      summary.sources.checked++;
+      summarizeRejectedSource(summary, 'source_temporarily_blocked');
+      await writeWorkerLog(job.user_id, 'warn', 'source_temporarily_blocked', {
+        jobId: job.id,
+        sourceId: source.id,
+        provider: source.provider || providerFor(source),
+        acquisition_mode: source.acquisition_mode || acquisitionModeFor(source),
+        source_scope: source.source_scope || sourceScopeFor(source),
+        last_error_code: source.last_error_code || 'source_temporarily_blocked',
+        blocked_until: source.blocked_until,
+      });
+      continue;
+    }
     summary.sources.checked++;
     const intent = sourceIntentFor(source, tenantAuthor, tenantAllowedSubreddits);
     const preflightRejectReason = preflightSourceIntentRejectReason(intent);
@@ -3522,6 +3843,16 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
         error: reason,
         ...sourceFetchContextFromError(error),
       });
+      if (error instanceof SourceFetchError && isRedditRssBlockedError(error)) {
+        await markRedditRssSourceBlocked(source, error);
+        await writeWorkerLog(job.user_id, 'warn', 'source_marked_needs_attention', {
+          jobId: job.id,
+          sourceId: source.id,
+          adapter: error.adapter,
+          error: error.code,
+          blocked_until_ms: REDDIT_RSS_BLOCKED_BACKOFF_MS,
+        });
+      }
       continue;
     }
 
@@ -3558,6 +3889,10 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
       runtime: fetchResult.runtime,
       status: fetchResult.status,
       transport: fetchResult.transport,
+      attempted_host: safeUrlHost(fetchResult.attemptedUrl),
+      final_host: safeUrlHost(fetchResult.finalUrl),
+      content_type: fetchResult.contentType || '',
+      canonicalized_url: fetchResult.canonicalizedUrl === true,
       target_author_configured: Boolean(intent.targetAuthor),
       allowed_subreddits_count: intent.allowedSubreddits.length,
       allow_unfiltered_rss: intent.allowUnfilteredRss,
@@ -5073,6 +5408,7 @@ export function startSupabaseWorkerLoop(log = logger): { stop: () => void } | un
 
 export const __test__ = {
   buildOpenAIUsageDailySummary,
+  canonicalizeRedditRssUrl,
   contentStrategyPromptOptions,
   draftCreationPreflightForAngle,
   fetchSafeRssText,
@@ -5087,6 +5423,8 @@ export const __test__ = {
   publishRequiresOpenAIMediaRepair,
   publishSuccessResult,
   recordOpenAIUsageOnSummary,
+  REDDIT_RSS_USER_AGENT,
+  RSS_ACCEPT_HEADER,
   reconstructStaleSummary,
   parseRss,
   sourceIntentFor,
