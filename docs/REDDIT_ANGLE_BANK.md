@@ -29,43 +29,38 @@ Rules:
 - `source_scope = subreddit` requires the item to belong to an allowed
   subreddit. If a tenant-level or source-level `target_author` exists, both
   subreddit and author must match.
-- `source_scope = generic_rss` is broad discovery only. It is ingested only when
-  `allow_unfiltered_rss = true`; otherwise the source is rejected as
-  `rejected_unfiltered_rss_not_allowed`.
-- Manual Reddit import is a first-class fallback for RSS blocks. It stores a
+- `source_scope = generic_rss` is legacy metadata only. RSS is quarantined from
+  normal product flow and should not be offered as a normal source path.
+- Manual Reddit import is a first-class fallback for Reddit fetch blocks. It stores a
   tenant-scoped `source_records` row with `origin = manual` and enough
   `source_text` for angle extraction. Metadata-only source records are not
   draftable shortcuts.
 
-Legacy `rss` rows are treated as blocked generic RSS until a user explicitly
-confirms Discovery Feed mode. RSS should never silently bypass a tenant's
-Reddit author or allowed-subreddit intent.
+Legacy `rss` rows are preserved for history but quarantined from normal
+ingestion. They should never silently bypass a tenant's Reddit author or
+allowed-subreddit intent.
 
 Usernames and subreddits are normalized before comparison, so values such as
 `u/example`, `@example`, `r/builders`, and full reddit.com URLs compare by their
 canonical names.
 
-## Reddit RSS And API Access
+## Reddit Public JSON Source Path
 
-Normal UI-created Reddit author and subreddit sources use Reddit RSS. The worker
-canonicalizes Reddit RSS URLs to `https://www.reddit.com/.../.rss` before fetch
-and sends the honest app user agent:
+Normal UI-created Reddit author and subreddit sources use Reddit public JSON
+(`acquisition_mode = public_json`). This is the only supported Reddit source
+path in the normal product flow because it is the only path with persisted
+end-to-end Cloudflare Worker evidence.
 
-`OneClickPostFactory/early-access (+https://www.oneclickpostfactory.com)`
+Reddit OAuth is removed/quarantined from the product source path. Reddit RSS is
+also quarantined from normal user flow. Existing Reddit RSS rows may remain for
+history, but they should be disabled or marked `needs_attention` with
+`last_error_code = reddit_rss_source_unsupported`; the worker skips them before
+fetching and must not call OpenAI or create source/angle/queue rows from them.
 
-It also preserves the RSS/XML Accept header:
-
-`application/rss+xml, application/atom+xml, text/xml, application/xml, text/plain`
-
-The RSS path keeps SSRF validation, manual redirect handling, redirect target
+The old RSS fetch helper remains SSRF-tested safety code, not a supported
+product path. It keeps URL validation, manual redirect handling, redirect target
 revalidation, max redirects, timeout caps, body size caps, and content-type
-validation. Redirects do not bypass source safety checks.
-
-Reddit OAuth is removed/quarantined from the product source path. Public Reddit
-JSON is preserved as the only proven end-to-end Reddit fetch path in persisted
-Cloudflare Worker evidence. RSS remains available as a best-effort feed path,
-but RSS has not yet produced accepted posts, angles, queue rows, or publishes
-from the Worker runtime.
+validation for any future focused recovery work.
 
 ### Verified May 21, 2026 Runtime Truth
 
@@ -93,11 +88,11 @@ RSS was the May 21 success path, must not force Reddit OAuth as the proven fix,
 and must not delete public JSON.
 
 RSS has returned HTTP 200 separately from the Cloudflare Worker runtime, but the
-persisted Worker evidence shows zero RSS accepted posts and zero downstream
-angle/queue/publish rows. Current strategy is: preserve public JSON as the
-proven historical path, keep RSS best-effort, keep manual import as the fallback
-when Reddit blocks server-side fetching, and keep source-fetch failures from
-calling OpenAI.
+persisted Worker evidence shows zero RSS accepted posts, zero source records,
+zero angle records, zero queue rows, zero publish rows, and zero OpenAI calls.
+Current strategy is: preserve public JSON as the supported path, quarantine RSS
+from normal flow, keep manual import as the fallback when Reddit blocks
+server-side fetching, and keep source-fetch failures from calling OpenAI.
 
 Public JSON settings still exist for explicit advanced/runtime control:
 
@@ -198,18 +193,14 @@ The summary includes:
 
 Common empty outcomes:
 
-- RSS source fetched posts, but none matched the selected Reddit user
-- RSS source fetched posts, but none matched the allowed subreddit list
-- Reddit RSS returned `reddit_rss_http_403`; the source is temporarily paused as
-  `needs_attention`, public JSON is not attempted, and the next action is manual
-  import with source text or retry after the backoff clears
-- an unfiltered RSS feed needs explicit Discovery Feed confirmation
+- Reddit RSS row was skipped as `reddit_rss_source_unsupported`; public JSON is
+  the supported source path and OpenAI is not called for the unsupported row
 - no Reddit posts matched the configured author filter
 - `content_exhausted`: automation is working, but current Reddit sources have
   no new usable posts and there are no unused angles to schedule. This is a
   healthy terminal state, not a Reddit/platform failure. The next action is to
-  add another subreddit or Reddit user, enable an intentional discovery feed,
-  paste manual Reddit imports with source text, or wait for new source posts.
+  add another subreddit or Reddit user, paste manual Reddit imports with source
+  text, or wait for new source posts.
 - Reddit/API access failed closed
 - Reddit fetch succeeded, but OpenAI text angle extraction failed
 - no usable angles were extracted

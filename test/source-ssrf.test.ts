@@ -443,9 +443,29 @@ async function main(): Promise<void> {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
     assert.match(worker, /Reddit public JSON was blocked from this runtime/);
     assert.match(worker, /manual import with source text/);
+    assert.doesNotMatch(worker, /use RSS only as a best-effort source/);
     assert.doesNotMatch(worker, /Configure Reddit OAuth/);
     assert.doesNotMatch(worker, /Reddit OAuth is optional/);
     assert.doesNotMatch(worker, /Check Reddit API credentials/);
+  });
+
+  await test('Reddit RSS source rows are unsupported in the normal worker flow', () => {
+    const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
+    assert.equal(__test__.isUnsupportedRedditRssSource(source({})), true);
+    assert.equal(__test__.isUnsupportedRedditRssSource(source({
+      kind: 'reddit_user',
+      value: 'advanced_pudding9228',
+      acquisition_mode: 'public_json',
+      source_scope: 'reddit_user',
+    })), false);
+    assert.equal(__test__.isUnsupportedRedditRssSource(source({
+      provider: 'generic_rss',
+      source_scope: 'generic_rss',
+    })), false);
+    assert.match(worker, /reddit_rss_source_unsupported/);
+    assert.match(worker, /source_skipped_unsupported/);
+    assert.match(worker, /markRedditRssSourceUnsupported/);
+    assert.match(worker, /Use Reddit public JSON sources\. Paste a manual import with source text/);
   });
 
   await test('May 21 style Reddit sources use public_json acquisition mode without requiring OAuth', () => {
@@ -456,10 +476,11 @@ async function main(): Promise<void> {
     assert.match(worker, /adapter: 'reddit_public_json'/);
   });
 
-  await test('filtered RSS messaging is distinct from OpenAI quota errors', () => {
+  await test('filtered source messaging is distinct from OpenAI quota errors', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
-    assert.match(worker, /RSS fetched successfully, but no items matched the source filters/);
-    assert.doesNotMatch(worker, /RSS fetched successfully[\s\S]{0,160}OpenAI/i);
+    assert.match(worker, /Source fetched successfully, but no items matched the source filters/);
+    assert.doesNotMatch(worker, /Source fetched successfully[\s\S]{0,160}OpenAI/i);
+    assert.doesNotMatch(worker, /switch the source to discovery mode/);
   });
 }
 

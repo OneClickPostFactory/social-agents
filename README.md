@@ -85,11 +85,13 @@ CLOUDINARY_FOLDER=social-agent/instagram
 ```
 
 Cloudflare production does not use Reddit OAuth for source fetching. Reddit
-public JSON is preserved as the proven historical source path, while Reddit RSS
-remains best-effort and manual import is the dependable fallback direction when
-server-side Reddit fetches are blocked. The tenant's Reddit username and allowed
-subreddits still come from `user_sources`; runtime env must not be used as a
-global tenant author/subreddit fallback.
+public JSON is the supported Reddit source path. Reddit RSS is quarantined from
+the normal product flow because persisted runtime evidence shows HTTP fetches
+but no accepted posts, source records, angle records, queue rows, publish rows,
+or OpenAI calls. Manual import is the dependable fallback direction when
+server-side Reddit public JSON is blocked. The tenant's Reddit username and
+allowed subreddits still come from `user_sources`; runtime env must not be used
+as a global tenant author/subreddit fallback.
 
 Run only the worker loop with:
 

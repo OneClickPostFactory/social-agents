@@ -36,11 +36,22 @@ RSS was not the May 21 success path. RSS has returned HTTP 200 separately, but
 persisted Worker evidence shows zero RSS accepted posts, angle records, queue
 rows, or publishes.
 
+Current source strategy after the public JSON-only patch:
+
+- Public JSON is the only supported Reddit fetch path in normal product flow.
+- Existing Reddit RSS rows are quarantined/unsupported, preserved as rows, and
+  disabled or marked `needs_attention` with
+  `last_error_code = reddit_rss_source_unsupported`.
+- Normal source creation must create `public_json` Reddit user/subreddit rows,
+  not RSS rows and not OAuth rows.
+- The RSS fetch helper may remain for SSRF-tested safety history, but it is not
+  a normal product path.
+
 Guardrails for future LLM/code sessions:
 
 - Do not claim RSS was the May 21 success path.
 - Do not remove public JSON; it is the only proven end-to-end Reddit fetch path.
-- Do not present RSS as the proven May 21 path; keep it best-effort.
+- Do not present RSS as the proven May 21 path or as a recommended/default path.
 - Do not force Reddit OAuth as the fix; it is removed/quarantined from the
   product source path.
 - Do not call OpenAI when source fetching fails.
@@ -71,7 +82,10 @@ Database migration:
 
 - `supabase/migrations/20260603152000_recover_reddit_rss_and_manual_import.sql`
 
-## Reddit RSS Fetch Path Now
+## Legacy Reddit RSS Safety Helper
+
+This section records safety behavior kept for historical/recovery work. It is
+not the normal supported Reddit product path.
 
 - Reddit RSS URLs are canonicalized before fetch to `www.reddit.com`.
 - `https://reddit.com/user/Advanced_pudding9228/.rss` becomes
@@ -129,7 +143,7 @@ This update:
   source fetching
 - removes Reddit client id/secret from the browser credential UI
 - removes Reddit OAuth recommendation/warning copy
-- keeps RSS available as best-effort
+- quarantines Reddit RSS from the normal product path
 - does not build new manual import behavior in this patch
 
 ## Local Tests Passed Before Deploy

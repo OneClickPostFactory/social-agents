@@ -8,8 +8,8 @@ This file is the fast-start context for LLMs and human maintainers working in th
 
 Current content flow:
 1. Load tenant-scoped `user_sources` from Supabase.
-2. Enforce each source's declared intent before ingestion: Reddit author,
-   allowed subreddit, or explicit generic RSS discovery.
+2. Enforce each source's declared intent before ingestion: Reddit user or
+   allowed subreddit through the supported public JSON source path.
 3. Bank each accepted tenant-scoped Reddit source into multiple reusable angles.
 4. Draft only one saved angle at a time into enabled platforms.
 5. Generate an Instagram image only when Instagram is enabled.
@@ -64,11 +64,11 @@ This codebase now has two runtime boundaries:
 - `SUPABASE_URL` must point to the owner-managed OneClickPostFactory Supabase project that Lovable also uses; do not point the worker at a hidden managed project whose secret/service-role key and credential encryption key are unavailable.
 - Every SaaS job is processed by `job.user_id`.
 - SaaS reads/writes for `profiles`, `user_credentials`, `user_sources`, `user_settings`, `queue_items`, `publish_history`, `source_records`, `angle_records`, and `worker_logs` are scoped by `job.user_id`.
-- SaaS source ingestion also enforces source intent. `user_sources` rows declare `provider`, `acquisition_mode`, `source_scope`, `target_author`, `allowed_subreddits`, and `allow_unfiltered_rss`. RSS is blocked by default unless it is an author RSS feed with a matching Reddit author or the user explicitly enables Discovery Feed mode.
-- Normal UI-created Reddit RSS sources (`acquisition_mode = rss`) remain available as best-effort feeds and must be fetched through canonical `https://www.reddit.com/.../.rss` URLs with the honest app user agent `OneClickPostFactory/early-access (+https://www.oneclickpostfactory.com)` plus the RSS/XML Accept header. RSS has returned HTTP 200 from Cloudflare but has not produced accepted posts, angles, queue rows, or publishes in persisted runtime evidence.
+- SaaS source ingestion also enforces source intent. `user_sources` rows declare `provider`, `acquisition_mode`, `source_scope`, `target_author`, `allowed_subreddits`, and `allow_unfiltered_rss`. Normal Reddit user/subreddit sources use `acquisition_mode = public_json`.
+- Reddit public JSON is the only supported Reddit source path in the normal product flow. RSS rows are quarantined/unsupported for normal ingestion: the worker skips enabled Reddit RSS rows with `reddit_rss_source_unsupported`, marks them `needs_attention`, disables them, and does not call OpenAI or create source/angle/queue rows from them.
 - Verified Cloudflare runtime truth for 2026-05-21: the last known good source-fetching flow ran on backend Worker version `3e2a598a-b8bc-461f-9a40-d65b3ad2e156` (likely commit `fc53fcb Add OpenAI usage visibility and runaway protection`) and used adapter `reddit_public_json`, not RSS. Public JSON returned HTTP 200, fetched 20 subreddit posts, accepted 17, rejected 3 with `rejected_author_mismatch`, reached OpenAI angle extraction, created angle records, created queue rows, and scheduled publishing later completed. Source rows had `acquisition_mode = oauth`, but that label was misleading and has been replaced with `public_json` for Reddit public JSON rows. Reddit OAuth is removed/quarantined from the product source path; do not rewrite history by claiming RSS or OAuth was the May 21 success path.
-- Cloudflare Worker egress can still receive `reddit_rss_http_403` from Reddit RSS. On that failure the worker records safe metadata only, marks the source `needs_attention` with temporary `blocked_until` backoff, does not fall back to public JSON, and does not call OpenAI unless accepted posts or usable manual imports exist.
-- Manual Reddit import is the fallback when RSS is blocked: the browser calls the validated `import_manual_source` RPC, which stores a tenant-scoped `source_records` row with enough `source_text` for angle extraction. Existing metadata-only `source_records` are not draftable shortcuts; queue fill depends on accepted source records becoming `angle_records`.
+- RSS evidence is not productive product evidence: HTTP fetches happened, but persisted evidence shows zero accepted posts, source records, angle records, queue rows, publish rows, or OpenAI calls from RSS. Do not make RSS the default or recommend it as a fix.
+- Manual Reddit import exists as the fallback when public JSON is blocked: the browser calls the validated `import_manual_source` RPC, which stores a tenant-scoped `source_records` row with enough `source_text` for angle extraction. Existing metadata-only `source_records` are not draftable shortcuts; queue fill depends on accepted source records becoming `angle_records`.
 - SaaS credential values are decrypted with `CREDENTIAL_ENCRYPTION_KEY`.
 - SaaS billing entitlement is checked from Supabase `profiles`; the local SQLite billing state and local billing bypass do not grant SaaS worker entitlement. A future `profiles.dev_access_until` is the only SaaS dev/test override, and it must be presented as dev/test access rather than paid Stripe status.
 - Local SQLite remains acceptable for local admin/dev state, but it is not the SaaS tenant source of truth.

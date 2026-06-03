@@ -696,6 +696,13 @@ function isRedditAuthorRssSource(source: UserSourceRow): boolean {
     && sourceScopeFor(source) === 'reddit_user';
 }
 
+function isUnsupportedRedditRssSource(source: UserSourceRow): boolean {
+  return source.kind === 'rss'
+    && providerFor(source) === 'reddit'
+    && acquisitionModeFor(source) === 'rss'
+    && sourceScopeFor(source) !== 'generic_rss';
+}
+
 function sourceIntentFor(
   source: UserSourceRow,
   tenantAuthor: string,
@@ -2688,6 +2695,20 @@ async function markRedditRssSourceBlocked(source: UserSourceRow, error: SourceFe
   });
 }
 
+async function markRedditRssSourceUnsupported(source: UserSourceRow): Promise<void> {
+  await supabaseUpdate('user_sources', {
+    enabled: false,
+    health_status: 'needs_attention',
+    last_error_code: 'reddit_rss_source_unsupported',
+    blocked_until: null,
+  }, {
+    filters: [
+      { column: 'id', operator: 'eq', value: source.id },
+      { column: 'user_id', operator: 'eq', value: source.user_id },
+    ],
+  });
+}
+
 async function processManualSourceRecords(
   job: AgentJobRow,
   tenant: TenantContext,
@@ -3029,19 +3050,24 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     summary.outcome = 'blocked';
     if (reason === 'reddit_public_json_rate_limited_429') {
       summary.message = 'Reddit rate-limited public JSON from this runtime. Public JSON is the proven historical Reddit path, but it remains brittle.';
-      summary.nextAction = 'Wait and retry public JSON later, use RSS only as a best-effort source, or paste a manual import with source text.';
+      summary.nextAction = 'Wait and retry public JSON later. Paste a manual import with source text if public JSON remains blocked.';
+      return;
+    }
+    if (reason === 'reddit_rss_source_unsupported') {
+      summary.message = 'Reddit RSS is unsupported for the normal source flow and was skipped before fetch.';
+      summary.nextAction = 'Use Reddit public JSON sources. Paste a manual import with source text if public JSON remains blocked.';
       return;
     }
     if (reason === 'reddit_rss_http_403') {
       summary.message = summary.angles.activeAtStart > 0
         ? 'Source blocked by reddit_rss_http_403 before new RSS posts could be accepted.'
         : 'Source blocked by reddit_rss_http_403 and no draftable angle_records were available.';
-      summary.nextAction = 'Paste a manual import with source text, or retry the RSS source later after the temporary block clears.';
+      summary.nextAction = 'Use Reddit public JSON sources. Paste a manual import with source text if public JSON remains blocked.';
       return;
     }
     summary.message = `Source fetching failed closed: ${reason}.`;
     summary.nextAction = reason === 'reddit_public_json_blocked_403'
-      ? 'Reddit public JSON was blocked from this runtime. Wait and retry later, use RSS only as a best-effort source, or paste a manual import with source text.'
+      ? 'Reddit public JSON was blocked from this runtime. Wait and retry later. Paste a manual import with source text if public JSON remains blocked.'
       : reason.toLowerCase().includes('reddit')
       ? 'Open Logs, check the Reddit source status, and retry only after the block or source issue is resolved.'
       : 'Open Logs, fix the source connection, and retry Fetch sources.';
@@ -3051,21 +3077,21 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
   if (summary.sources.configured === 0 || summary.sources.enabled === 0) {
     summary.outcome = 'blocked';
     summary.message = 'No enabled sources are configured.';
-    summary.nextAction = 'Add a Reddit author filter plus allowed subreddits, or add an RSS source.';
+    summary.nextAction = 'Add a Reddit user or subreddit source.';
     return;
   }
 
   if (summary.sources.postsFetched > 0 && summary.sources.postsAccepted === 0) {
     if (summary.sources.rejectedByAuthor > 0) {
       summary.outcome = 'empty';
-      summary.message = 'RSS fetched successfully, but no items matched the source filters.';
-      summary.nextAction = 'Check the author/subreddit filter or switch the source to discovery mode.';
+      summary.message = 'Source fetched successfully, but no items matched the source filters.';
+      summary.nextAction = 'Check the author/subreddit filter or add a better Reddit public JSON source.';
       return;
     }
     if (summary.sources.rejectedBySubreddit > 0) {
       summary.outcome = 'empty';
-      summary.message = 'RSS fetched successfully, but no items matched the source filters.';
-      summary.nextAction = 'Check the author/subreddit filter or switch the source to discovery mode.';
+      summary.message = 'Source fetched successfully, but no items matched the source filters.';
+      summary.nextAction = 'Check the author/subreddit filter or add a better Reddit public JSON source.';
       return;
     }
     summary.outcome = 'empty';
@@ -3081,8 +3107,8 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
 
   if (summary.sources.rejectedUnfilteredRss > 0 && summary.sources.postsAccepted === 0) {
     summary.outcome = 'blocked';
-    summary.message = 'This RSS feed is unfiltered. Enable Discovery Feed mode if you want posts from any author.';
-    summary.nextAction = 'Open Memory and explicitly enable Discovery Feed mode for that RSS source.';
+    summary.message = 'RSS is unsupported for the normal source flow.';
+    summary.nextAction = 'Use Reddit public JSON sources. Paste a manual import with source text if public JSON remains blocked.';
     return;
   }
 
@@ -3671,6 +3697,22 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
         source_scope: source.source_scope || sourceScopeFor(source),
         last_error_code: source.last_error_code || 'source_temporarily_blocked',
         blocked_until: source.blocked_until,
+      });
+      continue;
+    }
+    if (isUnsupportedRedditRssSource(source)) {
+      summary.sources.checked++;
+      summary.sources.fetchFailures++;
+      incrementCounter(summary.sources.fetchFailureReasons, 'reddit_rss_source_unsupported');
+      await markRedditRssSourceUnsupported(source);
+      await writeWorkerLog(job.user_id, 'warn', 'source_skipped_unsupported', {
+        jobId: job.id,
+        sourceId: source.id,
+        kind: source.kind,
+        provider: source.provider || providerFor(source),
+        acquisition_mode: source.acquisition_mode || acquisitionModeFor(source),
+        source_scope: source.source_scope || sourceScopeFor(source),
+        error: 'reddit_rss_source_unsupported',
       });
       continue;
     }
@@ -5286,6 +5328,7 @@ export const __test__ = {
   fetchSafeRssText,
   hasOpenActiveSlotForPlatform,
   hasRecentJobActivity,
+  isUnsupportedRedditRssSource,
   OPENAI_GENERATION_PAUSED_REPEATED_FAILURES_CODE,
   OPENAI_IMAGE_DAILY_LIMIT_REACHED_CODE,
   OPENAI_IMAGE_PAUSED_REPEATED_ABORTS_CODE,
