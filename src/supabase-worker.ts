@@ -140,6 +140,7 @@ interface SourceIntent {
   targetAuthor: string;
   allowedSubreddits: string[];
   allowUnfilteredRss: boolean;
+  isAuthorRss: boolean;
 }
 
 interface QueueItemRow {
@@ -532,9 +533,18 @@ function secondsFromNowIso(seconds: number | undefined): string | null {
 }
 
 function normalizeRedditUsername(value: string | null | undefined): string {
-  return String(value || '')
+  const raw = String(value || '').trim();
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    decoded = raw;
+  }
+  return decoded
     .trim()
     .replace(/^https?:\/\/(?:www\.)?reddit\.com\/user\//i, '')
+    .replace(/^https?:\/\/(?:www\.)?reddit\.com\/u\//i, '')
+    .replace(/^\/?(?:user|u)\//i, '')
     .replace(/^u\//i, '')
     .replace(/^@/, '')
     .split(/[/?#|]/)[0]
@@ -633,8 +643,13 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+function isValidRedditUsernameSlug(value: string): boolean {
+  return /^[a-z0-9_-]{1,20}$/.test(value);
+}
+
 function explicitSourceAuthor(source: UserSourceRow): string {
   return normalizeRedditUsername(source.target_author)
+    || (source.kind === 'rss' && sourceScopeFor(source) === 'reddit_user' ? redditUrlMetadata(source.value).author : '')
     || (source.kind === 'reddit_user' ? redditUserValueParts(source).author : '');
 }
 
@@ -648,6 +663,13 @@ function explicitSourceSubreddits(source: UserSourceRow): string[] {
   return uniqueStrings([...configured, ...fromKind]);
 }
 
+function isRedditAuthorRssSource(source: UserSourceRow): boolean {
+  return source.kind === 'rss'
+    && providerFor(source) === 'reddit'
+    && acquisitionModeFor(source) === 'rss'
+    && sourceScopeFor(source) === 'reddit_user';
+}
+
 function sourceIntentFor(
   source: UserSourceRow,
   tenantAuthor: string,
@@ -656,12 +678,14 @@ function sourceIntentFor(
   const sourceScope = sourceScopeFor(source);
   const acquisitionMode = acquisitionModeFor(source);
   const explicitAllowed = explicitSourceSubreddits(source);
-  const allowedSubreddits = sourceScope === 'generic_rss'
+  const isAuthorRss = isRedditAuthorRssSource(source);
+  const sourceLevelOnly = sourceScope === 'generic_rss' || isAuthorRss;
+  const allowedSubreddits = sourceLevelOnly
     ? explicitAllowed
     : uniqueStrings(explicitAllowed.length ? explicitAllowed : tenantAllowedSubreddits);
   const targetAuthor = sourceScope === 'generic_rss'
     ? explicitSourceAuthor(source)
-    : explicitSourceAuthor(source) || tenantAuthor;
+    : explicitSourceAuthor(source) || (isAuthorRss ? '' : tenantAuthor);
 
   return {
     provider: providerFor(source, sourceScope),
@@ -670,6 +694,7 @@ function sourceIntentFor(
     targetAuthor,
     allowedSubreddits,
     allowUnfilteredRss: source.allow_unfiltered_rss === true,
+    isAuthorRss,
   };
 }
 
@@ -697,7 +722,11 @@ function sourceIntentRejectReasons(post: RedditPost, intent: SourceIntent): stri
   if (intent.allowedSubreddits.length > 0 && !intent.allowedSubreddits.includes(subreddit)) {
     reasons.push('rejected_subreddit_mismatch');
   }
-  if (intent.targetAuthor && author !== intent.targetAuthor) {
+  if (
+    intent.targetAuthor
+    && author !== intent.targetAuthor
+    && (!intent.isAuthorRss || isValidRedditUsernameSlug(author))
+  ) {
     reasons.push('rejected_author_mismatch');
   }
   if (intent.sourceScope === 'reddit_user' && !intent.targetAuthor) {
@@ -2847,13 +2876,13 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     const reason = primaryFailureReason(summary.sources.fetchFailureReasons);
     summary.outcome = 'blocked';
     if (reason === 'reddit_public_json_rate_limited_429') {
-      summary.message = 'Reddit rate-limited public JSON from this runtime. Try again later, use OAuth, use RSS/manual import, or run fetch from a Node runtime/proxy that Reddit allows.';
-      summary.nextAction = 'Wait for the public JSON rate limit to reset, configure Reddit OAuth, use RSS/manual import, or run fetch from an allowed Node runtime/proxy.';
+      summary.message = 'Reddit rate-limited public JSON from this runtime. RSS sources are still supported and are the recommended path. Reddit OAuth is optional only if you want API-backed Reddit access later.';
+      summary.nextAction = 'Use a Reddit RSS author/subreddit feed, Devvit, or manual import. Wait and retry public JSON only if you intentionally use the advanced JSON/API path.';
       return;
     }
     summary.message = `Source fetching failed closed: ${reason}.`;
     summary.nextAction = reason === 'reddit_public_json_blocked_403'
-      ? 'Reddit blocked public JSON from this runtime. Configure Reddit OAuth, use an author RSS feed, Devvit, or manual import.'
+      ? 'Reddit public JSON was blocked from this runtime. RSS sources are still supported and are the recommended path. Reddit OAuth is optional only if you want API-backed Reddit access later.'
       : reason.toLowerCase().includes('reddit')
       ? 'Check Reddit API credentials and retry Fetch sources.'
       : 'Open Logs, fix the source connection, and retry Fetch sources.';
@@ -2870,14 +2899,14 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
   if (summary.sources.postsFetched > 0 && summary.sources.postsAccepted === 0) {
     if (summary.sources.rejectedByAuthor > 0) {
       summary.outcome = 'empty';
-      summary.message = 'RSS source fetched posts, but none matched your selected Reddit user.';
-      summary.nextAction = 'Check the source author filter or use Discovery Feed mode for broad RSS.';
+      summary.message = 'RSS fetched successfully, but no items matched the source filters.';
+      summary.nextAction = 'Check the author/subreddit filter or switch the source to discovery mode.';
       return;
     }
     if (summary.sources.rejectedBySubreddit > 0) {
       summary.outcome = 'empty';
-      summary.message = 'RSS source fetched posts, but none matched your allowed subreddit list.';
-      summary.nextAction = 'Review allowed subreddits or update the source scope.';
+      summary.message = 'RSS fetched successfully, but no items matched the source filters.';
+      summary.nextAction = 'Check the author/subreddit filter or switch the source to discovery mode.';
       return;
     }
     summary.outcome = 'empty';
@@ -5059,6 +5088,9 @@ export const __test__ = {
   publishSuccessResult,
   recordOpenAIUsageOnSummary,
   reconstructStaleSummary,
+  parseRss,
+  sourceIntentFor,
+  sourceIntentRejectReasons,
   sourceScopeFor,
   stalePublishResult,
   validateRssSourceUrl,
