@@ -29,6 +29,7 @@ import {
 } from './platform-errors';
 import {
   fetchRedditPublicJson,
+  REDDIT_AUTOMATION_USER_AGENT,
   RedditPublicJsonError,
   type RedditPublicJsonEndpointKind,
   type RedditPublicJsonRuntime,
@@ -419,8 +420,9 @@ const OPENAI_GENERATION_BACKOFF_MS = 30 * 60_000;
 const RSS_FETCH_MAX_REDIRECTS = 5;
 const RSS_FETCH_MAX_BYTES = 1_048_576;
 const RSS_FETCH_TIMEOUT_CAP_MS = 15_000;
-const REDDIT_RSS_USER_AGENT = 'OneClickPostFactory/early-access (+https://www.oneclickpostfactory.com)';
-const RSS_ACCEPT_HEADER = 'application/rss+xml, application/atom+xml, text/xml, application/xml, text/plain';
+const REDDIT_RSS_USER_AGENT = REDDIT_AUTOMATION_USER_AGENT;
+const RSS_ACCEPT_HEADER =
+  'application/rss+xml, application/atom+xml, application/xml, text/xml, text/plain;q=0.9, */*;q=0.8';
 const REDDIT_RSS_BLOCKED_BACKOFF_MS = 6 * 60 * 60_000;
 const RSS_ALLOWED_CONTENT_TYPES = new Set([
   'application/atom+xml',

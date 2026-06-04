@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import {
+  REDDIT_ACCEPT_LANGUAGE_HEADER,
+  REDDIT_AUTOMATION_USER_AGENT,
+  REDDIT_CACHE_CONTROL_HEADER,
+  REDDIT_PUBLIC_JSON_ACCEPT_HEADER,
+  redditPublicJsonHeaders,
+} from '../src/reddit-public-json';
 import { __test__ } from '../src/supabase-worker';
 
 async function test(name: string, fn: () => Promise<void> | void): Promise<void> {
@@ -265,6 +272,25 @@ async function main(): Promise<void> {
     await __test__.fetchSafeRssText('https://www.reddit.com/user/advanced_pudding9228/.rss', 'reddit_rss', {
       fetchImpl,
     });
+  });
+
+  await test('Reddit public JSON uses honest automation headers without browser spoofing', () => {
+    const headers = redditPublicJsonHeaders();
+
+    assert.equal(headers['User-Agent'], REDDIT_AUTOMATION_USER_AGENT);
+    assert.equal(headers.Accept, REDDIT_PUBLIC_JSON_ACCEPT_HEADER);
+    assert.equal(headers['Accept-Language'], REDDIT_ACCEPT_LANGUAGE_HEADER);
+    assert.equal(headers['Cache-Control'], REDDIT_CACHE_CONTROL_HEADER);
+    assert.doesNotMatch(JSON.stringify(headers), /Mozilla|AppleWebKit|Chrome|Safari|sec-ch|sec-fetch|Cookie/i);
+  });
+
+  await test('Reddit source fetch code does not use fake browser headers', () => {
+    const publicJsonSource = fs.readFileSync(
+      path.join(process.cwd(), 'src', 'reddit-public-json.ts'),
+      'utf8'
+    );
+
+    assert.doesNotMatch(publicJsonSource, /Mozilla\/5\.0|AppleWebKit|Chrome|Safari|sec-ch|sec-fetch|Cookie/i);
   });
 
   await test('Reddit RSS HTTP 403 maps to stable error and safe metadata', async () => {

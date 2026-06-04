@@ -38,11 +38,17 @@ export class RedditPublicJsonError extends Error {
 }
 
 const DEFAULT_TIMEOUT_MS = 15000;
+export const REDDIT_AUTOMATION_USER_AGENT =
+  'cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)';
+export const REDDIT_PUBLIC_JSON_ACCEPT_HEADER = 'application/json, text/plain;q=0.9, */*;q=0.8';
+export const REDDIT_ACCEPT_LANGUAGE_HEADER = 'en-GB,en;q=0.9';
+export const REDDIT_CACHE_CONTROL_HEADER = 'no-cache';
+
 const REDDIT_PUBLIC_JSON_HEADERS: Record<string, string> = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-  Accept: 'application/json, text/plain, */*',
-  'Accept-Language': 'en-US,en;q=0.9',
-  'Cache-Control': 'no-cache',
+  'User-Agent': REDDIT_AUTOMATION_USER_AGENT,
+  Accept: REDDIT_PUBLIC_JSON_ACCEPT_HEADER,
+  'Accept-Language': REDDIT_ACCEPT_LANGUAGE_HEADER,
+  'Cache-Control': REDDIT_CACHE_CONTROL_HEADER,
 };
 
 function runtimeKind(): RedditPublicJsonRuntime {

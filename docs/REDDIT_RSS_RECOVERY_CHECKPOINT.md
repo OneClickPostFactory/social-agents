@@ -54,11 +54,30 @@ Guardrails for future LLM/code sessions:
 - Do not present RSS as the proven May 21 path or as a recommended/default path.
 - Do not force Reddit OAuth as the fix; it is removed/quarantined from the
   product source path.
+- Keep automated Reddit fetching as the product direction; manual import is a
+  fallback, not the primary workflow.
+- Use the honest Reddit-format User-Agent
+  `cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)`
+  for Reddit public JSON and any retained RSS safety helper.
+- Do not add fake browser headers, cookies, browser fingerprints,
+  `sec-fetch`/`sec-ch` headers, or spoofed Chrome/Safari/Firefox identities.
 - Do not call OpenAI when source fetching fails.
 - Do not retry Reddit fetches blindly after 403; use source health/backoff.
 - Do not fill queue directly from metadata-only `source_records`.
 - Manual import remains the dependable fallback direction when Reddit blocks
   server-side fetching.
+
+## June 4 Request Identity Correction
+
+On 2026-06-04, external documentation and local comparison confirmed a request
+shape drift risk: the public JSON helper still sent a browser-shaped
+`Mozilla/AppleWebKit` User-Agent even though Reddit guidance requires unique,
+descriptive, non-misleading client identification. The recovery path is not to
+spoof a browser more convincingly. The recovery path is to keep public JSON as
+the supported automated source path, use the honest Reddit-format automation
+User-Agent above, preserve the JSON/RSS Accept headers for their respective
+adapters, and continue blocking OpenAI/queue side effects when source fetching
+fails.
 
 ## Files Changed
 
@@ -91,10 +110,10 @@ not the normal supported Reddit product path.
 - `https://reddit.com/user/Advanced_pudding9228/.rss` becomes
   `https://www.reddit.com/user/Advanced_pudding9228/.rss`.
 - Lowercase usernames remain supported.
-- RSS fetch uses the honest app user agent:
-  `OneClickPostFactory/early-access (+https://www.oneclickpostfactory.com)`.
+- RSS fetch uses the shared honest Reddit automation user agent:
+  `cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)`.
 - RSS/XML Accept remains:
-  `application/rss+xml, application/atom+xml, text/xml, application/xml, text/plain`.
+  `application/rss+xml, application/atom+xml, application/xml, text/xml, text/plain;q=0.9, */*;q=0.8`.
 - Existing protections remain in place: HTTPS-only validation, SSRF blocking,
   manual redirects, redirect revalidation, max 5 redirects, timeout caps, body
   size caps, and content-type validation.
@@ -190,10 +209,12 @@ Recorded after deploy on 2026-06-03:
 - Canonical URL evidence: worker log recorded `original_host = reddit.com`,
   `attempted_host = www.reddit.com`, `final_host = www.reddit.com`, and
   `canonicalized_url = true`.
-- Honest user agent: deployed code uses
+- Honest user agent: deployed code used the then-current app UA
   `OneClickPostFactory/early-access (+https://www.oneclickpostfactory.com)`.
+  As of the June 4 request identity correction, Reddit automation uses
+  `cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)`.
 - RSS/XML Accept header: deployed code preserves
-  `application/rss+xml, application/atom+xml, text/xml, application/xml, text/plain`.
+  `application/rss+xml, application/atom+xml, application/xml, text/xml, text/plain;q=0.9, */*;q=0.8`.
 - Public JSON fallback attempted: no.
 - OpenAI ran: no; `openaiUsage.textCalls = 0` and
   `openaiUsage.imageCalls = 0`.

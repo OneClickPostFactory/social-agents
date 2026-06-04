@@ -104,6 +104,32 @@ temporarily for non-destructive compatibility, but the worker does not use them
 to choose source-fetch behavior. The tenant's source intent rows remain the only
 inputs that decide which Reddit posts may enter that tenant's workflow.
 
+Automated Reddit fetching remains the product direction. Manual paste/import is
+a fallback for blocked server-side fetches, not the main operating model.
+
+### Reddit Request Shape
+
+Reddit public JSON requests must use an honest, descriptive Reddit-format
+User-Agent:
+
+`cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)`
+
+Public JSON uses:
+
+- `Accept: application/json, text/plain;q=0.9, */*;q=0.8`
+- `Accept-Language: en-GB,en;q=0.9`
+- `Cache-Control: no-cache`
+
+The retained RSS safety helper uses the same User-Agent and preserves an
+RSS/XML-oriented Accept header:
+
+`application/rss+xml, application/atom+xml, application/xml, text/xml, text/plain;q=0.9, */*;q=0.8`
+
+Do not add fake browser headers, spoof Chrome/Safari/Firefox, send cookies, or
+add `sec-fetch`/`sec-ch` browser fingerprint headers. If Reddit blocks the
+Cloudflare Worker egress despite the honest request shape, record the failure,
+back off where supported, and keep OpenAI out of the failed source-fetch path.
+
 `REDDIT_PUBLIC_JSON_TRANSPORT=auto` uses `node:https` in local Node and `fetch`
 in Cloudflare. Forcing `node_https` in a runtime that cannot use it fails clearly
 with `reddit_node_https_unavailable_in_runtime`. If Reddit returns `429`, the
