@@ -77,21 +77,19 @@ SUPABASE_SERVICE_ROLE_KEY=<sb_secret_... or legacy service_role JWT>
 CREDENTIAL_ENCRYPTION_KEY=<same-key-used-by-lovable-server-runtime>
 OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_IMAGE_TIMEOUT_MS=120000
-REDDIT_PUBLIC_JSON_TRANSPORT=auto
 CLOUDINARY_CLOUD_NAME=<cloudinary-cloud-name>
 CLOUDINARY_API_KEY=<cloudinary-api-key>
 CLOUDINARY_API_SECRET=<cloudinary-api-secret>
 CLOUDINARY_FOLDER=social-agent/instagram
 ```
 
-Cloudflare production does not use Reddit OAuth for source fetching. Reddit
-public JSON is the supported Reddit source path. Reddit RSS is quarantined from
-the normal product flow because persisted runtime evidence shows HTTP fetches
-but no accepted posts, source records, angle records, queue rows, publish rows,
-or OpenAI calls. Manual import is the dependable fallback direction when
-server-side Reddit public JSON is blocked. The tenant's Reddit username and
-allowed subreddits still come from `user_sources`; runtime env must not be used
-as a global tenant author/subreddit fallback.
+Cloudflare production does not use Reddit OAuth for source fetching. Cloudflare
+Worker public JSON/RSS fetching is no longer the active product direction.
+Reddit collection is moving to the separate user-authorised Reddit Browser
+Collector service, which will deliver normalized source records back to the
+OneClick backend. Manual import remains an advanced fallback only. The tenant's
+Reddit source intent still comes from `user_sources`; runtime env must not be
+used as a global tenant author/subreddit fallback.
 
 Run only the worker loop with:
 

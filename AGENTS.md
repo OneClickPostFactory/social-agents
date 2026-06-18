@@ -8,9 +8,9 @@ This file is the fast-start context for LLMs and human maintainers working in th
 
 Current content flow:
 1. Load tenant-scoped `user_sources` from Supabase.
-2. Enforce each source's declared intent before ingestion: Reddit user or
-   allowed subreddit through the supported public JSON source path.
-3. Bank each accepted tenant-scoped Reddit source into multiple reusable angles.
+2. Accept tenant-scoped source records delivered by the separate Reddit Browser
+   Collector or by controlled fallback imports.
+3. Bank each accepted tenant-scoped source record into multiple reusable angles.
 4. Draft only one saved angle at a time into enabled platforms.
 5. Generate an Instagram image only when Instagram is enabled.
 6. Copy generated Instagram images into Cloudinary so queued posts use stable delivery URLs.
@@ -64,12 +64,15 @@ This codebase now has two runtime boundaries:
 - `SUPABASE_URL` must point to the owner-managed OneClickPostFactory Supabase project that Lovable also uses; do not point the worker at a hidden managed project whose secret/service-role key and credential encryption key are unavailable.
 - Every SaaS job is processed by `job.user_id`.
 - SaaS reads/writes for `profiles`, `user_credentials`, `user_sources`, `user_settings`, `queue_items`, `publish_history`, `source_records`, `angle_records`, and `worker_logs` are scoped by `job.user_id`.
-- SaaS source ingestion also enforces source intent. `user_sources` rows declare `provider`, `acquisition_mode`, `source_scope`, `target_author`, `allowed_subreddits`, and `allow_unfiltered_rss`. Normal Reddit user/subreddit sources use `acquisition_mode = public_json`.
-- Reddit public JSON is the only supported Reddit source path in the normal product flow. RSS rows are quarantined/unsupported for normal ingestion: the worker skips enabled Reddit RSS rows with `reddit_rss_source_unsupported`, marks them `needs_attention`, disables them, and does not call OpenAI or create source/angle/queue rows from them.
-- Automated Reddit fetching remains the product direction. Reddit public JSON and any retained RSS safety helper must identify themselves with the honest Reddit-format User-Agent `cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)`. Do not add fake browser headers, browser fingerprints, cookies, `sec-fetch`/`sec-ch` headers, or spoofed Chrome/Safari/Firefox identities.
+- SaaS source ingestion also enforces source intent. `user_sources` rows declare `provider`, `acquisition_mode`, `source_scope`, `target_author`, `allowed_subreddits`, and `allow_unfiltered_rss`, but the active product direction is no longer Cloudflare Worker Reddit fetching.
+- The target Reddit ingestion path is a separate Reddit Browser Collector service. The main app owns source records, OpenAI angle extraction, queueing, publishing, logs, and billing. The collector owns user-authorised Reddit login/session storage, explicit subreddit/user collection, limits, and signed delivery of normalized source records to the backend.
+- `fetch_sources` / `refresh_queue` must not treat Reddit public JSON or RSS from the Cloudflare Worker as the normal product path. When no usable source records or banked angles exist, the worker should return `reddit_browser_collector_required` without calling Reddit, OpenAI, queue creation, or publishing.
+- Reddit public JSON and Reddit RSS are legacy/quarantined paths. Keep compatibility code or tests only where needed for old rows, historical diagnosis, or non-destructive rollback. Do not expose them as normal setup or recovery paths.
+- Reddit OAuth is not a source-ingestion product path. Do not add Reddit OAuth credential prompts or treat missing Reddit OAuth credentials as the cause of source collection failures.
+- Devvit is an archived/reference experiment for source collection because outbound domain approval blocked delivery. Do not present Devvit as an active product path unless a new explicit decision changes that.
 - Verified Cloudflare runtime truth for 2026-05-21: the last known good source-fetching flow ran on backend Worker version `3e2a598a-b8bc-461f-9a40-d65b3ad2e156` (likely commit `fc53fcb Add OpenAI usage visibility and runaway protection`) and used adapter `reddit_public_json`, not RSS. Public JSON returned HTTP 200, fetched 20 subreddit posts, accepted 17, rejected 3 with `rejected_author_mismatch`, reached OpenAI angle extraction, created angle records, created queue rows, and scheduled publishing later completed. Source rows had `acquisition_mode = oauth`, but that label was misleading and has been replaced with `public_json` for Reddit public JSON rows. Reddit OAuth is removed/quarantined from the product source path; do not rewrite history by claiming RSS or OAuth was the May 21 success path.
 - RSS evidence is not productive product evidence: HTTP fetches happened, but persisted evidence shows zero accepted posts, source records, angle records, queue rows, publish rows, or OpenAI calls from RSS. Do not make RSS the default or recommend it as a fix.
-- Manual Reddit import exists as a fallback when public JSON is blocked, but manual paste/import is not the main product direction. Automated source fetching should be repaired and measured first. Existing metadata-only `source_records` are not draftable shortcuts; queue fill depends on accepted source records becoming `angle_records`.
+- Manual Reddit import exists as an advanced fallback, not the main product direction. Existing metadata-only `source_records` are not draftable shortcuts; queue fill depends on source records with enough source body becoming `angle_records`.
 - SaaS credential values are decrypted with `CREDENTIAL_ENCRYPTION_KEY`.
 - SaaS billing entitlement is checked from Supabase `profiles`; the local SQLite billing state and local billing bypass do not grant SaaS worker entitlement. A future `profiles.dev_access_until` is the only SaaS dev/test override, and it must be presented as dev/test access rather than paid Stripe status.
 - Local SQLite remains acceptable for local admin/dev state, but it is not the SaaS tenant source of truth.

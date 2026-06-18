@@ -8,7 +8,7 @@ import {
   REDDIT_CACHE_CONTROL_HEADER,
   REDDIT_PUBLIC_JSON_ACCEPT_HEADER,
   redditPublicJsonHeaders,
-} from '../src/reddit-public-json';
+} from '../src/legacy/reddit-public-json';
 import { __test__ } from '../src/supabase-worker';
 
 async function test(name: string, fn: () => Promise<void> | void): Promise<void> {
@@ -286,7 +286,7 @@ async function main(): Promise<void> {
 
   await test('Reddit source fetch code does not use fake browser headers', () => {
     const publicJsonSource = fs.readFileSync(
-      path.join(process.cwd(), 'src', 'reddit-public-json.ts'),
+      path.join(process.cwd(), 'src', 'legacy', 'reddit-public-json.ts'),
       'utf8'
     );
 
@@ -429,19 +429,19 @@ async function main(): Promise<void> {
     assert.doesNotMatch(helperBody, /fetchRedditListing|readRedditPublicJsonListing|reddit_public_json/i);
   });
 
-  await test('Reddit RSS 403 marks source needs_attention without public JSON fallback', () => {
+  await test('legacy Reddit RSS 403 handling remains isolated from public JSON fallback', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
     assert.match(worker, /reddit_rss_http_403/);
-    assert.match(worker, /health_status:\s*'needs_attention'/);
-    assert.match(worker, /blocked_until/);
-    assert.match(worker, /source_marked_needs_attention/);
     assert.doesNotMatch(worker, /reddit_rss_http_403[\s\S]{0,500}readRedditPublicJsonListing/);
+    assert.doesNotMatch(worker, /health_status:\s*'needs_attention'/);
+    assert.doesNotMatch(worker, /blocked_until:\s*new Date/);
+    assert.match(worker, /reddit_browser_collector_required/);
   });
 
   await test('queue fill reports no draftable angles when Reddit RSS is blocked', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
     assert.match(worker, /Source blocked by reddit_rss_http_403 and no draftable angle_records were available/);
-    assert.match(worker, /Paste a manual import with source text/);
+    assert.match(worker, /Connect or repair the Reddit Browser Collector/);
   });
 
   await test('manual import processing only uses source records with stored source text', () => {
@@ -453,29 +453,31 @@ async function main(): Promise<void> {
     assert.match(manualBody, /queueFromBankedAngles/);
   });
 
-  await test('public JSON source fetching does not use the deprecated Reddit OAuth branch', () => {
+  await test('legacy public JSON adapter does not use the deprecated Reddit OAuth branch', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
+    const publicJsonAdapter = fs.readFileSync(path.join(process.cwd(), 'src', 'legacy', 'reddit-public-json.ts'), 'utf8');
     const tenantCredentials = fs.readFileSync(path.join(process.cwd(), 'src', 'tenant-credentials.ts'), 'utf8');
     assert.doesNotMatch(worker, /reddit_oauth/);
+    assert.doesNotMatch(worker, /fetchRedditPublicJson|readRedditPublicJsonListing|fetchTenantSourcePosts/);
     assert.doesNotMatch(worker, /oauth\.reddit\.com/);
     assert.doesNotMatch(worker, /api\/v1\/access_token/);
     assert.doesNotMatch(worker, /getRedditAccessToken/);
-    assert.doesNotMatch(worker, /REDDIT_CLIENT_ID[\s\S]{0,160}fetchRedditListing/);
+    assert.doesNotMatch(publicJsonAdapter, /oauth\.reddit\.com|api\/v1\/access_token|getRedditAccessToken/);
     assert.doesNotMatch(tenantCredentials, /redditClientId|redditClientSecret/);
-    assert.match(worker, /readRedditPublicJsonListing\(url, endpointKind\)/);
+    assert.match(publicJsonAdapter, /export async function fetchRedditPublicJson/);
   });
 
-  await test('public JSON 403 guidance does not recommend Reddit OAuth', () => {
+  await test('legacy public JSON 403 guidance points to Browser Collector instead of Reddit OAuth', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
-    assert.match(worker, /Reddit public JSON was blocked from this runtime/);
-    assert.match(worker, /manual import with source text/);
+    assert.match(worker, /reddit_public_json_blocked_403/);
+    assert.match(worker, /Connect or repair the Reddit Browser Collector/);
     assert.doesNotMatch(worker, /use RSS only as a best-effort source/);
     assert.doesNotMatch(worker, /Configure Reddit OAuth/);
     assert.doesNotMatch(worker, /Reddit OAuth is optional/);
     assert.doesNotMatch(worker, /Check Reddit API credentials/);
   });
 
-  await test('Reddit RSS source rows are unsupported in the normal worker flow', () => {
+  await test('Reddit RSS source rows are unsupported outside the Browser Collector direction', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
     assert.equal(__test__.isUnsupportedRedditRssSource(source({})), true);
     assert.equal(__test__.isUnsupportedRedditRssSource(source({
@@ -489,17 +491,18 @@ async function main(): Promise<void> {
       source_scope: 'generic_rss',
     })), false);
     assert.match(worker, /reddit_rss_source_unsupported/);
-    assert.match(worker, /source_skipped_unsupported/);
-    assert.match(worker, /markRedditRssSourceUnsupported/);
-    assert.match(worker, /Use Reddit public JSON sources\. Paste a manual import with source text/);
+    assert.match(worker, /Connect or repair the Reddit Browser Collector/);
   });
 
-  await test('May 21 style Reddit sources use public_json acquisition mode without requiring OAuth', () => {
+  await test('direct Reddit source fetching is disabled in the active worker flow', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
     assert.match(worker, /type AcquisitionMode = 'public_json' \| 'oauth' \| 'rss' \| 'devvit' \| 'manual'/);
     assert.match(worker, /value === 'public_json'/);
-    assert.match(worker, /source\.kind === 'rss' \? 'rss' : 'public_json'/);
-    assert.match(worker, /adapter: 'reddit_public_json'/);
+    assert.doesNotMatch(worker, /fetchTenantSourcePosts/);
+    assert.doesNotMatch(worker, /readRedditPublicJsonListing/);
+    assert.match(worker, /reddit_browser_collector_required/);
+    assert.match(worker, /No server-side Reddit fetch was attempted/);
+    assert.match(worker, /directRedditFetchAttempted:\s*false/);
   });
 
   await test('filtered source messaging is distinct from OpenAI quota errors', () => {

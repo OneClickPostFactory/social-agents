@@ -1,5 +1,25 @@
 # Reddit Ingestion And Angle Bank
 
+## Current Product Direction
+
+Reddit collection is moving out of the Cloudflare Worker and into a separate
+user-authorised Reddit Browser Collector service. The OneClickPostFactory main
+app remains responsible for tenant source records, OpenAI angle extraction,
+platform drafts, queueing, scheduled publishing, publish history, billing, and
+logs. The collector service owns Reddit login/session handling, explicit source
+collection, limits, and signed delivery of normalized source records.
+
+Active `fetch_sources` / `refresh_queue` behavior must not call Reddit public
+JSON or Reddit RSS from the Cloudflare Worker as the normal product path. If no
+usable source records or banked angles exist, the worker should return
+`reddit_browser_collector_required` and stop before Reddit, OpenAI, queue
+creation, or publishing side effects.
+
+Reddit public JSON, Reddit RSS, Reddit OAuth source ingestion, and Devvit are
+legacy/quarantined/reference paths. Keep old migration history and compatibility
+fields where needed, but do not present those paths as current product setup.
+Manual import remains an advanced fallback only, not the core product direction.
+
 ## Production Tenant Rules
 
 The Supabase SaaS worker is tenant-scoped by `agent_jobs.user_id`.
@@ -12,10 +32,10 @@ Tenant isolation is always `agent_jobs.user_id`: every read and write remains
 scoped to that user. Source intent is checked separately before an item can
 become a `source_records`, `angle_records`, or `queue_items` row.
 
-`user_sources` now declares intent with:
+`user_sources` declares intent with:
 
 - `provider`: `reddit`, `generic_rss`, or `manual`
-- `acquisition_mode`: `oauth`, `rss`, `devvit`, or `manual`
+- `acquisition_mode`: `public_json`, `oauth`, `rss`, `devvit`, or `manual`
 - `source_scope`: `reddit_user`, `subreddit`, `reddit_search`, or `generic_rss`
 - `target_author`: optional normalized Reddit author
 - `allowed_subreddits`: optional normalized subreddit list
@@ -44,12 +64,12 @@ Usernames and subreddits are normalized before comparison, so values such as
 `u/example`, `@example`, `r/builders`, and full reddit.com URLs compare by their
 canonical names.
 
-## Reddit Public JSON Source Path
+## Legacy Reddit Public JSON And RSS Paths
 
-Normal UI-created Reddit author and subreddit sources use Reddit public JSON
-(`acquisition_mode = public_json`). This is the only supported Reddit source
-path in the normal product flow because it is the only path with persisted
-end-to-end Cloudflare Worker evidence.
+Reddit public JSON (`acquisition_mode = public_json`) was the only path with
+persisted end-to-end Cloudflare Worker evidence, but it is no longer the active
+product direction. It is a legacy compatibility path while the product moves to
+the separate Reddit Browser Collector service.
 
 Reddit OAuth is removed/quarantined from the product source path. Reddit RSS is
 also quarantined from normal user flow. Existing Reddit RSS rows may remain for
@@ -90,9 +110,10 @@ and must not delete public JSON.
 RSS has returned HTTP 200 separately from the Cloudflare Worker runtime, but the
 persisted Worker evidence shows zero RSS accepted posts, zero source records,
 zero angle records, zero queue rows, zero publish rows, and zero OpenAI calls.
-Current strategy is: preserve public JSON as the supported path, quarantine RSS
-from normal flow, keep manual import as the fallback when Reddit blocks
-server-side fetching, and keep source-fetch failures from calling OpenAI.
+Current strategy is: preserve old migration history and compatibility rows,
+quarantine public JSON/RSS/OAuth/Devvit from normal setup, make the Browser
+Collector the target collection path, and keep source-fetch failures from
+calling OpenAI.
 
 Public JSON settings still exist for explicit advanced/runtime control:
 
@@ -104,8 +125,9 @@ temporarily for non-destructive compatibility, but the worker does not use them
 to choose source-fetch behavior. The tenant's source intent rows remain the only
 inputs that decide which Reddit posts may enter that tenant's workflow.
 
-Automated Reddit fetching remains the product direction. Manual paste/import is
-a fallback for blocked server-side fetches, not the main operating model.
+Automated Reddit collection remains the product direction, but it belongs in the
+separate Browser Collector service rather than the Cloudflare Worker. Manual
+paste/import is a fallback, not the main operating model.
 
 ### Reddit Request Shape
 
@@ -150,8 +172,8 @@ The production flow is:
 
 1. Load enabled tenant sources.
 2. Resolve each source's declared intent.
-3. Process manual imports that contain stored source body, or fetch via the
-   declared acquisition mode when needed.
+3. Process collected source records or advanced manual imports that contain
+   stored source body.
 4. Reject fetched items that do not match author, subreddit, or RSS discovery
    rules before source/angle/queue writes.
 5. Insert one tenant-scoped `source_records` row per accepted unique Reddit URL.
@@ -219,16 +241,17 @@ The summary includes:
 
 Common empty outcomes:
 
-- Reddit RSS row was skipped as `reddit_rss_source_unsupported`; public JSON is
-  the supported source path and OpenAI is not called for the unsupported row
+- Reddit RSS row was skipped as `reddit_rss_source_unsupported`; Browser
+  Collector delivery is the target source path and OpenAI is not called for the
+  unsupported row
 - no Reddit posts matched the configured author filter
 - `content_exhausted`: automation is working, but current Reddit sources have
-  no new usable posts and there are no unused angles to schedule. This is a
-  healthy terminal state, not a Reddit/platform failure. The next action is to
-  add another subreddit or Reddit user, paste manual Reddit imports with source
-  text, or wait for new source posts.
+  no new usable collected records and there are no unused angles to schedule.
+  This is a healthy terminal state, not a Reddit/platform failure. The next
+  action is to connect or repair the Reddit Browser Collector, collect explicit
+  sources, or use the advanced manual fallback with stored source text.
 - Reddit/API access failed closed
-- Reddit fetch succeeded, but OpenAI text angle extraction failed
+- source-record processing succeeded, but OpenAI text angle extraction failed
 - no usable angles were extracted
 - draft generation failed
 - Instagram image persistence failed

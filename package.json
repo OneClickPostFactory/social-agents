@@ -1,7 +1,7 @@
 {
   "name": "social-agent",
   "version": "1.0.0",
-  "description": "Tenant-scoped Reddit -> OpenAI -> LinkedIn + Threads + X + Instagram autoposter with durable Cloudinary image persistence.",
+  "description": "Tenant-scoped source records -> OpenAI -> LinkedIn + Threads + X + Instagram autoposter with durable Cloudinary image persistence.",
   "main": "dist/src/agent.js",
   "scripts": {
     "build": "tsx scripts/build.ts",
@@ -9,7 +9,6 @@
     "test": "npm run build && node dist/test/security-hardening.test.js && node dist/test/source-ssrf.test.js && node dist/test/slot-scheduler.test.js && node dist/test/refresh-queue-finalization.test.js && node dist/test/publish-summary.test.js && node dist/test/instagram-image-timeout.test.js && node dist/test/cost-control.test.js",
     "smoke:dist": "node dist/src/cli.js status",
     "ci": "npm run typecheck && npm run build && npm run smoke:dist && node dist/test/security-hardening.test.js && node dist/test/slot-scheduler.test.js",
-    "smoke:reddit-public-json": "tsx scripts/smoke-reddit-public-json.ts",
     "dev": "tsx src/agent.ts",
     "worker:supabase": "tsx src/supabase-worker.ts",
     "start": "node dist/src/agent.js",

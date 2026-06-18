@@ -116,9 +116,9 @@ export const OPENAI_TEXT_MODEL_UNAVAILABLE_CODE = 'openai_text_model_unavailable
 export const OPENAI_TEXT_GENERATION_FAILED_CODE = 'openai_text_generation_failed';
 export const OPENAI_TEXT_ANGLE_EXTRACTION_STAGE = 'angle_extraction';
 export const OPENAI_TEXT_ANGLE_EXTRACTION_MESSAGE =
-  'Reddit fetch succeeded, but OpenAI angle extraction failed. Add OpenAI credits, fix billing, or retry later, then run Fetch Sources again.';
+  'Source record processing succeeded, but OpenAI angle extraction failed. Add OpenAI credits, fix billing, or retry later, then rerun source-record processing.';
 export const OPENAI_TEXT_ANGLE_EXTRACTION_NEXT_ACTION =
-  'Fix OpenAI billing/quota or wait for rate limits to reset, then rerun Fetch Sources.';
+  'Fix OpenAI billing/quota or wait for rate limits to reset, then rerun source-record processing.';
 
 export interface OpenAIImageErrorDetails {
   attempt?: number;

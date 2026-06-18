@@ -1,10 +1,10 @@
-import config from '../config';
+import config from '../../config';
 
 import {
   fetchRedditPublicJson,
   parseRedditPublicJsonPosts,
   type RedditPublicJsonTransport,
-} from '../src/reddit-public-json';
+} from '../../src/legacy/reddit-public-json';
 
 function argValue(name: string): string {
   const prefix = `--${name}=`;
@@ -15,8 +15,8 @@ function argValue(name: string): string {
 function usage(): never {
   console.error([
     'Usage:',
-    '  npm run smoke:reddit-public-json -- --type=sub --source=OpenclawBot --sort=new --limit=20',
-    '  npm run smoke:reddit-public-json -- --type=user --source=advanced_pudding9228 --sort=new --limit=20',
+    '  tsx scripts/legacy/smoke-reddit-public-json.ts -- --type=sub --source=OpenclawBot --sort=new --limit=20',
+    '  tsx scripts/legacy/smoke-reddit-public-json.ts -- --type=user --source=advanced_pudding9228 --sort=new --limit=20',
   ].join('\n'));
   process.exit(1);
 }

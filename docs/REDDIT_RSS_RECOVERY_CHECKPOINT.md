@@ -2,6 +2,12 @@
 
 Date: 2026-06-03
 
+Status: historical checkpoint. This document preserves the RSS/public JSON
+investigation trail, but it is no longer the active product direction. The
+current direction is a separate Reddit Browser Collector service that delivers
+normalized source records to OneClickPostFactory. The Cloudflare Worker should
+not call Reddit public JSON or RSS as the normal source-ingestion path.
+
 ## Problem Solved
 
 The deployed Cloudflare Worker had started receiving `reddit_rss_http_403` from
@@ -36,26 +42,31 @@ RSS was not the May 21 success path. RSS has returned HTTP 200 separately, but
 persisted Worker evidence shows zero RSS accepted posts, angle records, queue
 rows, or publishes.
 
-Current source strategy after the public JSON-only patch:
+Current source strategy after the Browser Collector reset:
 
-- Public JSON is the only supported Reddit fetch path in normal product flow.
-- Existing Reddit RSS rows are quarantined/unsupported, preserved as rows, and
-  disabled or marked `needs_attention` with
+- The separate Reddit Browser Collector is the target Reddit ingestion path.
+- The main app owns source records, OpenAI angle extraction, queueing,
+  publishing, logs, and billing.
+- The collector owns Reddit login/session storage, explicit subreddit/user
+  collection, limits, and signed source-record delivery.
+- Public JSON, RSS, Reddit OAuth source ingestion, and Devvit are
+  legacy/quarantined/reference paths, not normal user setup.
+- Existing Reddit RSS rows remain quarantined/unsupported, preserved as rows,
+  and disabled or marked `needs_attention` with
   `last_error_code = reddit_rss_source_unsupported`.
-- Normal source creation must create `public_json` Reddit user/subreddit rows,
-  not RSS rows and not OAuth rows.
 - The RSS fetch helper may remain for SSRF-tested safety history, but it is not
   a normal product path.
 
 Guardrails for future LLM/code sessions:
 
 - Do not claim RSS was the May 21 success path.
-- Do not remove public JSON; it is the only proven end-to-end Reddit fetch path.
+- Do not revive public JSON as the active product path; it is historical
+  evidence and compatibility only.
 - Do not present RSS as the proven May 21 path or as a recommended/default path.
 - Do not force Reddit OAuth as the fix; it is removed/quarantined from the
   product source path.
-- Keep automated Reddit fetching as the product direction; manual import is a
-  fallback, not the primary workflow.
+- Keep automated Reddit collection as the product direction through the
+  separate Browser Collector; manual import is fallback only.
 - Use the honest Reddit-format User-Agent
   `cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)`
   for Reddit public JSON and any retained RSS safety helper.
@@ -64,8 +75,7 @@ Guardrails for future LLM/code sessions:
 - Do not call OpenAI when source fetching fails.
 - Do not retry Reddit fetches blindly after 403; use source health/backoff.
 - Do not fill queue directly from metadata-only `source_records`.
-- Manual import remains the dependable fallback direction when Reddit blocks
-  server-side fetching.
+- Manual import remains an advanced fallback, not the primary workflow.
 
 ## June 4 Request Identity Correction
 
@@ -73,10 +83,9 @@ On 2026-06-04, external documentation and local comparison confirmed a request
 shape drift risk: the public JSON helper still sent a browser-shaped
 `Mozilla/AppleWebKit` User-Agent even though Reddit guidance requires unique,
 descriptive, non-misleading client identification. The recovery path is not to
-spoof a browser more convincingly. The recovery path is to keep public JSON as
-the supported automated source path, use the honest Reddit-format automation
-User-Agent above, preserve the JSON/RSS Accept headers for their respective
-adapters, and continue blocking OpenAI/queue side effects when source fetching
+spoof a browser more convincingly. This checkpoint is now superseded by the
+Browser Collector direction; if legacy helpers remain, they must keep honest
+headers and continue blocking OpenAI/queue side effects when source fetching
 fails.
 
 ## Files Changed

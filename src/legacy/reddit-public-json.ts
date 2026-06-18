@@ -1,6 +1,6 @@
 import * as https from 'node:https';
 
-import type { RedditPost } from './types';
+import type { RedditPost } from '../types';
 
 export type RedditPublicJsonTransport = 'auto' | 'fetch' | 'node_https';
 export type RedditPublicJsonUsedTransport = 'fetch' | 'node_https';
