@@ -1,6 +1,6 @@
 # Reddit Browser Collector Service Contract
 
-Status: contract only, not implemented in the production app.
+Status: contract plus disabled/dry-run backend ingestion endpoint.
 Last updated: 2026-06-18.
 
 ## Purpose
@@ -148,6 +148,18 @@ Proposed first backend endpoint:
 ```text
 POST /api/collector/reddit/source-records
 ```
+
+Current implementation status:
+
+- endpoint exists in the backend route surface
+- disabled by default unless `COLLECTOR_INGEST_ENABLED=true`
+- validates HMAC signatures using `COLLECTOR_INGEST_HMAC_SECRET`
+- validates normalized browser collector payloads
+- dry-run only unless a future write path is explicitly designed
+- `COLLECTOR_INGEST_WRITE_ENABLED=true` currently returns
+  `write_deferred` / `schema_review_required`
+- no OpenAI, `angle_records`, `queue_items`, publishing, or production Supabase
+  side effects occur from the ingestion endpoint
 
 The endpoint should:
 

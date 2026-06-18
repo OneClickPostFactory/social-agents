@@ -43,6 +43,7 @@ import {
   verifyMfaSession,
 } from './control-plane';
 import { runFetch, runPostAll, runPostSlot, runReleaseSlot, runUpdateSlot } from './automation-service';
+import { processBrowserCollectorIngest } from './browser-collector-ingest';
 import { getAutomationGate, getRuntimeReadiness } from './runtime-policy';
 import {
   asObject,
@@ -225,6 +226,20 @@ function parseCookies(req: http.IncomingMessage): Record<string, string> {
     cookies[key] = decodeURIComponent(valueParts.join('=') || '');
   }
   return cookies;
+}
+
+function headersFromIncoming(req: http.IncomingMessage): Headers {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        headers.append(key, item);
+      }
+    } else if (typeof value === 'string') {
+      headers.set(key, value);
+    }
+  }
+  return headers;
 }
 
 function getRequestOrigin(req: http.IncomingMessage): string | undefined {
@@ -609,6 +624,14 @@ const routes: RouteDef[] = [
         ok: true,
         time: new Date().toISOString(),
       }, context.requestId, 200, context.origin);
+    },
+  },
+  {
+    method: 'POST',
+    path: '/api/collector/reddit/source-records',
+    handler: async (req, res, context) => {
+      const result = await processBrowserCollectorIngest(context.rawBody, headersFromIncoming(req), process.env);
+      json(res, result.body, context.requestId, result.status, context.origin);
     },
   },
   {
@@ -1340,7 +1363,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     applySecurityHeaders(res, requestId);
     res.writeHead(204, {
       'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-CSRF-Token, Stripe-Signature, X-Bootstrap-Token',
+      'Access-Control-Allow-Headers': 'Content-Type, X-CSRF-Token, Stripe-Signature, X-Bootstrap-Token, X-OneClick-Collector-Id, X-OneClick-Timestamp, X-OneClick-Signature',
       'Access-Control-Max-Age': '600',
     });
     res.end();

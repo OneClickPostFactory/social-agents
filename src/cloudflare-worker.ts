@@ -19,6 +19,9 @@ interface Env {
   THREADS_GRAPH_VERSION?: string;
   CLOUDINARY_FOLDER?: string;
   WORKER_TICK_TOKEN?: string;
+  COLLECTOR_INGEST_ENABLED?: string;
+  COLLECTOR_INGEST_HMAC_SECRET?: string;
+  COLLECTOR_INGEST_WRITE_ENABLED?: string;
   [key: string]: string | undefined;
 }
 
@@ -72,6 +75,12 @@ export default {
         service: 'oneclickpostfactory-agent',
         mode: 'cloudflare-scheduled-worker',
       });
+    }
+
+    if (url.pathname === '/api/collector/reddit/source-records' && request.method === 'POST') {
+      applyCloudflareEnv(env);
+      const { handleBrowserCollectorIngestRequest } = await import('./browser-collector-ingest');
+      return handleBrowserCollectorIngestRequest(request, env);
     }
 
     if (url.pathname === '/tick' && request.method === 'POST') {
