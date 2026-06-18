@@ -1,9 +1,17 @@
+import {
+  isSupabaseWorkerConfigured,
+  supabaseInsert,
+  supabaseSelect,
+} from './supabase-client';
+
 type JsonRecord = Record<string, unknown>;
 
 export interface CollectorIngestEnv {
   COLLECTOR_INGEST_ENABLED?: string;
+  COLLECTOR_INGEST_ENV?: string;
   COLLECTOR_INGEST_HMAC_SECRET?: string;
   COLLECTOR_INGEST_WRITE_ENABLED?: string;
+  NODE_ENV?: string;
 }
 
 export interface CollectorIngestProcessResult {
@@ -24,6 +32,29 @@ interface NormalizedCollectorRecord {
   collector_type: 'authenticated_browser';
   content_hash: string;
   raw_metadata?: JsonRecord;
+}
+
+interface CollectorUserSourceRow {
+  id: string;
+  user_id: string;
+  kind?: string | null;
+  value?: string | null;
+  enabled?: boolean | null;
+  provider?: string | null;
+  source_scope?: string | null;
+}
+
+interface ExistingSourceRecordRow {
+  id: string;
+  url?: string | null;
+  reddit_post_id?: string | null;
+  content_hash?: string | null;
+}
+
+export interface CollectorIngestStorage {
+  loadUserSource(userId: string, sourceId: string): Promise<CollectorUserSourceRow | null>;
+  loadExistingSourceRecords(userId: string, records: NormalizedCollectorRecord[]): Promise<ExistingSourceRecordRow[]>;
+  insertSourceRecords(rows: Array<Record<string, unknown>>): Promise<Array<{ id?: string }>>;
 }
 
 const MAX_BODY_BYTES = 64 * 1024;
@@ -53,12 +84,82 @@ const FORBIDDEN_KEYS = new Set([
   'tokens',
   'trigger_openai',
 ]);
-const SIDE_EFFECTS = {
-  openai_called: false,
-  source_records_written: false,
-  angle_records_created: false,
-  queue_rows_created: false,
-  publishing_triggered: false,
+function sideEffects(sourceRecordsWritten = false): JsonRecord {
+  return {
+    openai_called: false,
+    source_records_written: sourceRecordsWritten,
+    angle_records_created: false,
+    queue_rows_created: false,
+    publishing_triggered: false,
+  };
+}
+
+const defaultStorage: CollectorIngestStorage = {
+  async loadUserSource(userId, sourceId) {
+    if (!isSupabaseWorkerConfigured()) {
+      throw new Error('supabase_worker_not_configured');
+    }
+    const rows = await supabaseSelect<CollectorUserSourceRow>('user_sources', {
+      select: 'id,user_id,kind,value,enabled,provider,source_scope',
+      filters: [
+        { column: 'id', operator: 'eq', value: sourceId },
+        { column: 'user_id', operator: 'eq', value: userId },
+      ],
+      limit: 1,
+    });
+    return rows[0] || null;
+  },
+
+  async loadExistingSourceRecords(userId, records) {
+    if (!isSupabaseWorkerConfigured()) {
+      throw new Error('supabase_worker_not_configured');
+    }
+
+    const urls = uniqueStrings(records.map(record => record.source_url));
+    const redditIds = uniqueStrings(records.map(record => record.reddit_post_id || ''));
+    const contentHashes = uniqueStrings(records.map(record => record.content_hash));
+    const rows: ExistingSourceRecordRow[] = [];
+
+    if (urls.length) {
+      rows.push(...await supabaseSelect<ExistingSourceRecordRow>('source_records', {
+        select: 'id,url,reddit_post_id,content_hash',
+        filters: [
+          { column: 'user_id', operator: 'eq', value: userId },
+          { column: 'url', operator: 'in', value: urls },
+        ],
+        limit: urls.length,
+      }));
+    }
+    if (redditIds.length) {
+      rows.push(...await supabaseSelect<ExistingSourceRecordRow>('source_records', {
+        select: 'id,url,reddit_post_id,content_hash',
+        filters: [
+          { column: 'user_id', operator: 'eq', value: userId },
+          { column: 'reddit_post_id', operator: 'in', value: redditIds },
+        ],
+        limit: redditIds.length,
+      }));
+    }
+    if (contentHashes.length) {
+      rows.push(...await supabaseSelect<ExistingSourceRecordRow>('source_records', {
+        select: 'id,url,reddit_post_id,content_hash',
+        filters: [
+          { column: 'user_id', operator: 'eq', value: userId },
+          { column: 'content_hash', operator: 'in', value: contentHashes },
+        ],
+        limit: contentHashes.length,
+      }));
+    }
+
+    return dedupeExistingRows(rows);
+  },
+
+  async insertSourceRecords(rows) {
+    if (!isSupabaseWorkerConfigured()) {
+      throw new Error('supabase_worker_not_configured');
+    }
+    return supabaseInsert<{ id?: string }>('source_records', rows, true);
+  },
 };
 
 export async function handleBrowserCollectorIngestRequest(
@@ -78,7 +179,7 @@ export async function handleBrowserCollectorIngestRequest(
       duplicate_count: 0,
       dry_run: true,
       write_enabled: false,
-      side_effects: SIDE_EFFECTS,
+      side_effects: sideEffects(),
     }), {
       status: 413,
       headers: {
@@ -101,7 +202,8 @@ export async function processBrowserCollectorIngest(
   rawBody: string,
   headers: Headers,
   env: CollectorIngestEnv = process.env,
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  storage: CollectorIngestStorage = defaultStorage
 ): Promise<CollectorIngestProcessResult> {
   const ingestEnabled = parseBooleanEnv(env.COLLECTOR_INGEST_ENABLED);
   const writeEnabled = parseBooleanEnv(env.COLLECTOR_INGEST_WRITE_ENABLED);
@@ -116,7 +218,7 @@ export async function processBrowserCollectorIngest(
       dry_run: true,
       write_enabled: false,
       write_path: 'disabled',
-      side_effects: SIDE_EFFECTS,
+      side_effects: sideEffects(),
     });
   }
 
@@ -129,7 +231,7 @@ export async function processBrowserCollectorIngest(
       duplicate_count: 0,
       dry_run: true,
       write_enabled: false,
-      side_effects: SIDE_EFFECTS,
+      side_effects: sideEffects(),
     });
   }
 
@@ -191,23 +293,42 @@ export async function processBrowserCollectorIngest(
       dry_run: true,
       write_enabled: false,
       rejections: rejected,
-      side_effects: SIDE_EFFECTS,
+      side_effects: sideEffects(),
     });
   }
 
   if (writeEnabled) {
-    return respond(501, {
-      status: 'write_deferred',
-      reason: 'schema_review_required',
+    const guard = writeModeGuard(env);
+    if (!guard.ok) {
+      return respond(403, {
+        status: 'write_blocked',
+        reason: guard.reason,
+        accepted_count: accepted.length,
+        rejected_count: rejected.length,
+        duplicate_count: duplicateCount,
+        dry_run: true,
+        write_enabled: false,
+        write_path: 'blocked',
+        summary: accepted.map(safeRecordSummary),
+        rejections: rejected,
+        side_effects: sideEffects(),
+      });
+    }
+
+    const writeResult = await writeSourceRecords(accepted, storage);
+    return respond(writeResult.failed.length ? 207 : 201, {
+      status: writeResult.failed.length ? 'partial_write' : 'source_records_written',
       accepted_count: accepted.length,
-      rejected_count: rejected.length,
-      duplicate_count: duplicateCount,
-      dry_run: true,
-      write_enabled: false,
-      write_path: 'schema_review_required',
+      rejected_count: rejected.length + writeResult.failed.length,
+      duplicate_count: duplicateCount + writeResult.duplicateCount,
+      dry_run: false,
+      write_enabled: true,
+      collector_ingest_env: guard.ingestEnv,
+      source_records_written: writeResult.createdCount,
+      source_records_attempted: writeResult.attemptedCount,
       summary: accepted.map(safeRecordSummary),
-      rejections: rejected,
-      side_effects: SIDE_EFFECTS,
+      rejections: [...rejected, ...writeResult.failed],
+      side_effects: sideEffects(writeResult.createdCount > 0),
     });
   }
 
@@ -221,7 +342,7 @@ export async function processBrowserCollectorIngest(
     write_path: 'deferred',
     summary: accepted.map(safeRecordSummary),
     rejections: rejected,
-    side_effects: SIDE_EFFECTS,
+    side_effects: sideEffects(),
   });
 }
 
@@ -252,7 +373,7 @@ function rejection(status: number, code: string, message: string): CollectorInge
     duplicate_count: 0,
     dry_run: true,
     write_enabled: false,
-    side_effects: SIDE_EFFECTS,
+    side_effects: sideEffects(),
   });
 }
 
@@ -361,6 +482,204 @@ function validateCollectorRecord(input: unknown): { ok: true; record: Normalized
       raw_metadata: rawMetadata,
     },
   };
+}
+
+function writeModeGuard(env: CollectorIngestEnv): { ok: true; ingestEnv: 'local' | 'staging' } | { ok: false; reason: string } {
+  const ingestEnv = String(env.COLLECTOR_INGEST_ENV || '').trim().toLowerCase();
+  const nodeEnv = String(env.NODE_ENV || process.env.NODE_ENV || '').trim().toLowerCase();
+
+  if (ingestEnv === 'production' || nodeEnv === 'production') {
+    return { ok: false, reason: 'production_collector_write_blocked' };
+  }
+
+  if (ingestEnv !== 'local' && ingestEnv !== 'staging') {
+    return { ok: false, reason: 'collector_ingest_env_must_be_local_or_staging' };
+  }
+
+  return { ok: true, ingestEnv };
+}
+
+async function writeSourceRecords(
+  records: NormalizedCollectorRecord[],
+  storage: CollectorIngestStorage
+): Promise<{
+  attemptedCount: number;
+  createdCount: number;
+  duplicateCount: number;
+  failed: Array<{ index: number; code: string; message: string }>;
+}> {
+  const failed: Array<{ index: number; code: string; message: string }> = [];
+  const writeReady: NormalizedCollectorRecord[] = [];
+  const sourceCache = new Map<string, CollectorUserSourceRow | null>();
+
+  for (const [index, record] of records.entries()) {
+    const sourceText = String(record.post_body || '').trim();
+    if (!sourceText) {
+      failed.push({ index, code: 'source_text_required_for_write', message: 'source_text is required before creating source_records.' });
+      continue;
+    }
+
+    const cacheKey = `${record.user_id}:${record.source_id}`;
+    let source = sourceCache.get(cacheKey);
+    if (source === undefined) {
+      source = await storage.loadUserSource(record.user_id, record.source_id);
+      sourceCache.set(cacheKey, source);
+    }
+
+    const sourceValidation = validateUserSourceRelationship(record, source);
+    if (!sourceValidation.ok) {
+      failed.push({ index, code: sourceValidation.code, message: sourceValidation.message });
+      continue;
+    }
+
+    writeReady.push(record);
+  }
+
+  if (!writeReady.length) {
+    return { attemptedCount: 0, createdCount: 0, duplicateCount: 0, failed };
+  }
+
+  const userIds = uniqueStrings(writeReady.map(record => record.user_id));
+  if (userIds.length !== 1) {
+    return {
+      attemptedCount: 0,
+      createdCount: 0,
+      duplicateCount: 0,
+      failed: [
+        ...failed,
+        { index: -1, code: 'mixed_user_batch_unsupported', message: 'Collector write batches must contain one user_id.' },
+      ],
+    };
+  }
+
+  const existingRows = await storage.loadExistingSourceRecords(writeReady[0].user_id, writeReady);
+  const existingKeys = existingDedupeKeys(existingRows);
+  const rowsToInsert: Array<Record<string, unknown>> = [];
+  let duplicateCount = 0;
+
+  for (const record of writeReady) {
+    const keys = recordDedupeKeys(record);
+    if (keys.some(key => existingKeys.has(key))) {
+      duplicateCount++;
+      continue;
+    }
+
+    for (const key of keys) existingKeys.add(key);
+    rowsToInsert.push(sourceRecordInsertRow(record));
+  }
+
+  if (!rowsToInsert.length) {
+    return { attemptedCount: 0, createdCount: 0, duplicateCount, failed };
+  }
+
+  try {
+    const inserted = await storage.insertSourceRecords(rowsToInsert);
+    return {
+      attemptedCount: rowsToInsert.length,
+      createdCount: inserted.length || rowsToInsert.length,
+      duplicateCount,
+      failed,
+    };
+  } catch {
+    return {
+      attemptedCount: rowsToInsert.length,
+      createdCount: 0,
+      duplicateCount,
+      failed: [
+        ...failed,
+        { index: -1, code: 'source_record_insert_failed', message: 'Source record insert failed safely before downstream side effects.' },
+      ],
+    };
+  }
+}
+
+function validateUserSourceRelationship(
+  record: NormalizedCollectorRecord,
+  source: CollectorUserSourceRow | null
+): { ok: true } | { ok: false; code: string; message: string } {
+  if (!source) {
+    return { ok: false, code: 'source_not_found', message: 'source_id is not valid for this user.' };
+  }
+
+  if (source.user_id !== record.user_id || source.id !== record.source_id) {
+    return { ok: false, code: 'source_ownership_mismatch', message: 'source_id does not belong to this user.' };
+  }
+
+  if (source.enabled === false) {
+    return { ok: false, code: 'source_disabled', message: 'source_id is disabled.' };
+  }
+
+  if (source.kind && source.kind !== 'subreddit') {
+    return { ok: false, code: 'source_type_not_supported', message: 'Only subreddit sources can write browser collector records in this milestone.' };
+  }
+
+  const sourceSubreddit = normalizeSubredditValue(String(source.value || ''));
+  if (sourceSubreddit && sourceSubreddit !== record.subreddit) {
+    return { ok: false, code: 'source_subreddit_mismatch', message: 'Collector record subreddit does not match configured source.' };
+  }
+
+  return { ok: true };
+}
+
+function sourceRecordInsertRow(record: NormalizedCollectorRecord): Record<string, unknown> {
+  return {
+    user_id: record.user_id,
+    url: record.source_url,
+    title: record.title,
+    origin: 'authenticated_browser',
+    score: null,
+    used: false,
+    fetched_at: record.captured_at,
+    reddit_post_id: record.reddit_post_id,
+    subreddit: record.subreddit,
+    reddit_author: record.author,
+    content_hash: record.content_hash,
+    status: 'banked',
+    source_text: record.post_body,
+  };
+}
+
+function recordDedupeKeys(record: NormalizedCollectorRecord): string[] {
+  return [
+    `url:${record.source_url}`,
+    record.reddit_post_id ? `reddit_post_id:${record.reddit_post_id}` : '',
+    record.content_hash ? `content_hash:${record.content_hash}` : '',
+  ].filter(Boolean);
+}
+
+function existingDedupeKeys(rows: ExistingSourceRecordRow[]): Set<string> {
+  const keys = new Set<string>();
+  for (const row of rows) {
+    if (row.url) keys.add(`url:${normalizeRedditUrl(row.url)}`);
+    if (row.reddit_post_id) keys.add(`reddit_post_id:${row.reddit_post_id}`);
+    if (row.content_hash) keys.add(`content_hash:${row.content_hash}`);
+  }
+  return keys;
+}
+
+function dedupeExistingRows(rows: ExistingSourceRecordRow[]): ExistingSourceRecordRow[] {
+  const seen = new Set<string>();
+  const deduped: ExistingSourceRecordRow[] = [];
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    deduped.push(row);
+  }
+  return deduped;
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.map(value => String(value || '').trim()).filter(Boolean))];
+}
+
+function normalizeSubredditValue(value: string): string {
+  return value
+    .trim()
+    .replace(/^https?:\/\/(?:www\.)?reddit\.com\/r\//i, '')
+    .replace(/^\/?r\//i, '')
+    .split(/[/?#|]/)[0]
+    .trim()
+    .toLowerCase();
 }
 
 function safeRecordSummary(record: NormalizedCollectorRecord): JsonRecord {

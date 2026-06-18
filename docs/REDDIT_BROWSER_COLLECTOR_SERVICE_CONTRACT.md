@@ -1,6 +1,7 @@
 # Reddit Browser Collector Service Contract
 
-Status: contract plus disabled/dry-run backend ingestion endpoint.
+Status: contract plus disabled-by-default backend ingestion endpoint with
+local/staging-only source-record write mode.
 Last updated: 2026-06-18.
 
 ## Purpose
@@ -155,11 +156,34 @@ Current implementation status:
 - disabled by default unless `COLLECTOR_INGEST_ENABLED=true`
 - validates HMAC signatures using `COLLECTOR_INGEST_HMAC_SECRET`
 - validates normalized browser collector payloads
-- dry-run only unless a future write path is explicitly designed
-- `COLLECTOR_INGEST_WRITE_ENABLED=true` currently returns
-  `write_deferred` / `schema_review_required`
+- dry-run by default
+- write mode requires `COLLECTOR_INGEST_WRITE_ENABLED=true`
+- write mode also requires `COLLECTOR_INGEST_ENV=local` or
+  `COLLECTOR_INGEST_ENV=staging`
+- production write mode is blocked by policy
+- write mode creates `source_records` only
 - no OpenAI, `angle_records`, `queue_items`, publishing, or production Supabase
   side effects occur from the ingestion endpoint
+
+Current source-record mapping:
+
+- `user_id` maps to the tenant user id
+- `source_id` is verified against an enabled tenant-owned `user_sources` row
+- `source_url` maps to `source_records.url`
+- `title` maps to `source_records.title`
+- `collector_type = authenticated_browser` maps to
+  `source_records.origin = authenticated_browser`
+- `captured_at` maps to `source_records.fetched_at`
+- `reddit_post_id`, `subreddit`, `author`, `content_hash`, and `post_body`
+  map to their matching source-record fields where present
+- `source_text` is required before write; metadata-only collector records are
+  rejected
+
+The current downstream manual angle-extraction path still selects
+`origin = manual`. Teaching angle extraction to consume
+`origin = authenticated_browser` records is a separate future patch and must be
+done explicitly so the ingestion endpoint never silently calls OpenAI, queues,
+or publishes.
 
 The endpoint should:
 

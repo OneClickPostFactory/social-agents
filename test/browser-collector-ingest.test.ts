@@ -4,6 +4,7 @@ import {
   processBrowserCollectorIngest,
   signCollectorPayload,
   type CollectorIngestEnv,
+  type CollectorIngestStorage,
 } from '../src/browser-collector-ingest';
 
 const secret = 'local-collector-secret';
@@ -36,6 +37,42 @@ function env(overrides: Partial<CollectorIngestEnv> = {}): CollectorIngestEnv {
     COLLECTOR_INGEST_HMAC_SECRET: secret,
     ...overrides,
   };
+}
+
+function mockStorage(existingRows: Array<{ id: string; url?: string | null; reddit_post_id?: string | null; content_hash?: string | null }> = []): {
+  storage: CollectorIngestStorage;
+  insertedRows: Array<Record<string, unknown>>;
+} {
+  const insertedRows: Array<Record<string, unknown>> = [];
+  const storage: CollectorIngestStorage = {
+    async loadUserSource(userId, sourceId) {
+      return {
+        id: sourceId,
+        user_id: userId,
+        kind: 'subreddit',
+        value: 'r/openclawbot',
+        enabled: true,
+        provider: 'reddit',
+        source_scope: 'subreddit',
+      };
+    },
+    async loadExistingSourceRecords() {
+      return [
+        ...existingRows,
+        ...insertedRows.map((row, index) => ({
+          id: `inserted-${index}`,
+          url: row.url as string,
+          reddit_post_id: row.reddit_post_id as string | null,
+          content_hash: row.content_hash as string,
+        })),
+      ];
+    },
+    async insertSourceRecords(rows) {
+      insertedRows.push(...rows);
+      return rows.map((_row, index) => ({ id: `source-record-${insertedRows.length - rows.length + index}` }));
+    },
+  };
+  return { storage, insertedRows };
 }
 
 async function signedHeaders(payload: unknown, signedAt = timestamp, signedSecret = secret): Promise<Headers> {
@@ -177,7 +214,7 @@ async function main(): Promise<void> {
     assert.equal(sideEffects.publishing_triggered, false);
   });
 
-  await run('write mode is off by default and explicit write mode is deferred', async () => {
+  await run('write mode is off by default and requires local or staging env', async () => {
     const payload = validRecord();
     const defaultResult = await processBrowserCollectorIngest(JSON.stringify(payload), await signedHeaders(payload), env(), nowMs);
     assert.equal(defaultResult.body.write_enabled, false);
@@ -188,9 +225,119 @@ async function main(): Promise<void> {
       env({ COLLECTOR_INGEST_WRITE_ENABLED: 'true' }),
       nowMs
     );
-    assert.equal(writeResult.status, 501);
-    assert.equal(writeResult.body.status, 'write_deferred');
-    assert.equal(writeResult.body.write_path, 'schema_review_required');
+    assert.equal(writeResult.status, 403);
+    assert.equal(writeResult.body.status, 'write_blocked');
+    assert.equal(writeResult.body.reason, 'collector_ingest_env_must_be_local_or_staging');
+  });
+
+  await run('production write mode is blocked', async () => {
+    const payload = validRecord();
+    const writeResult = await processBrowserCollectorIngest(
+      JSON.stringify(payload),
+      await signedHeaders(payload),
+      env({
+        COLLECTOR_INGEST_WRITE_ENABLED: 'true',
+        COLLECTOR_INGEST_ENV: 'production',
+      }),
+      nowMs
+    );
+
+    assert.equal(writeResult.status, 403);
+    assert.equal(writeResult.body.status, 'write_blocked');
+  });
+
+  await run('valid signed staging payload creates source_records only through mock storage', async () => {
+    const payload = validRecord();
+    const { storage, insertedRows } = mockStorage();
+    const writeResult = await processBrowserCollectorIngest(
+      JSON.stringify(payload),
+      await signedHeaders(payload),
+      env({
+        COLLECTOR_INGEST_WRITE_ENABLED: 'true',
+        COLLECTOR_INGEST_ENV: 'staging',
+      }),
+      nowMs,
+      storage
+    );
+
+    assert.equal(writeResult.status, 201);
+    assert.equal(writeResult.body.status, 'source_records_written');
+    assert.equal(writeResult.body.source_records_written, 1);
+    assert.equal(insertedRows.length, 1);
+    assert.equal(insertedRows[0].user_id, 'test-user');
+    assert.equal(insertedRows[0].url, 'https://www.reddit.com/r/openclawbot/comments/abc/example/');
+    assert.equal(insertedRows[0].origin, 'authenticated_browser');
+    assert.equal(insertedRows[0].source_text, 'Useful visible source body for later angle extraction.');
+    assert.equal(insertedRows[0].status, 'banked');
+    assert.equal((writeResult.body.side_effects as Record<string, unknown>).source_records_written, true);
+    assert.equal((writeResult.body.side_effects as Record<string, unknown>).queue_rows_created, false);
+    assert.equal((writeResult.body.side_effects as Record<string, unknown>).publishing_triggered, false);
+  });
+
+  await run('duplicate staging payload does not create duplicate source_records', async () => {
+    const payload = validRecord();
+    const { storage, insertedRows } = mockStorage();
+    const stagingEnv = env({
+      COLLECTOR_INGEST_WRITE_ENABLED: 'true',
+      COLLECTOR_INGEST_ENV: 'staging',
+    });
+
+    const first = await processBrowserCollectorIngest(JSON.stringify(payload), await signedHeaders(payload), stagingEnv, nowMs, storage);
+    const second = await processBrowserCollectorIngest(JSON.stringify(payload), await signedHeaders(payload), stagingEnv, nowMs, storage);
+
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 201);
+    assert.equal(second.body.source_records_written, 0);
+    assert.equal(second.body.duplicate_count, 1);
+    assert.equal(insertedRows.length, 1);
+  });
+
+  await run('write mode rejects mixed-user batches', async () => {
+    const payload = [
+      validRecord(),
+      validRecord({
+        user_id: 'second-user',
+        source_id: 'second-source',
+        source_url: 'https://www.reddit.com/r/openclawbot/comments/def/second/',
+        reddit_post_id: 't3_def',
+        content_hash: 'hash-2',
+      }),
+    ];
+    const { storage, insertedRows } = mockStorage();
+    const writeResult = await processBrowserCollectorIngest(
+      JSON.stringify(payload),
+      await signedHeaders(payload),
+      env({
+        COLLECTOR_INGEST_WRITE_ENABLED: 'true',
+        COLLECTOR_INGEST_ENV: 'staging',
+      }),
+      nowMs,
+      storage
+    );
+
+    assert.equal(writeResult.status, 207);
+    assert.equal(writeResult.body.source_records_written, 0);
+    assert.equal(insertedRows.length, 0);
+    assert.match(JSON.stringify(writeResult.body), /mixed_user_batch_unsupported/);
+  });
+
+  await run('write mode validates source ownership and source text', async () => {
+    const payload = validRecord({ post_body: '' });
+    const { storage } = mockStorage();
+    const writeResult = await processBrowserCollectorIngest(
+      JSON.stringify(payload),
+      await signedHeaders(payload),
+      env({
+        COLLECTOR_INGEST_WRITE_ENABLED: 'true',
+        COLLECTOR_INGEST_ENV: 'local',
+      }),
+      nowMs,
+      storage
+    );
+
+    assert.equal(writeResult.status, 207);
+    assert.equal(writeResult.body.source_records_written, 0);
+    assert.equal(writeResult.body.rejected_count, 1);
   });
 }
 
