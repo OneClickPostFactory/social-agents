@@ -79,6 +79,11 @@ Later source types:
 - Reddit user profile submitted pages
 - keyword/search pages
 
+The main app's `user_sources` table is the source-of-truth for configured
+sources. The collector must verify a requested `source_id` belongs to the
+authenticated `user_id`, is enabled, is a healthy Reddit subreddit source, and
+matches the requested subreddit before it opens Browser Run.
+
 Source configuration fields:
 
 ```json
@@ -255,8 +260,11 @@ Milestone 1 proves the full boundary without turning on automation:
 
 - standalone Cloudflare Worker collector service
 - Cloudflare Browser Run human-in-the-loop Live View login
-- Supabase JWT validation and explicit `ALLOWED_TEST_USER_ID` guard
-- one test user
+- Supabase JWT validation with `user_id` derived from the access token
+- server-side collector rollout guard:
+  `disabled`, `allowlist`, or future `all_entitled_users`
+- allowlist staging for the first test user; later production rollout must use
+  entitlement from `profiles`, not client-side user-id gating
 - connect/reconnect flow
 - encrypted session storage
 - one configured subreddit source, with `openclawbot` first and
@@ -271,6 +279,8 @@ Milestone 1 proves the full boundary without turning on automation:
 - no `angle_records`
 - no `queue_items`
 - no publishing
+- Browser Run REST credential failures must return safe actionable errors such
+  as `cloudflare_browser_api_auth_failed`, not raw 500s or leaked diagnostics
 
 Success criteria:
 
