@@ -22,6 +22,7 @@ interface Env {
   COLLECTOR_INGEST_ENABLED?: string;
   COLLECTOR_INGEST_HMAC_SECRET?: string;
   COLLECTOR_INGEST_WRITE_ENABLED?: string;
+  COLLECTOR_INGEST_ENV?: string;
   [key: string]: string | undefined;
 }
 

@@ -1,8 +1,9 @@
 # Reddit Browser Collector Service Contract
 
-Status: contract plus disabled-by-default backend ingestion endpoint with
-local/staging-only source-record write mode.
-Last updated: 2026-06-18.
+Status: contract plus disabled-by-default backend ingestion endpoint,
+local/staging-only source-record write mode, and a staging Cloudflare Browser
+Run collector implementation.
+Last updated: 2026-06-19.
 
 ## Purpose
 
@@ -46,9 +47,12 @@ Collector session statuses:
 
 - `disconnected`: no usable browser session exists
 - `connecting`: user is in the hosted connection flow
+- `awaiting_user_login`: a temporary Live View URL has been issued and the
+  user must complete Reddit login manually
 - `connected`: encrypted browser state is present and recently verified
 - `expired`: browser state exists but Reddit requires login or challenge again
 - `revoked`: user intentionally disconnected and state was deleted
+- `collecting`: one manual collection run is active for the user
 - `error`: collector could not determine state safely
 
 Supported user actions:
@@ -68,7 +72,7 @@ tokens, passwords, or raw browser storage.
 Milestone 1 supports subreddit `new` pages, for example:
 
 - `https://www.reddit.com/r/openclawbot/new/`
-- `https://www.reddit.com/r/five_cards_dev/new/`
+- `https://www.reddit.com/r/lovablebuildershub/new/`
 
 Later source types:
 
@@ -249,15 +253,20 @@ Main backend security requirements:
 
 Milestone 1 proves the full boundary without turning on automation:
 
-- standalone collector service skeleton
+- standalone Cloudflare Worker collector service
+- Cloudflare Browser Run human-in-the-loop Live View login
+- Supabase JWT validation and explicit `ALLOWED_TEST_USER_ID` guard
 - one test user
 - connect/reconnect flow
 - encrypted session storage
-- one configured subreddit source
+- one configured subreddit source, with `openclawbot` first and
+  `lovablebuildershub` as fallback
 - manual collection only
 - max 5 visible posts per run
 - signed delivery to staging or local backend
-- backend creates `source_records` only
+- backend staging dry-run validates signed payloads with write mode disabled
+- backend source-record write mode remains local/staging-only and production
+  writes remain blocked
 - no OpenAI calls
 - no `angle_records`
 - no `queue_items`

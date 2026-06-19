@@ -14,3 +14,24 @@ REDDIT_PUBLIC_JSON_TRANSPORT = "auto"
 OPENAI_IMAGE_MODEL = "gpt-image-2"
 OPENAI_IMAGE_TIMEOUT_MS = "120000"
 CLOUDINARY_FOLDER = "social-agent/instagram"
+COLLECTOR_INGEST_ENABLED = "false"
+COLLECTOR_INGEST_WRITE_ENABLED = "false"
+COLLECTOR_INGEST_ENV = "production"
+
+[env.collector_staging]
+name = "oneclickpostfactory-agent-collector-staging"
+
+[env.collector_staging.triggers]
+crons = []
+
+[env.collector_staging.vars]
+NODE_ENV = "staging"
+SUPABASE_WORKER_BATCH_SIZE = "5"
+HTTP_TIMEOUT_MS = "45000"
+REDDIT_PUBLIC_JSON_TRANSPORT = "auto"
+OPENAI_IMAGE_MODEL = "gpt-image-2"
+OPENAI_IMAGE_TIMEOUT_MS = "120000"
+CLOUDINARY_FOLDER = "social-agent/instagram"
+COLLECTOR_INGEST_ENABLED = "true"
+COLLECTOR_INGEST_WRITE_ENABLED = "false"
+COLLECTOR_INGEST_ENV = "staging"
