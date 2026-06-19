@@ -179,11 +179,10 @@ Current source-record mapping:
 - `source_text` is required before write; metadata-only collector records are
   rejected
 
-The current downstream manual angle-extraction path still selects
-`origin = manual`. Teaching angle extraction to consume
-`origin = authenticated_browser` records is a separate future patch and must be
-done explicitly so the ingestion endpoint never silently calls OpenAI, queues,
-or publishes.
+The downstream source-record processing path accepts `origin = manual` and
+`origin = authenticated_browser` records when they are tenant-scoped, banked,
+unused, and include `source_text`. The collector ingestion endpoint still stops
+at source-record creation; it never silently calls OpenAI, queues, or publishes.
 
 The endpoint should:
 

@@ -51,9 +51,10 @@ Rules:
   subreddit and author must match.
 - `source_scope = generic_rss` is legacy metadata only. RSS is quarantined from
   normal product flow and should not be offered as a normal source path.
-- Manual Reddit import is a first-class fallback for Reddit fetch blocks. It stores a
-  tenant-scoped `source_records` row with `origin = manual` and enough
-  `source_text` for angle extraction. Metadata-only source records are not
+- Manual Reddit import remains an advanced fallback for Reddit fetch blocks.
+  The Reddit Browser Collector is the target ingestion direction. Both paths
+  store tenant-scoped `source_records` rows with enough `source_text` for later
+  explicit source-record processing. Metadata-only source records are not
   draftable shortcuts.
 
 Legacy `rss` rows are preserved for history but quarantined from normal
@@ -164,7 +165,9 @@ host, final host, content type, canonicalized flag, and stable error code. It
 does not log response bodies or provider payloads. The source is marked
 `needs_attention` with temporary `blocked_until` backoff so scheduled fetches do
 not retry aggressively. No public JSON fallback is attempted. OpenAI is not
-called unless accepted posts or manual imports with stored `source_text` exist.
+called unless accepted posts, advanced manual imports, or authenticated-browser
+collector records with stored `source_text` exist and an explicit downstream
+processing job runs. Collector ingestion itself does not call OpenAI.
 
 ## Source To Angle Flow
 
@@ -209,8 +212,9 @@ Accepted source records are saved before OpenAI angle extraction starts. A
 evidence, not a completed source. It must not block future angle extraction after
 OpenAI billing, quota, rate-limit, or model-access issues are fixed. Existing
 banked RSS records that only contain metadata such as title, URL, author, and
-subreddit are not enough for high-quality drafting. Manual imports are draftable
-only because they store source body in `source_records.source_text`.
+subreddit are not enough for high-quality drafting. Manual imports and
+authenticated-browser collector records are draftable only because they store
+source body in `source_records.source_text`.
 
 If the only active angles are legacy/incomplete rows that cannot be proven to
 have source URL, subreddit, author, and intended platform metadata, the worker

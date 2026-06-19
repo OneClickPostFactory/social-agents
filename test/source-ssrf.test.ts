@@ -444,13 +444,66 @@ async function main(): Promise<void> {
     assert.match(worker, /Connect or repair the Reddit Browser Collector/);
   });
 
-  await test('manual import processing only uses source records with stored source text', () => {
+  await test('manual and authenticated browser source records require stored source text for processing', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
-    const manualBody = worker.match(/async function processManualSourceRecords[\s\S]*?\n}\n\nasync function hasActiveBankedAngles/)?.[0] || '';
-    assert.match(manualBody, /source_text/);
-    assert.match(manualBody, /if \(!sourceText \|\| sourceUrlsWithAngles\.has\(record\.url\)\) continue/);
-    assert.match(manualBody, /extractSourceBankWithJobTimeout/);
-    assert.match(manualBody, /queueFromBankedAngles/);
+    const sourceRecordBody = worker.match(/async function processBankedSourceRecords[\s\S]*?\n}\n\nasync function hasActiveBankedAngles/)?.[0] || '';
+    assert.match(worker, /const PROCESSABLE_SOURCE_RECORD_ORIGINS = \[\s*'manual',\s*'authenticated_browser',\s*\] as const/);
+    assert.match(sourceRecordBody, /operator: 'in', value: \[\.\.\.PROCESSABLE_SOURCE_RECORD_ORIGINS\]/);
+    assert.match(sourceRecordBody, /source_text/);
+    assert.match(sourceRecordBody, /isProcessableSourceRecordForAngleExtraction\(record, sourceUrlsWithAngles\)/);
+    assert.match(sourceRecordBody, /extractSourceBankWithJobTimeout/);
+    assert.match(sourceRecordBody, /queueFromBankedAngles/);
+    assert.match(sourceRecordBody, /source_record_selected_for_angle_extraction/);
+    assert.doesNotMatch(sourceRecordBody, /readRedditPublicJsonListing|fetchRedditPublicJson|reddit_rss|reddit_oauth|devvit/i);
+  });
+
+  await test('source record eligibility admits manual and authenticated browser origins only', () => {
+    const baseRecord = {
+      origin: 'manual',
+      status: 'banked',
+      used: false,
+      source_text: 'Visible body text.',
+      url: 'https://www.reddit.com/r/openclawbot/comments/abc/example/',
+    };
+    const sourceUrlsWithAngles = new Set<string>();
+
+    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction(baseRecord, sourceUrlsWithAngles), true);
+    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
+      ...baseRecord,
+      origin: 'authenticated_browser',
+    }, sourceUrlsWithAngles), true);
+    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
+      ...baseRecord,
+      origin: 'public_json',
+    }, sourceUrlsWithAngles), false);
+    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
+      ...baseRecord,
+      origin: 'rss',
+    }, sourceUrlsWithAngles), false);
+    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
+      ...baseRecord,
+      origin: 'oauth',
+    }, sourceUrlsWithAngles), false);
+    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
+      ...baseRecord,
+      origin: 'devvit',
+    }, sourceUrlsWithAngles), false);
+    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
+      ...baseRecord,
+      source_text: '',
+    }, sourceUrlsWithAngles), false);
+    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
+      ...baseRecord,
+      used: true,
+    }, sourceUrlsWithAngles), false);
+    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
+      ...baseRecord,
+      status: 'exhausted',
+    }, sourceUrlsWithAngles), false);
+    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction(
+      baseRecord,
+      new Set([baseRecord.url])
+    ), false);
   });
 
   await test('legacy public JSON adapter does not use the deprecated Reddit OAuth branch', () => {

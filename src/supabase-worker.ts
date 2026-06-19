@@ -500,6 +500,26 @@ interface SourceRecordRow {
   source_text?: string | null;
 }
 
+const PROCESSABLE_SOURCE_RECORD_ORIGINS = [
+  'manual',
+  'authenticated_browser',
+] as const;
+
+function isProcessableSourceRecordOrigin(origin: string | null | undefined): boolean {
+  return PROCESSABLE_SOURCE_RECORD_ORIGINS.includes(origin as typeof PROCESSABLE_SOURCE_RECORD_ORIGINS[number]);
+}
+
+function isProcessableSourceRecordForAngleExtraction(
+  record: Pick<SourceRecordRow, 'origin' | 'status' | 'used' | 'source_text' | 'url'>,
+  sourceUrlsWithAngles: Set<string>
+): boolean {
+  return isProcessableSourceRecordOrigin(record.origin)
+    && record.status === 'banked'
+    && record.used === false
+    && String(record.source_text || '').trim().length > 0
+    && !sourceUrlsWithAngles.has(record.url);
+}
+
 const SUPPORTED_JOB_KINDS = new Set<JobKind>([
   'fetch_sources',
   'refresh_queue',
@@ -2425,7 +2445,7 @@ async function loadExistingSourceRecordsByUrl(
   return new Map(rows.map(row => [row.url, row]));
 }
 
-async function processManualSourceRecords(
+async function processBankedSourceRecords(
   job: AgentJobRow,
   tenant: TenantContext,
   occupiedSlots: PlatformSlotOccupancy,
@@ -2438,7 +2458,7 @@ async function processManualSourceRecords(
     select: 'id,user_id,url,title,origin,score,used,fetched_at,created_at,updated_at,reddit_post_id,subreddit,reddit_author,content_hash,status,source_text',
     filters: [
       { column: 'user_id', operator: 'eq', value: job.user_id },
-      { column: 'origin', operator: 'eq', value: 'manual' },
+      { column: 'origin', operator: 'in', value: [...PROCESSABLE_SOURCE_RECORD_ORIGINS] },
       { column: 'status', operator: 'eq', value: 'banked' },
       { column: 'used', operator: 'eq', value: false },
     ],
@@ -2451,7 +2471,10 @@ async function processManualSourceRecords(
 
   for (const record of records) {
     const sourceText = String(record.source_text || '').trim();
-    if (!sourceText || sourceUrlsWithAngles.has(record.url)) continue;
+    if (!isProcessableSourceRecordForAngleExtraction(record, sourceUrlsWithAngles)) continue;
+    const fallbackSourceLabel = record.origin === 'authenticated_browser'
+      ? 'browser_collector'
+      : 'manual';
 
     summary.sources.postsFetched++;
     summary.sources.postsAccepted++;
@@ -2459,19 +2482,20 @@ async function processManualSourceRecords(
 
     const post: RedditPost = {
       id: record.reddit_post_id || record.id,
-      title: record.title || 'Manual source',
+      title: record.title || (record.origin === 'authenticated_browser' ? 'Browser collector source' : 'Manual source'),
       selftext: sourceText,
       url: record.url,
       score: Number(record.score || 0),
       comments: 0,
-      subreddit: record.subreddit || 'manual',
-      author: record.reddit_author || 'manual',
+      subreddit: record.subreddit || fallbackSourceLabel,
+      author: record.reddit_author || fallbackSourceLabel,
       created: Date.parse(record.created_at || '') / 1000 || Date.now() / 1000,
     };
 
-    await writeWorkerLog(job.user_id, 'info', 'manual_source_record_selected', {
+    await writeWorkerLog(job.user_id, 'info', 'source_record_selected_for_angle_extraction', {
       jobId: job.id,
       sourceRecordId: record.id,
+      origin: record.origin || null,
       source_url_host: safeUrlHost(record.url),
     });
 
@@ -2523,9 +2547,10 @@ async function processManualSourceRecords(
         summary.failedStage ||= ai.OPENAI_TEXT_ANGLE_EXTRACTION_STAGE;
         summary.failureCode ||= failureCode;
       }
-      await writeWorkerLog(job.user_id, 'warn', 'manual_source_angle_extraction_failed', {
+      await writeWorkerLog(job.user_id, 'warn', 'source_record_angle_extraction_failed', {
         jobId: job.id,
         sourceRecordId: record.id,
+        origin: record.origin || null,
         source_url_host: safeUrlHost(record.url),
         error: textError?.userMessage || publicError(error),
         normalized_error_code: failureCode,
@@ -2547,8 +2572,8 @@ async function processManualSourceRecords(
       user_id: job.user_id,
       source_record_id: record.id,
       source_reddit_post_id: record.reddit_post_id || record.id,
-      subreddit: record.subreddit || 'manual',
-      reddit_author: record.reddit_author || 'manual',
+      subreddit: record.subreddit || fallbackSourceLabel,
+      reddit_author: record.reddit_author || fallbackSourceLabel,
       source_url: record.url,
       angle: `${angle.label}: ${angle.thesis}`,
       angle_title: angle.label,
@@ -2574,9 +2599,10 @@ async function processManualSourceRecords(
       });
     } catch (error) {
       addSummaryError(summary, error);
-      await writeWorkerLog(job.user_id, 'warn', 'manual_angle_insert_failed', {
+      await writeWorkerLog(job.user_id, 'warn', 'source_record_angle_insert_failed', {
         jobId: job.id,
         sourceRecordId: record.id,
+        origin: record.origin || null,
         error: publicError(error),
       });
       continue;
@@ -2585,9 +2611,10 @@ async function processManualSourceRecords(
     banked += angleRows.length;
     summary.angles.created += angleRows.length;
     sourceUrlsWithAngles.add(record.url);
-    await writeWorkerLog(job.user_id, 'info', 'manual_source_banked_angles', {
+    await writeWorkerLog(job.user_id, 'info', 'source_record_banked_angles', {
       jobId: job.id,
       sourceRecordId: record.id,
+      origin: record.origin || null,
       angleCount: angleRows.length,
     });
 
@@ -3370,7 +3397,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
   }
 
   const sourceUrlsWithAngles = await loadSourceUrlsWithAngles(job.user_id);
-  const manualResult = await processManualSourceRecords(
+  const sourceRecordResult = await processBankedSourceRecords(
     job,
     tenant,
     occupiedSlots,
@@ -3379,13 +3406,13 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     openAIActivityLogsToday,
     sourceUrlsWithAngles
   );
-  queued += manualResult.queued;
-  if (manualResult.banked > 0 || queued > 0) {
+  queued += sourceRecordResult.queued;
+  if (sourceRecordResult.banked > 0 || queued > 0) {
     return finishRefreshResult(job, summary, {
       fetched: 0,
-      banked: manualResult.banked,
+      banked: sourceRecordResult.banked,
       queued,
-      manualImport: true,
+      sourceRecordsProcessed: true,
       deferredFetch: true,
     });
   }
@@ -3403,7 +3430,7 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
   });
   return finishRefreshResult(job, summary, {
     fetched: 0,
-    banked: manualResult.banked,
+    banked: sourceRecordResult.banked,
     queued,
     sourceCollection: 'reddit_browser_collector_required',
     directRedditFetchAttempted: false,
@@ -4764,6 +4791,7 @@ export const __test__ = {
   fetchSafeRssText,
   hasOpenActiveSlotForPlatform,
   hasRecentJobActivity,
+  isProcessableSourceRecordForAngleExtraction,
   isUnsupportedRedditRssSource,
   OPENAI_GENERATION_PAUSED_REPEATED_FAILURES_CODE,
   OPENAI_IMAGE_DAILY_LIMIT_REACHED_CODE,
