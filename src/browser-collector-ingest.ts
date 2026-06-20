@@ -11,6 +11,9 @@ export interface CollectorIngestEnv {
   COLLECTOR_INGEST_ENV?: string;
   COLLECTOR_INGEST_HMAC_SECRET?: string;
   COLLECTOR_INGEST_WRITE_ENABLED?: string;
+  COLLECTOR_INGEST_CANARY_SOURCE_ID?: string;
+  COLLECTOR_INGEST_CANARY_USER_ID?: string;
+  COLLECTOR_INGEST_MAX_RECORDS?: string;
   NODE_ENV?: string;
 }
 
@@ -315,18 +318,36 @@ export async function processBrowserCollectorIngest(
       });
     }
 
-    const writeResult = await writeSourceRecords(accepted, storage);
+    const scope = enforceWriteScope(accepted, guard);
+    if (!scope.ok) {
+      return respond(scope.status, {
+        status: 'write_blocked',
+        reason: scope.reason,
+        accepted_count: accepted.length,
+        rejected_count: rejected.length,
+        duplicate_count: duplicateCount,
+        dry_run: true,
+        write_enabled: false,
+        write_path: 'blocked',
+        summary: accepted.map(safeRecordSummary),
+        rejections: rejected,
+        side_effects: sideEffects(),
+      });
+    }
+
+    const writeResult = await writeSourceRecords(scope.records, storage);
     return respond(writeResult.failed.length ? 207 : 201, {
       status: writeResult.failed.length ? 'partial_write' : 'source_records_written',
-      accepted_count: accepted.length,
+      accepted_count: scope.records.length,
       rejected_count: rejected.length + writeResult.failed.length,
       duplicate_count: duplicateCount + writeResult.duplicateCount,
       dry_run: false,
       write_enabled: true,
       collector_ingest_env: guard.ingestEnv,
+      canary_scope: guard.canary ? 'owner_source' : 'none',
       source_records_written: writeResult.createdCount,
       source_records_attempted: writeResult.attemptedCount,
-      summary: accepted.map(safeRecordSummary),
+      summary: scope.records.map(safeRecordSummary),
       rejections: [...rejected, ...writeResult.failed],
       side_effects: sideEffects(writeResult.createdCount > 0),
     });
@@ -484,9 +505,17 @@ function validateCollectorRecord(input: unknown): { ok: true; record: Normalized
   };
 }
 
-function writeModeGuard(env: CollectorIngestEnv): { ok: true; ingestEnv: 'local' | 'staging' } | { ok: false; reason: string } {
+function writeModeGuard(env: CollectorIngestEnv): {
+  ok: true;
+  ingestEnv: 'local' | 'staging';
+  canary: boolean;
+  canaryUserId?: string;
+  canarySourceId?: string;
+  maxRecords: number;
+} | { ok: false; reason: string } {
   const ingestEnv = String(env.COLLECTOR_INGEST_ENV || '').trim().toLowerCase();
   const nodeEnv = String(env.NODE_ENV || process.env.NODE_ENV || '').trim().toLowerCase();
+  const maxRecords = parseMaxRecords(env.COLLECTOR_INGEST_MAX_RECORDS);
 
   if (ingestEnv === 'production' || nodeEnv === 'production') {
     return { ok: false, reason: 'production_collector_write_blocked' };
@@ -496,7 +525,44 @@ function writeModeGuard(env: CollectorIngestEnv): { ok: true; ingestEnv: 'local'
     return { ok: false, reason: 'collector_ingest_env_must_be_local_or_staging' };
   }
 
-  return { ok: true, ingestEnv };
+  if (ingestEnv === 'staging') {
+    const canaryUserId = String(env.COLLECTOR_INGEST_CANARY_USER_ID || '').trim();
+    const canarySourceId = String(env.COLLECTOR_INGEST_CANARY_SOURCE_ID || '').trim();
+    if (!canaryUserId || !canarySourceId) {
+      return { ok: false, reason: 'collector_canary_scope_required' };
+    }
+    return { ok: true, ingestEnv, canary: true, canaryUserId, canarySourceId, maxRecords };
+  }
+
+  return { ok: true, ingestEnv, canary: false, maxRecords };
+}
+
+function enforceWriteScope(
+  records: NormalizedCollectorRecord[],
+  guard: Exclude<ReturnType<typeof writeModeGuard>, { ok: false }>
+): { ok: true; records: NormalizedCollectorRecord[] } | { ok: false; status: number; reason: string } {
+  if (records.length > guard.maxRecords) {
+    return { ok: false, status: 400, reason: 'collector_batch_exceeds_canary_limit' };
+  }
+
+  if (guard.canary) {
+    const scoped = records.every(record => (
+      record.user_id === guard.canaryUserId &&
+      record.source_id === guard.canarySourceId &&
+      record.collector_type === 'authenticated_browser'
+    ));
+    if (!scoped) {
+      return { ok: false, status: 403, reason: 'collector_canary_scope_mismatch' };
+    }
+  }
+
+  return { ok: true, records };
+}
+
+function parseMaxRecords(value: string | undefined): number {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  if (!Number.isFinite(parsed)) return 2;
+  return Math.max(1, Math.min(parsed, 2));
 }
 
 async function writeSourceRecords(

@@ -23,6 +23,9 @@ interface Env {
   COLLECTOR_INGEST_HMAC_SECRET?: string;
   COLLECTOR_INGEST_WRITE_ENABLED?: string;
   COLLECTOR_INGEST_ENV?: string;
+  COLLECTOR_INGEST_CANARY_SOURCE_ID?: string;
+  COLLECTOR_INGEST_CANARY_USER_ID?: string;
+  COLLECTOR_INGEST_MAX_RECORDS?: string;
   [key: string]: string | undefined;
 }
 

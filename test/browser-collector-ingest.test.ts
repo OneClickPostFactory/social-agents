@@ -39,6 +39,17 @@ function env(overrides: Partial<CollectorIngestEnv> = {}): CollectorIngestEnv {
   };
 }
 
+function stagingWriteEnv(overrides: Partial<CollectorIngestEnv> = {}): CollectorIngestEnv {
+  return env({
+    COLLECTOR_INGEST_WRITE_ENABLED: 'true',
+    COLLECTOR_INGEST_ENV: 'staging',
+    COLLECTOR_INGEST_CANARY_USER_ID: 'test-user',
+    COLLECTOR_INGEST_CANARY_SOURCE_ID: 'test-source',
+    COLLECTOR_INGEST_MAX_RECORDS: '2',
+    ...overrides,
+  });
+}
+
 function mockStorage(existingRows: Array<{ id: string; url?: string | null; reddit_post_id?: string | null; content_hash?: string | null }> = []): {
   storage: CollectorIngestStorage;
   insertedRows: Array<Record<string, unknown>>;
@@ -246,9 +257,8 @@ async function main(): Promise<void> {
     assert.equal(writeResult.body.status, 'write_blocked');
   });
 
-  await run('valid signed staging payload creates source_records only through mock storage', async () => {
+  await run('staging write mode requires explicit owner source canary scope', async () => {
     const payload = validRecord();
-    const { storage, insertedRows } = mockStorage();
     const writeResult = await processBrowserCollectorIngest(
       JSON.stringify(payload),
       await signedHeaders(payload),
@@ -256,6 +266,21 @@ async function main(): Promise<void> {
         COLLECTOR_INGEST_WRITE_ENABLED: 'true',
         COLLECTOR_INGEST_ENV: 'staging',
       }),
+      nowMs
+    );
+
+    assert.equal(writeResult.status, 403);
+    assert.equal(writeResult.body.status, 'write_blocked');
+    assert.equal(writeResult.body.reason, 'collector_canary_scope_required');
+  });
+
+  await run('valid signed staging payload creates source_records only through mock storage', async () => {
+    const payload = validRecord();
+    const { storage, insertedRows } = mockStorage();
+    const writeResult = await processBrowserCollectorIngest(
+      JSON.stringify(payload),
+      await signedHeaders(payload),
+      stagingWriteEnv(),
       nowMs,
       storage
     );
@@ -277,10 +302,7 @@ async function main(): Promise<void> {
   await run('duplicate staging payload does not create duplicate source_records', async () => {
     const payload = validRecord();
     const { storage, insertedRows } = mockStorage();
-    const stagingEnv = env({
-      COLLECTOR_INGEST_WRITE_ENABLED: 'true',
-      COLLECTOR_INGEST_ENV: 'staging',
-    });
+    const stagingEnv = stagingWriteEnv();
 
     const first = await processBrowserCollectorIngest(JSON.stringify(payload), await signedHeaders(payload), stagingEnv, nowMs, storage);
     const second = await processBrowserCollectorIngest(JSON.stringify(payload), await signedHeaders(payload), stagingEnv, nowMs, storage);
@@ -309,7 +331,7 @@ async function main(): Promise<void> {
       await signedHeaders(payload),
       env({
         COLLECTOR_INGEST_WRITE_ENABLED: 'true',
-        COLLECTOR_INGEST_ENV: 'staging',
+        COLLECTOR_INGEST_ENV: 'local',
       }),
       nowMs,
       storage
@@ -319,6 +341,52 @@ async function main(): Promise<void> {
     assert.equal(writeResult.body.source_records_written, 0);
     assert.equal(insertedRows.length, 0);
     assert.match(JSON.stringify(writeResult.body), /mixed_user_batch_unsupported/);
+  });
+
+  await run('staging canary rejects wrong user or source before insert', async () => {
+    const payload = validRecord({ source_id: 'wrong-source' });
+    const { storage, insertedRows } = mockStorage();
+    const writeResult = await processBrowserCollectorIngest(
+      JSON.stringify(payload),
+      await signedHeaders(payload),
+      stagingWriteEnv(),
+      nowMs,
+      storage
+    );
+
+    assert.equal(writeResult.status, 403);
+    assert.equal(writeResult.body.status, 'write_blocked');
+    assert.equal(writeResult.body.reason, 'collector_canary_scope_mismatch');
+    assert.equal(insertedRows.length, 0);
+  });
+
+  await run('staging canary rejects more than two records before insert', async () => {
+    const payload = [
+      validRecord(),
+      validRecord({
+        source_url: 'https://www.reddit.com/r/openclawbot/comments/def/second/',
+        reddit_post_id: 't3_def',
+        content_hash: 'hash-2',
+      }),
+      validRecord({
+        source_url: 'https://www.reddit.com/r/openclawbot/comments/ghi/third/',
+        reddit_post_id: 't3_ghi',
+        content_hash: 'hash-3',
+      }),
+    ];
+    const { storage, insertedRows } = mockStorage();
+    const writeResult = await processBrowserCollectorIngest(
+      JSON.stringify(payload),
+      await signedHeaders(payload),
+      stagingWriteEnv(),
+      nowMs,
+      storage
+    );
+
+    assert.equal(writeResult.status, 400);
+    assert.equal(writeResult.body.status, 'write_blocked');
+    assert.equal(writeResult.body.reason, 'collector_batch_exceeds_canary_limit');
+    assert.equal(insertedRows.length, 0);
   });
 
   await run('write mode validates source ownership and source text', async () => {

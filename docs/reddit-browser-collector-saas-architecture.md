@@ -135,14 +135,16 @@ or publish-history rows directly.
 The collector verifies Supabase JWTs, derives `user_id` from the verified token,
 checks central entitlement/rollout, validates source ownership, manages Browser
 Run sessions, collects only configured subreddit `/new` pages, normalizes at
-most five posts, and delivers signed payloads to staging/backend ingestion.
+most two posts for the first live owner proof, and delivers signed payloads to
+staging/backend ingestion.
 
 ## Backend Responsibilities
 
 The backend validates collector signatures and payloads, verifies tenant/source
 relationships, dedupes source records, and creates `source_records` only when
-local/staging write mode is explicitly enabled. Ingestion does not call OpenAI,
-create `angle_records`, create `queue_items`, enqueue jobs, or publish.
+local/staging write mode is explicitly enabled. Staging writes for the first
+live proof must also pass the owner/source canary scope. Ingestion does not call
+OpenAI, create `angle_records`, create `queue_items`, enqueue jobs, or publish.
 
 Explicit downstream processing may later consume `origin = manual` and
 `origin = authenticated_browser` records when they include `source_text`.

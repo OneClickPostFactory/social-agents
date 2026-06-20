@@ -170,9 +170,11 @@ Current implementation status:
 - write mode also requires `COLLECTOR_INGEST_ENV=local` or
   `COLLECTOR_INGEST_ENV=staging`
 - production write mode is blocked by policy
+- staging write mode for the first live proof also requires a server-side
+  owner/source canary scope and max two records
 - write mode creates `source_records` only
-- no OpenAI, `angle_records`, `queue_items`, publishing, or production Supabase
-  side effects occur from the ingestion endpoint
+- no OpenAI, `angle_records`, `queue_items`, publishing, or non-canary
+  production Supabase side effects occur from the ingestion endpoint
 
 Current source-record mapping:
 
@@ -273,9 +275,10 @@ Milestone 1 proves the full boundary without turning on automation:
 - one configured subreddit source, with `openclawbot` first and
   `lovablebuildershub` as fallback
 - manual collection only
-- max 5 visible posts per run
+- max 2 visible posts per run for the first live owner proof
 - signed delivery to staging or local backend
-- backend staging dry-run validates signed payloads with write mode disabled
+- backend staging validates signed payloads and writes only inside the
+  owner/source canary scope
 - backend source-record write mode remains local/staging-only and production
   writes remain blocked
 - no OpenAI calls
