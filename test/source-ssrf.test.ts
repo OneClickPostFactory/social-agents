@@ -457,6 +457,41 @@ async function main(): Promise<void> {
     assert.doesNotMatch(sourceRecordBody, /readRedditPublicJsonListing|fetchRedditPublicJson|reddit_rss|reddit_oauth|devvit/i);
   });
 
+  await test('internal owner override grants non-expiring billing exemption only when active', () => {
+    assert.equal(__test__.isActiveInternalOwnerOverride({
+      access_level: 'internal_owner',
+      billing_exempt: true,
+      collector_entitled: true,
+      status: 'active',
+      expires_at: null,
+    }), true);
+
+    assert.equal(__test__.isActiveInternalOwnerOverride({
+      access_level: 'internal_owner',
+      billing_exempt: false,
+      collector_entitled: true,
+      status: 'active',
+      expires_at: null,
+    }), false);
+
+    assert.equal(__test__.isActiveInternalOwnerOverride({
+      access_level: 'internal_owner',
+      billing_exempt: true,
+      collector_entitled: true,
+      status: 'revoked',
+      expires_at: null,
+    }), false);
+  });
+
+  await test('internal owner provisioning script does not commit owner PII', () => {
+    const script = fs.readFileSync(path.join(process.cwd(), 'scripts', 'provision-internal-owner-access.mjs'), 'utf8');
+    assert.match(script, /PERMANENT_OWNER_ACCOUNT_EMAIL/);
+    assert.match(script, /internal_access_overrides/);
+    assert.match(script, /access_level: "internal_owner"/);
+    assert.doesNotMatch(script, /gracehaastrup@icloud\.com/i);
+    assert.doesNotMatch(script, /console\.(log|error)\([^)]*ownerEmail/);
+  });
+
   await test('source record eligibility admits manual and authenticated browser origins only', () => {
     const baseRecord = {
       origin: 'manual',

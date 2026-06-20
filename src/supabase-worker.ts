@@ -11,6 +11,7 @@ import * as threads from './threads';
 import * as x from './x';
 import {
   isSupabaseWorkerConfigured,
+  SupabaseRestError,
   supabaseDelete,
   supabaseInsert,
   supabaseSelect,
@@ -69,6 +70,14 @@ interface ProfileRow {
   current_period_end?: string | null;
   trial_ends_at?: string | null;
   dev_access_until?: string | null;
+}
+
+interface InternalAccessOverrideRow {
+  access_level?: string | null;
+  billing_exempt?: boolean | null;
+  collector_entitled?: boolean | null;
+  status?: string | null;
+  expires_at?: string | null;
 }
 
 interface UserSettingsRow {
@@ -1673,6 +1682,43 @@ ai.setOpenAIUsageRecorder(async event => {
   await writeWorkerLog(event.user_id, 'info', 'openai_call_recorded', event as unknown as JsonMap);
 });
 
+function isMissingInternalAccessTable(error: unknown): boolean {
+  if (!(error instanceof SupabaseRestError)) return false;
+  if (error.status === 404) return true;
+  const details = JSON.stringify(error.details || {});
+  return /internal_access_overrides|relation .* does not exist|PGRST205/i.test(details);
+}
+
+function isActiveInternalOwnerOverride(
+  override: InternalAccessOverrideRow | null | undefined,
+  nowMs = Date.now()
+): override is InternalAccessOverrideRow {
+  if (!override) return false;
+  if (override.status !== 'active') return false;
+  if (override.access_level !== 'internal_owner') return false;
+  if (override.billing_exempt !== true) return false;
+  if (!override.expires_at) return true;
+  const expiresAt = Date.parse(override.expires_at);
+  return Number.isFinite(expiresAt) && expiresAt > nowMs;
+}
+
+async function loadInternalAccessOverride(userId: string): Promise<InternalAccessOverrideRow | null> {
+  try {
+    const rows = await supabaseSelect<InternalAccessOverrideRow>('internal_access_overrides', {
+      select: 'access_level,billing_exempt,collector_entitled,status,expires_at',
+      filters: [
+        { column: 'user_id', operator: 'eq', value: userId },
+        { column: 'status', operator: 'eq', value: 'active' },
+      ],
+      limit: 1,
+    });
+    return rows[0] || null;
+  } catch (error) {
+    if (isMissingInternalAccessTable(error)) return null;
+    throw error;
+  }
+}
+
 async function loadEntitlement(userId: string): Promise<{ canWrite: boolean; status: string; reason: string }> {
   const profile = (await supabaseSelect<ProfileRow>('profiles', {
     select: 'subscription_status,current_period_end,trial_ends_at,dev_access_until',
@@ -1681,6 +1727,10 @@ async function loadEntitlement(userId: string): Promise<{ canWrite: boolean; sta
   }))[0];
 
   const status = profile?.subscription_status || 'none';
+  const internalAccess = await loadInternalAccessOverride(userId);
+  if (isActiveInternalOwnerOverride(internalAccess)) {
+    return { canWrite: true, status, reason: 'internal_owner' };
+  }
   if (hasDateInFuture(profile?.dev_access_until)) {
     return { canWrite: true, status, reason: 'dev_access' };
   }
@@ -4791,6 +4841,7 @@ export const __test__ = {
   fetchSafeRssText,
   hasOpenActiveSlotForPlatform,
   hasRecentJobActivity,
+  isActiveInternalOwnerOverride,
   isProcessableSourceRecordForAngleExtraction,
   isUnsupportedRedditRssSource,
   OPENAI_GENERATION_PAUSED_REPEATED_FAILURES_CODE,

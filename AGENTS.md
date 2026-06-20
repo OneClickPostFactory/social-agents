@@ -74,7 +74,7 @@ This codebase now has two runtime boundaries:
 - RSS evidence is not productive product evidence: HTTP fetches happened, but persisted evidence shows zero accepted posts, source records, angle records, queue rows, publish rows, or OpenAI calls from RSS. Do not make RSS the default or recommend it as a fix.
 - Manual Reddit import exists as an advanced fallback, not the main product direction. Existing metadata-only `source_records` are not draftable shortcuts; queue fill depends on source records with enough source body becoming `angle_records`.
 - SaaS credential values are decrypted with `CREDENTIAL_ENCRYPTION_KEY`.
-- SaaS billing entitlement is checked from Supabase `profiles`; the local SQLite billing state and local billing bypass do not grant SaaS worker entitlement. A future `profiles.dev_access_until` is the only SaaS dev/test override, and it must be presented as dev/test access rather than paid Stripe status.
+- SaaS billing entitlement is checked from Supabase `profiles`; the local SQLite billing state and local billing bypass do not grant SaaS worker entitlement. `profiles.dev_access_until` is only a time-limited dev/test override, and it must be presented as dev/test access rather than paid Stripe status. Permanent internal owner access lives in service-role-owned `internal_access_overrides`, keyed by immutable Supabase Auth user id, not email, and must not be represented as paid Stripe status.
 - Local SQLite remains acceptable for local admin/dev state, but it is not the SaaS tenant source of truth.
 
 Known SaaS worker limitations:

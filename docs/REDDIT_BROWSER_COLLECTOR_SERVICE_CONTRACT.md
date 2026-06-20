@@ -261,10 +261,13 @@ Milestone 1 proves the full boundary without turning on automation:
 - standalone Cloudflare Worker collector service
 - Cloudflare Browser Run human-in-the-loop Live View login
 - Supabase JWT validation with `user_id` derived from the access token
+- permanent internal owner access through service-owned
+  `internal_access_overrides`, keyed by immutable Supabase Auth user id
 - server-side collector rollout guard:
   `disabled`, `allowlist`, or future `all_entitled_users`
 - allowlist staging for the first test user; later production rollout must use
-  entitlement from `profiles`, not client-side user-id gating
+  entitlement from `internal_access_overrides` and `profiles`, not client-side
+  user-id or email gating
 - connect/reconnect flow
 - encrypted session storage
 - one configured subreddit source, with `openclawbot` first and
