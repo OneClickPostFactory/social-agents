@@ -379,12 +379,12 @@ interface PipelineSummary {
 const CONTENT_EXHAUSTED_MESSAGE =
   'Automation is working, but there are no usable collected source records or banked angles available.';
 const CONTENT_EXHAUSTED_NEXT_ACTION =
-  'Connect the Reddit Browser Collector or wait for it to deliver new source records.';
-const REDDIT_BROWSER_COLLECTOR_REQUIRED_CODE = 'reddit_browser_collector_required';
-const REDDIT_BROWSER_COLLECTOR_REQUIRED_MESSAGE =
-  'Reddit source collection now requires the connected Reddit Browser Collector. No server-side Reddit fetch was attempted.';
-const REDDIT_BROWSER_COLLECTOR_REQUIRED_NEXT_ACTION =
-  'Connect or repair the Reddit Browser Collector, then collect sources before running the queue pipeline again.';
+  'Connect Reddit authorization or wait for it to deliver new source records.';
+const REDDIT_AUTHORIZATION_REQUIRED_CODE = 'reddit_authorization_required';
+const REDDIT_AUTHORIZATION_REQUIRED_MESSAGE =
+  'Reddit source collection now requires the connected Reddit authorization flow. No server-side Reddit fetch was attempted; public JSON, RSS, Browser Run, and Devvit stayed inactive.';
+const REDDIT_AUTHORIZATION_REQUIRED_NEXT_ACTION =
+  'Connect or repair Reddit authorization, then collect sources before running the queue pipeline again.';
 const PARTIAL_INSTAGRAM_IMAGE_MESSAGE =
   'Automation created drafts for some platforms, but Instagram image generation was interrupted. Other platform drafts remain available.';
 const PARTIAL_INSTAGRAM_IMAGE_NEXT_ACTION =
@@ -1939,7 +1939,7 @@ async function createPipelineSummary(
   return {
     outcome: 'empty',
     message: 'No queue items were created yet.',
-    nextAction: 'Connect the Reddit Browser Collector or review existing source records and angles.',
+    nextAction: 'Connect Reddit authorization or review existing source records and angles.',
     access: {
       status: entitlement.status,
       canWrite: entitlement.canWrite,
@@ -2841,32 +2841,32 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
   if (summary.sources.fetchFailures > 0 && summary.sources.postsAccepted === 0) {
     const reason = primaryFailureReason(summary.sources.fetchFailureReasons);
     summary.outcome = 'blocked';
-    if (reason === REDDIT_BROWSER_COLLECTOR_REQUIRED_CODE) {
-      summary.message = REDDIT_BROWSER_COLLECTOR_REQUIRED_MESSAGE;
-      summary.nextAction = REDDIT_BROWSER_COLLECTOR_REQUIRED_NEXT_ACTION;
-      summary.failureCode ||= REDDIT_BROWSER_COLLECTOR_REQUIRED_CODE;
+    if (reason === REDDIT_AUTHORIZATION_REQUIRED_CODE) {
+      summary.message = REDDIT_AUTHORIZATION_REQUIRED_MESSAGE;
+      summary.nextAction = REDDIT_AUTHORIZATION_REQUIRED_NEXT_ACTION;
+      summary.failureCode ||= REDDIT_AUTHORIZATION_REQUIRED_CODE;
       return;
     }
     if (reason === 'reddit_public_json_rate_limited_429') {
       summary.message = 'Legacy Reddit public JSON was rate-limited from this runtime. Server-side Reddit fetching is no longer the active product path.';
-      summary.nextAction = REDDIT_BROWSER_COLLECTOR_REQUIRED_NEXT_ACTION;
+      summary.nextAction = REDDIT_AUTHORIZATION_REQUIRED_NEXT_ACTION;
       return;
     }
     if (reason === 'reddit_rss_source_unsupported') {
       summary.message = 'Reddit RSS is unsupported for the normal source flow and was skipped before fetch.';
-      summary.nextAction = REDDIT_BROWSER_COLLECTOR_REQUIRED_NEXT_ACTION;
+      summary.nextAction = REDDIT_AUTHORIZATION_REQUIRED_NEXT_ACTION;
       return;
     }
     if (reason === 'reddit_rss_http_403') {
       summary.message = summary.angles.activeAtStart > 0
         ? 'Source blocked by reddit_rss_http_403 before new RSS posts could be accepted.'
         : 'Source blocked by reddit_rss_http_403 and no draftable angle_records were available.';
-      summary.nextAction = REDDIT_BROWSER_COLLECTOR_REQUIRED_NEXT_ACTION;
+      summary.nextAction = REDDIT_AUTHORIZATION_REQUIRED_NEXT_ACTION;
       return;
     }
     summary.message = `Source fetching failed closed: ${reason}.`;
     summary.nextAction = reason === 'reddit_public_json_blocked_403'
-      ? REDDIT_BROWSER_COLLECTOR_REQUIRED_NEXT_ACTION
+      ? REDDIT_AUTHORIZATION_REQUIRED_NEXT_ACTION
       : reason.toLowerCase().includes('reddit')
       ? 'Open Logs, check the Reddit source status, and retry only after the block or source issue is resolved.'
       : 'Open Logs, fix the source connection, and retry source-record processing.';
@@ -2876,7 +2876,7 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
   if (summary.sources.configured === 0 || summary.sources.enabled === 0) {
     summary.outcome = 'blocked';
     summary.message = 'No enabled sources are configured.';
-    summary.nextAction = 'Connect the Reddit Browser Collector and configure explicit Reddit sources.';
+    summary.nextAction = 'Connect Reddit authorization and configure explicit Reddit sources.';
     return;
   }
 
@@ -2884,13 +2884,13 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
     if (summary.sources.rejectedByAuthor > 0) {
       summary.outcome = 'empty';
       summary.message = 'Source fetched successfully, but no items matched the source filters.';
-      summary.nextAction = 'Check the Browser Collector source author/subreddit filters.';
+      summary.nextAction = 'Check the Reddit source author/subreddit filters.';
       return;
     }
     if (summary.sources.rejectedBySubreddit > 0) {
       summary.outcome = 'empty';
       summary.message = 'Source fetched successfully, but no items matched the source filters.';
-      summary.nextAction = 'Check the Browser Collector source author/subreddit filters.';
+      summary.nextAction = 'Check the Reddit source author/subreddit filters.';
       return;
     }
     summary.outcome = 'empty';
@@ -2907,7 +2907,7 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
   if (summary.sources.rejectedUnfilteredRss > 0 && summary.sources.postsAccepted === 0) {
     summary.outcome = 'blocked';
     summary.message = 'RSS is unsupported for the normal source flow.';
-    summary.nextAction = REDDIT_BROWSER_COLLECTOR_REQUIRED_NEXT_ACTION;
+    summary.nextAction = REDDIT_AUTHORIZATION_REQUIRED_NEXT_ACTION;
     return;
   }
 
@@ -2938,7 +2938,7 @@ function finalizePipelineSummary(summary: PipelineSummary): void {
   if (summary.angles.legacyRejected > 0) {
     summary.outcome = 'empty';
     summary.message = 'Legacy Angle Bank rows were quarantined because they were missing required source or platform metadata.';
-    summary.nextAction = 'Connect the Reddit Browser Collector so fresh tenant-scoped source records can be delivered.';
+    summary.nextAction = 'Connect Reddit authorization so fresh tenant-scoped source records can be delivered.';
     return;
   }
 
@@ -3468,21 +3468,21 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
   }
 
   summary.sources.fetchFailures++;
-  incrementCounter(summary.sources.fetchFailureReasons, REDDIT_BROWSER_COLLECTOR_REQUIRED_CODE);
-  await writeWorkerLog(job.user_id, 'info', REDDIT_BROWSER_COLLECTOR_REQUIRED_CODE, {
+  incrementCounter(summary.sources.fetchFailureReasons, REDDIT_AUTHORIZATION_REQUIRED_CODE);
+  await writeWorkerLog(job.user_id, 'info', REDDIT_AUTHORIZATION_REQUIRED_CODE, {
     jobId: job.id,
     kind: job.kind,
     direct_reddit_fetch_attempted: false,
     openai_called: false,
     queue_rows_created: false,
-    message: REDDIT_BROWSER_COLLECTOR_REQUIRED_MESSAGE,
-    next_action: REDDIT_BROWSER_COLLECTOR_REQUIRED_NEXT_ACTION,
+    message: REDDIT_AUTHORIZATION_REQUIRED_MESSAGE,
+    next_action: REDDIT_AUTHORIZATION_REQUIRED_NEXT_ACTION,
   });
   return finishRefreshResult(job, summary, {
     fetched: 0,
     banked: sourceRecordResult.banked,
     queued,
-    sourceCollection: 'reddit_browser_collector_required',
+    sourceCollection: 'reddit_authorization_required',
     directRedditFetchAttempted: false,
     deferredFetch: true,
   });

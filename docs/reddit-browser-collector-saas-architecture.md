@@ -1,4 +1,4 @@
-# Reddit Browser Collector SaaS Architecture
+# Archived Reddit Browser Collector SaaS Architecture
 
 ## Current System Truth
 
@@ -7,15 +7,16 @@ Supabase and owns dashboard routes, user settings, tenant-owned source records,
 OpenAI angle extraction, queue generation, publishing, logs, and billing
 state.
 
-The Reddit Browser Collector is a separate Cloudflare Worker service. It owns
-user-authorised Reddit browser sessions, encrypted per-user browser state,
-manual collection from configured Reddit sources, normalized source payloads,
-and signed staging delivery. It does not own OpenAI, queue creation,
-publishing, billing, or product settings outside Reddit source collection.
+This Browser Run / Playwright web-login direction is archived. The current SaaS
+source-connection path is normal Reddit authorization: the app stores encrypted
+per-user Reddit tokens, fetches configured subreddit sources through Reddit's
+authenticated API, writes normalized `source_records`, and does not own OpenAI,
+queue creation, publishing, billing, or product settings outside Reddit source
+collection.
 
-Cloudflare Worker-side Reddit public JSON, RSS, Reddit OAuth, and Devvit are
-inactive/archive paths. Manual import remains an advanced fallback, not the
-normal Reddit ingestion direction.
+Cloudflare Worker-side Reddit public JSON, RSS, Browser Run/Playwright
+web-login collection, and Devvit are inactive/archive paths. Manual import
+remains an advanced fallback, not the normal Reddit ingestion direction.
 
 ## Canonical Tenant Key
 
@@ -42,7 +43,7 @@ The owner account does not bypass:
 - tenant isolation
 - source ownership checks
 - session and collection limits
-- Browser Run capacity protection
+- Reddit API/source collection capacity protection
 - abuse-prevention limits
 
 The owner email is only a provisioning input. Ongoing authorization must use the

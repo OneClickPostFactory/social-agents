@@ -2,23 +2,26 @@
 
 ## Current Product Direction
 
-Reddit collection is moving out of the Cloudflare Worker and into a separate
-user-authorised Reddit Browser Collector service. The OneClickPostFactory main
-app remains responsible for tenant source records, OpenAI angle extraction,
-platform drafts, queueing, scheduled publishing, publish history, billing, and
-logs. The collector service owns Reddit login/session handling, explicit source
-collection, limits, and signed delivery of normalized source records.
+Reddit collection is moving out of Worker-side public JSON/RSS and the blocked
+Browser Run web-login experiment. The active SaaS path is the normal Reddit
+authorization flow: the app sends the user to Reddit authorization, stores
+encrypted Reddit tokens per user, fetches explicit subreddit sources through
+Reddit's authenticated API, and writes tenant-scoped `source_records`. The
+OneClickPostFactory main app remains responsible for tenant source records,
+OpenAI angle extraction, platform drafts, queueing, scheduled publishing,
+publish history, billing, and logs.
 
 Active `fetch_sources` / `refresh_queue` behavior must not call Reddit public
 JSON or Reddit RSS from the Cloudflare Worker as the normal product path. If no
 usable source records or banked angles exist, the worker should return
-`reddit_browser_collector_required` and stop before Reddit, OpenAI, queue
+`reddit_authorization_required` and stop before Reddit, OpenAI, queue
 creation, or publishing side effects.
 
-Reddit public JSON, Reddit RSS, Reddit OAuth source ingestion, and Devvit are
-legacy/quarantined/reference paths. Keep old migration history and compatibility
-fields where needed, but do not present those paths as current product setup.
-Manual import remains an advanced fallback only, not the core product direction.
+Reddit public JSON, Reddit RSS, Browser Run/Playwright web-login collection, and
+Devvit are legacy/quarantined/reference paths. Keep old migration history and
+compatibility fields where needed, but do not present those paths as current
+product setup. Manual import remains an advanced fallback only, not the core
+product direction.
 
 ## Production Tenant Rules
 
@@ -52,9 +55,9 @@ Rules:
 - `source_scope = generic_rss` is legacy metadata only. RSS is quarantined from
   normal product flow and should not be offered as a normal source path.
 - Manual Reddit import remains an advanced fallback for Reddit fetch blocks.
-  The Reddit Browser Collector is the target ingestion direction. Both paths
-  store tenant-scoped `source_records` rows with enough `source_text` for later
-  explicit source-record processing. Metadata-only source records are not
+  The Reddit authorization connector is the target ingestion direction. Both
+  paths store tenant-scoped `source_records` rows with enough `source_text` for
+  later explicit source-record processing. Metadata-only source records are not
   draftable shortcuts.
 
 Legacy `rss` rows are preserved for history but quarantined from normal
@@ -70,11 +73,10 @@ canonical names.
 Reddit public JSON (`acquisition_mode = public_json`) was the only path with
 persisted end-to-end Cloudflare Worker evidence, but it is no longer the active
 product direction. It is a legacy compatibility path while the product moves to
-the separate Reddit Browser Collector service.
+the normal Reddit authorization connector.
 
-Reddit OAuth is removed/quarantined from the product source path. Reddit RSS is
-also quarantined from normal user flow. Existing Reddit RSS rows may remain for
-history, but they should be disabled or marked `needs_attention` with
+Reddit RSS is quarantined from normal user flow. Existing Reddit RSS rows may
+remain for history, but they should be disabled or marked `needs_attention` with
 `last_error_code = reddit_rss_source_unsupported`; the worker skips them before
 fetching and must not call OpenAI or create source/angle/queue rows from them.
 
@@ -112,23 +114,25 @@ RSS has returned HTTP 200 separately from the Cloudflare Worker runtime, but the
 persisted Worker evidence shows zero RSS accepted posts, zero source records,
 zero angle records, zero queue rows, zero publish rows, and zero OpenAI calls.
 Current strategy is: preserve old migration history and compatibility rows,
-quarantine public JSON/RSS/OAuth/Devvit from normal setup, make the Browser
-Collector the target collection path, and keep source-fetch failures from
-calling OpenAI.
+quarantine public JSON/RSS/Browser Run/Devvit from normal setup, make the Reddit
+authorization connector the target collection path, and keep source-fetch
+failures from calling OpenAI.
 
 Public JSON settings still exist for explicit advanced/runtime control:
 
 - `REDDIT_PUBLIC_JSON_TRANSPORT=auto|fetch|node_https`
 
-Reddit client ID/secret values are not part of the product source path and must
-not be presented as required setup. Existing encrypted columns may remain
-temporarily for non-destructive compatibility, but the worker does not use them
-to choose source-fetch behavior. The tenant's source intent rows remain the only
-inputs that decide which Reddit posts may enter that tenant's workflow.
+Reddit client ID/secret values are app-level deployment credentials for the
+normal Reddit authorization connector, not per-tenant source-fetch switches.
+Encrypted per-user Reddit access and refresh tokens live in `user_credentials`
+after the user completes Reddit authorization. The tenant's source intent rows
+remain the only inputs that decide which Reddit posts may enter that tenant's
+workflow.
 
-Automated Reddit collection remains the product direction, but it belongs in the
-separate Browser Collector service rather than the Cloudflare Worker. Manual
-paste/import is a fallback, not the main operating model.
+Automated Reddit collection remains the product direction, but it now belongs to
+the SaaS Reddit authorization connector rather than Worker-side public JSON/RSS
+or Browser Run web-login collection. Manual paste/import is a fallback, not the
+main operating model.
 
 ### Reddit Request Shape
 
@@ -245,15 +249,15 @@ The summary includes:
 
 Common empty outcomes:
 
-- Reddit RSS row was skipped as `reddit_rss_source_unsupported`; Browser
-  Collector delivery is the target source path and OpenAI is not called for the
-  unsupported row
+- Reddit RSS row was skipped as `reddit_rss_source_unsupported`; the Reddit
+  authorization connector is the target source path and OpenAI is not called
+  for the unsupported row
 - no Reddit posts matched the configured author filter
 - `content_exhausted`: automation is working, but current Reddit sources have
   no new usable collected records and there are no unused angles to schedule.
   This is a healthy terminal state, not a Reddit/platform failure. The next
-  action is to connect or repair the Reddit Browser Collector, collect explicit
-  sources, or use the advanced manual fallback with stored source text.
+  action is to connect or repair Reddit authorization, collect explicit sources,
+  or use the advanced manual fallback with stored source text.
 - Reddit/API access failed closed
 - source-record processing succeeded, but OpenAI text angle extraction failed
 - no usable angles were extracted

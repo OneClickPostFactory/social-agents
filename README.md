@@ -83,13 +83,14 @@ CLOUDINARY_API_SECRET=<cloudinary-api-secret>
 CLOUDINARY_FOLDER=social-agent/instagram
 ```
 
-Cloudflare production does not use Reddit OAuth for source fetching. Cloudflare
-Worker public JSON/RSS fetching is no longer the active product direction.
-Reddit collection is moving to the separate user-authorised Reddit Browser
-Collector service, which will deliver normalized source records back to the
-OneClick backend. Manual import remains an advanced fallback only. The tenant's
-Reddit source intent still comes from `user_sources`; runtime env must not be
-used as a global tenant author/subreddit fallback.
+Cloudflare production no longer uses Worker-side Reddit public JSON/RSS or
+Browser Run web-login collection as the active source path. The active SaaS
+direction is the normal Reddit authorization flow: OneClick stores encrypted
+Reddit tokens per user, fetches configured subreddit sources through Reddit's
+authenticated API, and writes tenant-scoped `source_records` only. Manual import
+remains an advanced fallback. The tenant's Reddit source intent still comes from
+`user_sources`; runtime env must not be used as a global tenant author/subreddit
+fallback.
 
 Run only the worker loop with:
 

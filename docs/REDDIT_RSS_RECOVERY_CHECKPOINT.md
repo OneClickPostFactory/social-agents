@@ -4,9 +4,9 @@ Date: 2026-06-03
 
 Status: historical checkpoint. This document preserves the RSS/public JSON
 investigation trail, but it is no longer the active product direction. The
-current direction is a separate Reddit Browser Collector service that delivers
-normalized source records to OneClickPostFactory. The Cloudflare Worker should
-not call Reddit public JSON or RSS as the normal source-ingestion path.
+current direction is the normal Reddit authorization connector that writes
+tenant-scoped source records to OneClickPostFactory. The Cloudflare Worker
+should not call Reddit public JSON or RSS as the normal source-ingestion path.
 
 ## Problem Solved
 
@@ -42,14 +42,15 @@ RSS was not the May 21 success path. RSS has returned HTTP 200 separately, but
 persisted Worker evidence shows zero RSS accepted posts, angle records, queue
 rows, or publishes.
 
-Current source strategy after the Browser Collector reset:
+Current source strategy after the blocked browser-login reset:
 
-- The separate Reddit Browser Collector is the target Reddit ingestion path.
-- The main app owns source records, OpenAI angle extraction, queueing,
-  publishing, logs, and billing.
-- The collector owns Reddit login/session storage, explicit subreddit/user
-  collection, limits, and signed source-record delivery.
-- Public JSON, RSS, Reddit OAuth source ingestion, and Devvit are
+- The normal Reddit authorization connector is the target Reddit ingestion
+  path.
+- The main app owns encrypted per-user Reddit tokens, source records, OpenAI
+  angle extraction, queueing, publishing, logs, and billing.
+- Source collection uses configured subreddit `user_sources` and authenticated
+  Reddit API fetches, then writes `source_records` only.
+- Public JSON, RSS, Browser Run/Playwright web-login collection, and Devvit are
   legacy/quarantined/reference paths, not normal user setup.
 - Existing Reddit RSS rows remain quarantined/unsupported, preserved as rows,
   and disabled or marked `needs_attention` with
@@ -63,10 +64,10 @@ Guardrails for future LLM/code sessions:
 - Do not revive public JSON as the active product path; it is historical
   evidence and compatibility only.
 - Do not present RSS as the proven May 21 path or as a recommended/default path.
-- Do not force Reddit OAuth as the fix; it is removed/quarantined from the
-  product source path.
+- Do not force the old per-source Reddit OAuth credential path as the fix.
+  Only the app-level Reddit authorization connector is active.
 - Keep automated Reddit collection as the product direction through the
-  separate Browser Collector; manual import is fallback only.
+  Reddit authorization connector; manual import is fallback only.
 - Use the honest Reddit-format User-Agent
   `cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)`
   for Reddit public JSON and any retained RSS safety helper.
@@ -84,9 +85,9 @@ shape drift risk: the public JSON helper still sent a browser-shaped
 `Mozilla/AppleWebKit` User-Agent even though Reddit guidance requires unique,
 descriptive, non-misleading client identification. The recovery path is not to
 spoof a browser more convincingly. This checkpoint is now superseded by the
-Browser Collector direction; if legacy helpers remain, they must keep honest
-headers and continue blocking OpenAI/queue side effects when source fetching
-fails.
+Reddit authorization connector direction; if legacy helpers remain, they must
+keep honest headers and continue blocking OpenAI/queue side effects when source
+fetching fails.
 
 ## Files Changed
 
@@ -158,10 +159,11 @@ not the normal supported Reddit product path.
 
 ## Focused Public JSON / OAuth Removal Update
 
-Later on 2026-06-03, Reddit OAuth was removed/quarantined from the product source
-path without destructively dropping credential columns. Existing misleading
-Reddit `acquisition_mode = oauth` rows are migrated to `public_json`, preserving
-source ids, ownership, values, filters, timestamps, and enabled/disabled state.
+Later on 2026-06-03, the old per-source Reddit OAuth credential path was
+removed/quarantined from the product source path without destructively dropping
+credential columns. Existing misleading Reddit `acquisition_mode = oauth` rows
+are migrated to `public_json`, preserving source ids, ownership, values,
+filters, timestamps, and enabled/disabled state.
 
 This update:
 
@@ -170,7 +172,7 @@ This update:
 - stops the backend worker from decrypting tenant Reddit client id/secret for
   source fetching
 - removes Reddit client id/secret from the browser credential UI
-- removes Reddit OAuth recommendation/warning copy
+- removes old per-source Reddit OAuth recommendation/warning copy
 - quarantines Reddit RSS from the normal product path
 - does not build new manual import behavior in this patch
 

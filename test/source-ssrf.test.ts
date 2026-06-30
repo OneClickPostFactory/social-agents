@@ -435,13 +435,13 @@ async function main(): Promise<void> {
     assert.doesNotMatch(worker, /reddit_rss_http_403[\s\S]{0,500}readRedditPublicJsonListing/);
     assert.doesNotMatch(worker, /health_status:\s*'needs_attention'/);
     assert.doesNotMatch(worker, /blocked_until:\s*new Date/);
-    assert.match(worker, /reddit_browser_collector_required/);
+    assert.match(worker, /reddit_authorization_required/);
   });
 
   await test('queue fill reports no draftable angles when Reddit RSS is blocked', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
     assert.match(worker, /Source blocked by reddit_rss_http_403 and no draftable angle_records were available/);
-    assert.match(worker, /Connect or repair the Reddit Browser Collector/);
+    assert.match(worker, /Connect or repair Reddit authorization/);
   });
 
   await test('manual and authenticated browser source records require stored source text for processing', () => {
@@ -555,17 +555,17 @@ async function main(): Promise<void> {
     assert.match(publicJsonAdapter, /export async function fetchRedditPublicJson/);
   });
 
-  await test('legacy public JSON 403 guidance points to Browser Collector instead of Reddit OAuth', () => {
+  await test('legacy public JSON 403 guidance points to Reddit authorization instead of legacy OAuth', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
     assert.match(worker, /reddit_public_json_blocked_403/);
-    assert.match(worker, /Connect or repair the Reddit Browser Collector/);
+    assert.match(worker, /Connect or repair Reddit authorization/);
     assert.doesNotMatch(worker, /use RSS only as a best-effort source/);
     assert.doesNotMatch(worker, /Configure Reddit OAuth/);
     assert.doesNotMatch(worker, /Reddit OAuth is optional/);
     assert.doesNotMatch(worker, /Check Reddit API credentials/);
   });
 
-  await test('Reddit RSS source rows are unsupported outside the Browser Collector direction', () => {
+  await test('Reddit RSS source rows are unsupported outside the Reddit authorization direction', () => {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
     assert.equal(__test__.isUnsupportedRedditRssSource(source({})), true);
     assert.equal(__test__.isUnsupportedRedditRssSource(source({
@@ -579,7 +579,7 @@ async function main(): Promise<void> {
       source_scope: 'generic_rss',
     })), false);
     assert.match(worker, /reddit_rss_source_unsupported/);
-    assert.match(worker, /Connect or repair the Reddit Browser Collector/);
+    assert.match(worker, /Connect or repair Reddit authorization/);
   });
 
   await test('direct Reddit source fetching is disabled in the active worker flow', () => {
@@ -588,7 +588,7 @@ async function main(): Promise<void> {
     assert.match(worker, /value === 'public_json'/);
     assert.doesNotMatch(worker, /fetchTenantSourcePosts/);
     assert.doesNotMatch(worker, /readRedditPublicJsonListing/);
-    assert.match(worker, /reddit_browser_collector_required/);
+    assert.match(worker, /reddit_authorization_required/);
     assert.match(worker, /No server-side Reddit fetch was attempted/);
     assert.match(worker, /directRedditFetchAttempted:\s*false/);
   });

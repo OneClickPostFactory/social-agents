@@ -1,16 +1,20 @@
 # Reddit Browser Collector Service Contract
 
-Status: contract plus disabled-by-default backend ingestion endpoint,
-local/staging-only source-record write mode, and a staging Cloudflare Browser
-Run collector implementation.
-Last updated: 2026-06-19.
+Status: archived reference. This Browser Run / Playwright Reddit web-login path
+was blocked before user authentication and is no longer the active product
+direction.
+Last updated: 2026-06-30.
+
+Superseded by: the SaaS Reddit authorization connector. The active path sends
+users through Reddit's normal authorization page, stores encrypted Reddit tokens
+per OneClick user, fetches configured subreddit sources through Reddit's
+authenticated API, and writes `source_records` only.
 
 ## Purpose
 
-The Reddit Browser Collector is the target Reddit source-ingestion service for
-OneClickPostFactory. It replaces Worker-side Reddit public JSON, Reddit RSS,
-Reddit OAuth source ingestion, Devvit, and manual paste as the active product
-direction.
+The Reddit Browser Collector was a proposed Reddit source-ingestion service for
+OneClickPostFactory. It is retained as an implementation record only. It must
+not be presented in product UI as the active Reddit connection path.
 
 The main OneClickPostFactory app remains Cloudflare plus Supabase. It owns the
 dashboard, settings, source records, OpenAI pipeline, queue, publishing, logs,
