@@ -17,6 +17,10 @@ CLOUDINARY_FOLDER = "social-agent/instagram"
 COLLECTOR_INGEST_ENABLED = "false"
 COLLECTOR_INGEST_WRITE_ENABLED = "false"
 COLLECTOR_INGEST_ENV = "production"
+REDDIT_CONNECTOR_ENABLED = "true"
+REDDIT_CONNECTOR_MAX_POSTS_PER_RUN = "2"
+REDDIT_CONNECTOR_PAIRING_TTL_SECONDS = "600"
+APP_ALLOWED_ORIGINS = "https://www.oneclickpostfactory.com,https://oneclickpostfactory.woeinvests.workers.dev"
 
 [env.collector_staging]
 name = "oneclickpostfactory-agent-collector-staging"
