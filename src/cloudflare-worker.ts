@@ -26,6 +26,11 @@ interface Env {
   COLLECTOR_INGEST_CANARY_SOURCE_ID?: string;
   COLLECTOR_INGEST_CANARY_USER_ID?: string;
   COLLECTOR_INGEST_MAX_RECORDS?: string;
+  REDDIT_CONNECTOR_ENABLED?: string;
+  REDDIT_CONNECTOR_MAX_POSTS_PER_RUN?: string;
+  REDDIT_CONNECTOR_PAIRING_TTL_SECONDS?: string;
+  REDDIT_CONNECTOR_PAIRING_SECRET?: string;
+  APP_ALLOWED_ORIGINS?: string;
   [key: string]: string | undefined;
 }
 
@@ -85,6 +90,12 @@ export default {
       applyCloudflareEnv(env);
       const { handleBrowserCollectorIngestRequest } = await import('./browser-collector-ingest');
       return handleBrowserCollectorIngestRequest(request, env);
+    }
+
+    if (url.pathname.startsWith('/api/connectors/reddit/')) {
+      applyCloudflareEnv(env);
+      const { handleRedditConnectorRequest } = await import('./reddit-connector');
+      return handleRedditConnectorRequest(request, env);
     }
 
     if (url.pathname === '/tick' && request.method === 'POST') {

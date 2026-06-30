@@ -367,6 +367,102 @@ export async function processBrowserCollectorIngest(
   });
 }
 
+export async function processTrustedConnectorSourceRecords(
+  rawBody: string,
+  authenticatedUserId: string,
+  maxRecords = 2,
+  storage: CollectorIngestStorage = defaultStorage
+): Promise<CollectorIngestProcessResult> {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(rawBody || '{}');
+  } catch {
+    return rejection(400, 'invalid_json', 'Request body must be valid JSON.');
+  }
+
+  if (containsForbiddenKey(payload)) {
+    return rejection(400, 'unsafe_payload_fields', 'Payload contains forbidden session, cookie, token, or browser storage fields.');
+  }
+
+  const recordsInput = extractRecords(payload);
+  if (!recordsInput.length) {
+    return rejection(400, 'missing_records', 'At least one connector record is required.');
+  }
+  if (recordsInput.length > maxRecords) {
+    return respond(400, {
+      status: 'rejected',
+      error: 'connector_batch_exceeds_limit',
+      message: 'Connector batch exceeds the configured maximum.',
+      accepted_count: 0,
+      rejected_count: recordsInput.length,
+      duplicate_count: 0,
+      dry_run: false,
+      write_enabled: true,
+      side_effects: sideEffects(),
+    });
+  }
+
+  const seen = new Set<string>();
+  const accepted: NormalizedCollectorRecord[] = [];
+  const rejected: Array<{ index: number; code: string; message: string }> = [];
+  let duplicateCount = 0;
+
+  recordsInput.forEach((recordInput, index) => {
+    if (!isRecord(recordInput)) {
+      rejected.push({ index, code: 'invalid_record', message: 'Connector record must be an object.' });
+      return;
+    }
+    const serverScopedRecord = {
+      ...recordInput,
+      user_id: authenticatedUserId,
+      tenant_user_id: authenticatedUserId,
+    };
+    const validated = validateCollectorRecord(serverScopedRecord);
+    if (!validated.ok) {
+      rejected.push({ index, code: validated.code, message: validated.message });
+      return;
+    }
+
+    const dedupeIdentity = dedupeKey(validated.record);
+    if (seen.has(dedupeIdentity)) {
+      duplicateCount++;
+      return;
+    }
+
+    seen.add(dedupeIdentity);
+    accepted.push(validated.record);
+  });
+
+  if (!accepted.length) {
+    return respond(400, {
+      status: 'rejected',
+      accepted_count: 0,
+      rejected_count: rejected.length,
+      duplicate_count: duplicateCount,
+      dry_run: false,
+      write_enabled: true,
+      rejections: rejected,
+      side_effects: sideEffects(),
+    });
+  }
+
+  const writeResult = await writeSourceRecords(accepted, storage);
+  return respond(writeResult.failed.length ? 207 : 201, {
+    status: writeResult.failed.length ? 'partial_write' : 'source_records_written',
+    accepted_count: accepted.length,
+    rejected_count: rejected.length + writeResult.failed.length,
+    duplicate_count: duplicateCount + writeResult.duplicateCount,
+    dry_run: false,
+    write_enabled: true,
+    write_path: 'paired_user_connector',
+    source_records_written: writeResult.createdCount,
+    source_records_attempted: writeResult.attemptedCount,
+    summary: accepted.map(safeRecordSummary),
+    rejections: [...rejected, ...writeResult.failed],
+    side_effects: sideEffects(writeResult.createdCount > 0),
+  });
+}
+
 export async function signCollectorPayload(secret: string, timestamp: string, payload: unknown): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',

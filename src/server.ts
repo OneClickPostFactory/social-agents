@@ -44,6 +44,7 @@ import {
 } from './control-plane';
 import { runFetch, runPostAll, runPostSlot, runReleaseSlot, runUpdateSlot } from './automation-service';
 import { processBrowserCollectorIngest } from './browser-collector-ingest';
+import { handleRedditConnectorRequest } from './reddit-connector';
 import { getAutomationGate, getRuntimeReadiness } from './runtime-policy';
 import {
   asObject,
@@ -240,6 +241,31 @@ function headersFromIncoming(req: http.IncomingMessage): Headers {
     }
   }
   return headers;
+}
+
+function requestFromIncoming(req: http.IncomingMessage, rawBody: string): Request {
+  const headers = headersFromIncoming(req);
+  const url = new URL(req.url || '/', FRONTEND_BASE_URL);
+  const method = req.method || 'GET';
+  return new Request(url, {
+    method,
+    headers,
+    body: method === 'GET' || method === 'HEAD' ? undefined : rawBody,
+  });
+}
+
+async function writeFetchResponse(
+  res: http.ServerResponse,
+  response: Response,
+  origin?: string
+): Promise<void> {
+  applyCorsHeaders(res, origin);
+  for (const [key, value] of response.headers.entries()) {
+    if (key.toLowerCase().startsWith('access-control-')) continue;
+    res.setHeader(key, value);
+  }
+  res.writeHead(response.status);
+  res.end(await response.text());
 }
 
 function getRequestOrigin(req: http.IncomingMessage): string | undefined {
@@ -632,6 +658,54 @@ const routes: RouteDef[] = [
     handler: async (req, res, context) => {
       const result = await processBrowserCollectorIngest(context.rawBody, headersFromIncoming(req), process.env);
       json(res, result.body, context.requestId, result.status, context.origin);
+    },
+  },
+  {
+    method: 'POST',
+    path: '/api/connectors/reddit/pairing-code',
+    handler: async (req, res, context) => {
+      const response = await handleRedditConnectorRequest(requestFromIncoming(req, context.rawBody), process.env);
+      await writeFetchResponse(res, response, context.origin);
+    },
+  },
+  {
+    method: 'POST',
+    path: '/api/connectors/reddit/pair',
+    handler: async (req, res, context) => {
+      const response = await handleRedditConnectorRequest(requestFromIncoming(req, context.rawBody), process.env);
+      await writeFetchResponse(res, response, context.origin);
+    },
+  },
+  {
+    method: 'GET',
+    path: '/api/connectors/reddit/status',
+    handler: async (req, res, context) => {
+      const response = await handleRedditConnectorRequest(requestFromIncoming(req, context.rawBody), process.env);
+      await writeFetchResponse(res, response, context.origin);
+    },
+  },
+  {
+    method: 'POST',
+    path: '/api/connectors/reddit/disconnect',
+    handler: async (req, res, context) => {
+      const response = await handleRedditConnectorRequest(requestFromIncoming(req, context.rawBody), process.env);
+      await writeFetchResponse(res, response, context.origin);
+    },
+  },
+  {
+    method: 'GET',
+    path: '/api/connectors/reddit/sources',
+    handler: async (req, res, context) => {
+      const response = await handleRedditConnectorRequest(requestFromIncoming(req, context.rawBody), process.env);
+      await writeFetchResponse(res, response, context.origin);
+    },
+  },
+  {
+    method: 'POST',
+    path: '/api/connectors/reddit/source-records',
+    handler: async (req, res, context) => {
+      const response = await handleRedditConnectorRequest(requestFromIncoming(req, context.rawBody), process.env);
+      await writeFetchResponse(res, response, context.origin);
     },
   },
   {

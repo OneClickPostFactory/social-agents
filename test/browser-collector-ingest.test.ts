@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   processBrowserCollectorIngest,
+  processTrustedConnectorSourceRecords,
   signCollectorPayload,
   type CollectorIngestEnv,
   type CollectorIngestStorage,
@@ -406,6 +407,44 @@ async function main(): Promise<void> {
     assert.equal(writeResult.status, 207);
     assert.equal(writeResult.body.source_records_written, 0);
     assert.equal(writeResult.body.rejected_count, 1);
+  });
+
+  await run('paired connector path derives user id server-side and writes source_records only', async () => {
+    const payload = validRecord({ user_id: 'attacker-user' });
+    const { storage, insertedRows } = mockStorage();
+
+    const result = await processTrustedConnectorSourceRecords(JSON.stringify({ records: [payload] }), 'test-user', 2, storage);
+
+    assert.equal(result.status, 201);
+    assert.equal(result.body.status, 'source_records_written');
+    assert.equal(insertedRows.length, 1);
+    assert.equal(insertedRows[0].user_id, 'test-user');
+    assert.equal(insertedRows[0].origin, 'authenticated_browser');
+    assert.equal((result.body.side_effects as Record<string, unknown>).openai_called, false);
+    assert.equal((result.body.side_effects as Record<string, unknown>).queue_rows_created, false);
+    assert.equal((result.body.side_effects as Record<string, unknown>).publishing_triggered, false);
+  });
+
+  await run('paired connector path rejects unsafe fields and over-limit batches', async () => {
+    const { storage, insertedRows } = mockStorage();
+    const unsafe = await processTrustedConnectorSourceRecords(
+      JSON.stringify({ records: [validRecord({ raw_metadata: { cookies: 'nope' } })] }),
+      'test-user',
+      2,
+      storage
+    );
+    assert.equal(unsafe.status, 400);
+    assert.equal(unsafe.body.error, 'unsafe_payload_fields');
+
+    const tooMany = await processTrustedConnectorSourceRecords(
+      JSON.stringify({ records: [validRecord(), validRecord({ reddit_post_id: 't3_def', source_url: 'https://www.reddit.com/r/openclawbot/comments/def/second/', content_hash: 'hash-2' })] }),
+      'test-user',
+      1,
+      storage
+    );
+    assert.equal(tooMany.status, 400);
+    assert.equal(tooMany.body.error, 'connector_batch_exceeds_limit');
+    assert.equal(insertedRows.length, 0);
   });
 }
 
