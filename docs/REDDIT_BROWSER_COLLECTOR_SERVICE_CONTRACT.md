@@ -5,10 +5,10 @@ was blocked before user authentication and is no longer the active product
 direction.
 Last updated: 2026-06-30.
 
-Superseded by: the SaaS Reddit authorization connector. The active path sends
-users through Reddit's normal authorization page, stores encrypted Reddit tokens
-per OneClick user, fetches configured subreddit sources through Reddit's
-authenticated API, and writes `source_records` only.
+Superseded by: the no-active-Reddit-ingestion decision in
+`ADR_REDDIT_INGESTION_DECISION.md`. Reddit OAuth is unavailable for this project
+without new confirmed credentials and access; Browser Run and backend browser
+login were blocked before a usable user-authentication boundary.
 
 ## Purpose
 

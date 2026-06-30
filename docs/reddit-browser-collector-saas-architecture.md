@@ -7,12 +7,12 @@ Supabase and owns dashboard routes, user settings, tenant-owned source records,
 OpenAI angle extraction, queue generation, publishing, logs, and billing
 state.
 
-This Browser Run / Playwright web-login direction is archived. The current SaaS
-source-connection path is normal Reddit authorization: the app stores encrypted
-per-user Reddit tokens, fetches configured subreddit sources through Reddit's
-authenticated API, writes normalized `source_records`, and does not own OpenAI,
-queue creation, publishing, billing, or product settings outside Reddit source
-collection.
+This Browser Run / Playwright web-login direction is archived. Reddit OAuth is
+also unavailable for this project without new confirmed credentials and access.
+There is currently no active reliable SaaS Reddit source-connection path. Any
+future approved connector must write normalized `source_records` first and must
+not own OpenAI, queue creation, publishing, billing, or product settings outside
+Reddit source collection.
 
 Cloudflare Worker-side Reddit public JSON, RSS, Browser Run/Playwright
 web-login collection, and Devvit are inactive/archive paths. Manual import

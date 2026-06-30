@@ -4,9 +4,9 @@ Date: 2026-06-03
 
 Status: historical checkpoint. This document preserves the RSS/public JSON
 investigation trail, but it is no longer the active product direction. The
-current direction is the normal Reddit authorization connector that writes
-tenant-scoped source records to OneClickPostFactory. The Cloudflare Worker
-should not call Reddit public JSON or RSS as the normal source-ingestion path.
+current decision is that no reliable SaaS Reddit ingestion path is active. The
+Cloudflare Worker should not call Reddit public JSON or RSS as the normal
+source-ingestion path.
 
 ## Problem Solved
 
@@ -42,14 +42,14 @@ RSS was not the May 21 success path. RSS has returned HTTP 200 separately, but
 persisted Worker evidence shows zero RSS accepted posts, angle records, queue
 rows, or publishes.
 
-Current source strategy after the blocked browser-login reset:
+Current source strategy after the blocked browser-login and OAuth reset:
 
-- The normal Reddit authorization connector is the target Reddit ingestion
-  path.
-- The main app owns encrypted per-user Reddit tokens, source records, OpenAI
-  angle extraction, queueing, publishing, logs, and billing.
-- Source collection uses configured subreddit `user_sources` and authenticated
-  Reddit API fetches, then writes `source_records` only.
+- There is currently no active reliable SaaS Reddit ingestion path.
+- The main app owns source records, OpenAI angle extraction after valid sources,
+  queueing, publishing, logs, billing, source ownership checks, and the internal
+  owner access override.
+- Any future connector must use configured `user_sources` and write
+  tenant-scoped `source_records` only before downstream processing runs.
 - Public JSON, RSS, Browser Run/Playwright web-login collection, and Devvit are
   legacy/quarantined/reference paths, not normal user setup.
 - Existing Reddit RSS rows remain quarantined/unsupported, preserved as rows,
@@ -65,9 +65,9 @@ Guardrails for future LLM/code sessions:
   evidence and compatibility only.
 - Do not present RSS as the proven May 21 path or as a recommended/default path.
 - Do not force the old per-source Reddit OAuth credential path as the fix.
-  Only the app-level Reddit authorization connector is active.
-- Keep automated Reddit collection as the product direction through the
-  Reddit authorization connector; manual import is fallback only.
+  Reddit OAuth is unavailable unless future credentials and access are confirmed.
+- Keep automated Reddit collection as a product goal, but manual import is
+  fallback only and no connector is active right now.
 - Use the honest Reddit-format User-Agent
   `cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)`
   for Reddit public JSON and any retained RSS safety helper.
@@ -85,8 +85,8 @@ shape drift risk: the public JSON helper still sent a browser-shaped
 `Mozilla/AppleWebKit` User-Agent even though Reddit guidance requires unique,
 descriptive, non-misleading client identification. The recovery path is not to
 spoof a browser more convincingly. This checkpoint is now superseded by the
-Reddit authorization connector direction; if legacy helpers remain, they must
-keep honest headers and continue blocking OpenAI/queue side effects when source
+current no-active-connector decision; if legacy helpers remain, they must keep
+honest headers and continue blocking OpenAI/queue side effects when source
 fetching fails.
 
 ## Files Changed

@@ -84,13 +84,13 @@ CLOUDINARY_FOLDER=social-agent/instagram
 ```
 
 Cloudflare production no longer uses Worker-side Reddit public JSON/RSS or
-Browser Run web-login collection as the active source path. The active SaaS
-direction is the normal Reddit authorization flow: OneClick stores encrypted
-Reddit tokens per user, fetches configured subreddit sources through Reddit's
-authenticated API, and writes tenant-scoped `source_records` only. Manual import
-remains an advanced fallback. The tenant's Reddit source intent still comes from
+Browser Run web-login collection as the active source path. Reddit OAuth is not
+available as a reliable product path for this project, and there is currently no
+active reliable SaaS Reddit ingestion mechanism. Manual import remains an
+advanced fallback only. The tenant's Reddit source intent still comes from
 `user_sources`; runtime env must not be used as a global tenant author/subreddit
-fallback.
+fallback. See `docs/ADR_REDDIT_INGESTION_DECISION.md` before changing this
+direction.
 
 Run only the worker loop with:
 
