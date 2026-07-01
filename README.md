@@ -89,8 +89,10 @@ available as a reliable product path for this project. Active Reddit collection
 is the user-installed OneClick Reddit Connector: it pairs with the tenant's
 OneClick account, reads only configured Reddit sources from the user's own
 browser context, and writes tenant-scoped `source_records` before any later
-OpenAI, angle, queue, or publishing work. Manual import remains an advanced
-fallback only. The tenant's Reddit source intent still comes from
+OpenAI, angle, queue, or publishing work. Connector writes require an enabled
+subreddit source and an enabled Reddit username source owned by the same user;
+records with a mismatched subreddit or author fail closed. Manual import remains
+an advanced fallback only. The tenant's Reddit source intent still comes from
 `user_sources`; runtime env must not be used as a global tenant author/subreddit
 fallback. See `docs/ADR_REDDIT_INGESTION_DECISION.md` before changing this
 direction.

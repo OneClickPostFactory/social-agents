@@ -176,6 +176,18 @@ async function main(): Promise<void> {
     assert.doesNotMatch(ingest, /oauth\.reddit\.com|fetchRedditPublicJson|fetchSafeRssText|Devvit/i);
   });
 
+  await test('connector source contract returns all enabled subreddits with required author filter', () => {
+    const connector = fs.readFileSync(path.join(process.cwd(), 'src', 'reddit-connector.ts'), 'utf8');
+    assert.match(connector, /author_filter/);
+    assert.match(connector, /subreddit_sources/);
+    assert.match(connector, /reddit_author_filter_required/);
+    assert.match(connector, /source_scope', operator: 'eq', value: 'subreddit'/);
+    assert.match(connector, /kind !== 'reddit_user' && row\.source_scope !== 'reddit_user'/);
+    assert.match(connector, /target_author/);
+    assert.match(connector, /limit: 50/);
+    assert.doesNotMatch(connector, /openclawbot|lovablebuildershub|five_cards_dev/);
+  });
+
   await test('internal owner override grants non-expiring billing exemption only when active', () => {
     assert.equal(__test__.isActiveInternalOwnerOverride({
       access_level: 'internal_owner',

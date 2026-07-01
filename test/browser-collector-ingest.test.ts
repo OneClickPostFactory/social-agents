@@ -68,6 +68,9 @@ function mockStorage(existingRows: Array<{ id: string; url?: string | null; redd
         source_scope: 'subreddit',
       };
     },
+    async loadAuthorFilter() {
+      return 'example_author';
+    },
     async loadExistingSourceRecords() {
       return [
         ...existingRows,
@@ -407,6 +410,80 @@ async function main(): Promise<void> {
     assert.equal(writeResult.status, 207);
     assert.equal(writeResult.body.source_records_written, 0);
     assert.equal(writeResult.body.rejected_count, 1);
+  });
+
+  await run('write mode rejects records without configured reddit author filter', async () => {
+    const payload = validRecord();
+    const { storage, insertedRows } = mockStorage();
+    storage.loadAuthorFilter = async () => null;
+    const writeResult = await processBrowserCollectorIngest(
+      JSON.stringify(payload),
+      await signedHeaders(payload),
+      env({
+        COLLECTOR_INGEST_WRITE_ENABLED: 'true',
+        COLLECTOR_INGEST_ENV: 'local',
+      }),
+      nowMs,
+      storage
+    );
+
+    assert.equal(writeResult.status, 207);
+    assert.equal(writeResult.body.source_records_written, 0);
+    assert.equal(insertedRows.length, 0);
+    assert.match(JSON.stringify(writeResult.body), /reddit_author_filter_required/);
+  });
+
+  await run('write mode rejects missing or mismatched reddit author', async () => {
+    const { storage, insertedRows } = mockStorage();
+    const missingAuthor = await processBrowserCollectorIngest(
+      JSON.stringify(validRecord({ author: null })),
+      await signedHeaders(validRecord({ author: null })),
+      env({
+        COLLECTOR_INGEST_WRITE_ENABLED: 'true',
+        COLLECTOR_INGEST_ENV: 'local',
+      }),
+      nowMs,
+      storage
+    );
+    assert.equal(missingAuthor.status, 207);
+    assert.match(JSON.stringify(missingAuthor.body), /record_author_required/);
+
+    const wrongAuthor = await processBrowserCollectorIngest(
+      JSON.stringify(validRecord({ author: 'other_user' })),
+      await signedHeaders(validRecord({ author: 'other_user' })),
+      env({
+        COLLECTOR_INGEST_WRITE_ENABLED: 'true',
+        COLLECTOR_INGEST_ENV: 'local',
+      }),
+      nowMs,
+      storage
+    );
+    assert.equal(wrongAuthor.status, 207);
+    assert.match(JSON.stringify(wrongAuthor.body), /source_author_mismatch/);
+    assert.equal(insertedRows.length, 0);
+  });
+
+  await run('write mode rejects mismatched subreddit for owned source', async () => {
+    const payload = validRecord({
+      source_url: 'https://www.reddit.com/r/another_sub/comments/abc/example/',
+      subreddit: 'another_sub',
+    });
+    const { storage, insertedRows } = mockStorage();
+    const writeResult = await processBrowserCollectorIngest(
+      JSON.stringify(payload),
+      await signedHeaders(payload),
+      env({
+        COLLECTOR_INGEST_WRITE_ENABLED: 'true',
+        COLLECTOR_INGEST_ENV: 'local',
+      }),
+      nowMs,
+      storage
+    );
+
+    assert.equal(writeResult.status, 207);
+    assert.equal(writeResult.body.source_records_written, 0);
+    assert.equal(insertedRows.length, 0);
+    assert.match(JSON.stringify(writeResult.body), /source_subreddit_mismatch/);
   });
 
   await run('paired connector path derives user id server-side and writes source_records only', async () => {

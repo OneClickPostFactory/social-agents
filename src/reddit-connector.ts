@@ -52,6 +52,7 @@ interface ConnectorSourceRow {
   enabled?: boolean | null;
   provider?: string | null;
   source_scope?: string | null;
+  target_author?: string | null;
   health_status?: string | null;
   allowed_subreddits?: string[] | null;
 }
@@ -115,9 +116,11 @@ export async function handleRedditConnectorRequest(
     if (request.method === 'GET' && url.pathname === '/api/connectors/reddit/sources') {
       const connector = await requireConnector(request, env);
       await touchDevice(connector.id);
-      return withCors(request, env, json({
-        sources: await enabledSubredditSources(connector.user_id, env),
-      }));
+      const sourceContract = await connectorSources(connector.user_id, env);
+      return withCors(request, env, json(
+        sourceContract,
+        sourceContract.status === 'reddit_author_filter_required' ? 409 : 200
+      ));
     }
 
     if (request.method === 'POST' && url.pathname === '/api/connectors/reddit/source-records') {
@@ -253,6 +256,55 @@ function connectorTokenFromRequest(request: Request): string {
   return match ? match[1].trim() : '';
 }
 
+async function connectorSources(userId: string, env: RedditConnectorEnv): Promise<JsonRecord> {
+  const author = await enabledAuthorFilter(userId);
+  const subredditSources = await enabledSubredditSources(userId, env);
+  if (!author) {
+    return {
+      status: 'reddit_author_filter_required',
+      error: 'reddit_author_filter_required',
+      message: 'Add an enabled Reddit username source before collecting subreddit posts.',
+      author_filter: null,
+      subreddit_sources: subredditSources,
+      sources: subredditSources,
+    };
+  }
+
+  return {
+    status: 'ok',
+    author_filter: author,
+    subreddit_sources: subredditSources,
+    sources: subredditSources,
+  };
+}
+
+async function enabledAuthorFilter(userId: string): Promise<JsonRecord | null> {
+  const rows = await supabaseSelect<ConnectorSourceRow>('user_sources', {
+    select: 'id,user_id,kind,value,enabled,provider,source_scope,target_author,health_status',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'provider', operator: 'eq', value: 'reddit' },
+      { column: 'enabled', operator: 'eq', value: true },
+    ],
+    order: 'created_at.desc',
+    limit: 50,
+  });
+
+  for (const row of rows) {
+    if (row.health_status && row.health_status !== 'healthy') continue;
+    if (row.kind !== 'reddit_user' && row.source_scope !== 'reddit_user') continue;
+    const username = normalizeRedditUsername(String(row.target_author || row.value || ''));
+    if (username) {
+      return {
+        source_id: row.id,
+        username,
+      };
+    }
+  }
+
+  return null;
+}
+
 async function enabledSubredditSources(userId: string, env: RedditConnectorEnv): Promise<JsonRecord[]> {
   const rows = await supabaseSelect<ConnectorSourceRow>('user_sources', {
     select: 'id,user_id,kind,value,enabled,provider,source_scope,health_status,allowed_subreddits',
@@ -273,7 +325,10 @@ async function enabledSubredditSources(userId: string, env: RedditConnectorEnv):
       source_id: row.id,
       source_type: 'subreddit',
       source_value: normalizeSubreddit(String(row.value || '')),
+      subreddit: normalizeSubreddit(String(row.value || '')),
+      enabled: true,
       max_posts_per_run: connectorMaxPosts(env),
+      last_collected_at: null,
       source_url: `https://www.reddit.com/r/${encodeURIComponent(normalizeSubreddit(String(row.value || '')))}/new/`,
     }))
     .filter(source => source.source_value);
@@ -412,6 +467,15 @@ function normalizeSubreddit(value: string): string {
     .split(/[/?#|]/)[0]
     .trim()
     .toLowerCase();
+}
+
+function normalizeRedditUsername(value: string): string {
+  const raw = value.trim();
+  if (!raw) return '';
+  const pathMatch = raw.match(/\/(?:user|u)\/([^/?#]+)/i);
+  const candidate = pathMatch ? pathMatch[1] : raw.replace(/^u\//i, '');
+  const cleaned = (candidate.split(/[?#|]/)[0] || '').replace(/^\/+|\/+$/g, '').trim();
+  return /^[A-Za-z0-9_-]{1,20}$/.test(cleaned) ? cleaned : '';
 }
 
 function safeLabel(value: string): string {

@@ -45,6 +45,7 @@ interface CollectorUserSourceRow {
   enabled?: boolean | null;
   provider?: string | null;
   source_scope?: string | null;
+  target_author?: string | null;
 }
 
 interface ExistingSourceRecordRow {
@@ -56,6 +57,7 @@ interface ExistingSourceRecordRow {
 
 export interface CollectorIngestStorage {
   loadUserSource(userId: string, sourceId: string): Promise<CollectorUserSourceRow | null>;
+  loadAuthorFilter?(userId: string): Promise<string | null>;
   loadExistingSourceRecords(userId: string, records: NormalizedCollectorRecord[]): Promise<ExistingSourceRecordRow[]>;
   insertSourceRecords(rows: Array<Record<string, unknown>>): Promise<Array<{ id?: string }>>;
 }
@@ -103,7 +105,7 @@ const defaultStorage: CollectorIngestStorage = {
       throw new Error('supabase_worker_not_configured');
     }
     const rows = await supabaseSelect<CollectorUserSourceRow>('user_sources', {
-      select: 'id,user_id,kind,value,enabled,provider,source_scope',
+      select: 'id,user_id,kind,value,enabled,provider,source_scope,target_author',
       filters: [
         { column: 'id', operator: 'eq', value: sourceId },
         { column: 'user_id', operator: 'eq', value: userId },
@@ -111,6 +113,28 @@ const defaultStorage: CollectorIngestStorage = {
       limit: 1,
     });
     return rows[0] || null;
+  },
+
+  async loadAuthorFilter(userId) {
+    if (!isSupabaseWorkerConfigured()) {
+      throw new Error('supabase_worker_not_configured');
+    }
+    const rows = await supabaseSelect<CollectorUserSourceRow>('user_sources', {
+      select: 'id,user_id,kind,value,enabled,provider,source_scope,target_author',
+      filters: [
+        { column: 'user_id', operator: 'eq', value: userId },
+        { column: 'provider', operator: 'eq', value: 'reddit' },
+        { column: 'enabled', operator: 'eq', value: true },
+      ],
+      limit: 50,
+    });
+
+    for (const row of rows) {
+      if (row.kind !== 'reddit_user' && row.source_scope !== 'reddit_user') continue;
+      const username = normalizeRedditAuthor(row.target_author || row.value || '');
+      if (username) return username;
+    }
+    return null;
   },
 
   async loadExistingSourceRecords(userId, records) {
@@ -591,7 +615,7 @@ function validateCollectorRecord(input: unknown): { ok: true; record: Normalized
       reddit_post_id: redditPostId,
       title,
       subreddit: subreddit.toLowerCase(),
-      author,
+      author: author ? normalizeRedditAuthor(author) : null,
       post_body: postBody,
       captured_at: new Date(capturedTime).toISOString(),
       collector_type: 'authenticated_browser',
@@ -673,6 +697,7 @@ async function writeSourceRecords(
   const failed: Array<{ index: number; code: string; message: string }> = [];
   const writeReady: NormalizedCollectorRecord[] = [];
   const sourceCache = new Map<string, CollectorUserSourceRow | null>();
+  const authorCache = new Map<string, string | null>();
 
   for (const [index, record] of records.entries()) {
     const sourceText = String(record.post_body || '').trim();
@@ -688,7 +713,13 @@ async function writeSourceRecords(
       sourceCache.set(cacheKey, source);
     }
 
-    const sourceValidation = validateUserSourceRelationship(record, source);
+    let authorFilter = authorCache.get(record.user_id);
+    if (authorFilter === undefined && storage.loadAuthorFilter) {
+      authorFilter = await storage.loadAuthorFilter(record.user_id);
+      authorCache.set(record.user_id, authorFilter);
+    }
+
+    const sourceValidation = validateUserSourceRelationship(record, source, authorFilter || null);
     if (!sourceValidation.ok) {
       failed.push({ index, code: sourceValidation.code, message: sourceValidation.message });
       continue;
@@ -757,7 +788,8 @@ async function writeSourceRecords(
 
 function validateUserSourceRelationship(
   record: NormalizedCollectorRecord,
-  source: CollectorUserSourceRow | null
+  source: CollectorUserSourceRow | null,
+  authorFilter: string | null
 ): { ok: true } | { ok: false; code: string; message: string } {
   if (!source) {
     return { ok: false, code: 'source_not_found', message: 'source_id is not valid for this user.' };
@@ -778,6 +810,19 @@ function validateUserSourceRelationship(
   const sourceSubreddit = normalizeSubredditValue(String(source.value || ''));
   if (sourceSubreddit && sourceSubreddit !== record.subreddit) {
     return { ok: false, code: 'source_subreddit_mismatch', message: 'Collector record subreddit does not match configured source.' };
+  }
+
+  if (!authorFilter) {
+    return { ok: false, code: 'reddit_author_filter_required', message: 'An enabled Reddit username source is required before connector records can be written.' };
+  }
+
+  const recordAuthor = normalizeRedditAuthor(record.author || '');
+  if (!recordAuthor) {
+    return { ok: false, code: 'record_author_required', message: 'Connector records must include a visible Reddit author.' };
+  }
+
+  if (recordAuthor.toLowerCase() !== authorFilter.toLowerCase()) {
+    return { ok: false, code: 'source_author_mismatch', message: 'Connector record author does not match the configured Reddit username source.' };
   }
 
   return { ok: true };
@@ -842,6 +887,15 @@ function normalizeSubredditValue(value: string): string {
     .split(/[/?#|]/)[0]
     .trim()
     .toLowerCase();
+}
+
+function normalizeRedditAuthor(value: string): string | null {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const pathMatch = raw.match(/\/(?:user|u)\/([^/?#]+)/i);
+  const candidate = pathMatch ? pathMatch[1] : raw.replace(/^u\//i, '');
+  const cleaned = (candidate.split(/[?#|]/)[0] || '').replace(/^\/+|\/+$/g, '').trim();
+  return /^[A-Za-z0-9_-]{1,20}$/.test(cleaned) ? cleaned : null;
 }
 
 function safeRecordSummary(record: NormalizedCollectorRecord): JsonRecord {
