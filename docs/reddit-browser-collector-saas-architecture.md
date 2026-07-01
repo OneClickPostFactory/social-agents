@@ -12,7 +12,8 @@ also unavailable for this project without new confirmed credentials and access.
 There is currently no active reliable SaaS Reddit source-connection path. Any
 future approved connector must write normalized `source_records` first and must
 not own OpenAI, queue creation, publishing, billing, or product settings outside
-Reddit source collection.
+Reddit source collection. The active replacement direction is the
+user-installed OneClick Reddit Connector, not this hosted Browser Run design.
 
 Cloudflare Worker-side Reddit public JSON, RSS, Browser Run/Playwright
 web-login collection, and Devvit are inactive/archive paths. Manual import

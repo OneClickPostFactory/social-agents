@@ -7,7 +7,6 @@ interface Env {
   CREDENTIAL_ENCRYPTION_KEY?: string;
   SUPABASE_WORKER_BATCH_SIZE?: string;
   HTTP_TIMEOUT_MS?: string;
-  REDDIT_PUBLIC_JSON_TRANSPORT?: string;
   OPENAI_MODEL?: string;
   OPENAI_IMAGE_MODEL?: string;
   OPENAI_IMAGE_TIMEOUT_MS?: string;

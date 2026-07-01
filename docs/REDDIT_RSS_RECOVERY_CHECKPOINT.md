@@ -55,8 +55,8 @@ Current source strategy after the blocked browser-login and OAuth reset:
 - Existing Reddit RSS rows remain quarantined/unsupported, preserved as rows,
   and disabled or marked `needs_attention` with
   `last_error_code = reddit_rss_source_unsupported`.
-- The RSS fetch helper may remain for SSRF-tested safety history, but it is not
-  a normal product path.
+- The RSS fetch helper has been removed from active code. This checkpoint is
+  historical evidence only, not a reusable implementation path.
 
 Guardrails for future LLM/code sessions:
 
@@ -66,11 +66,10 @@ Guardrails for future LLM/code sessions:
 - Do not present RSS as the proven May 21 path or as a recommended/default path.
 - Do not force the old per-source Reddit OAuth credential path as the fix.
   Reddit OAuth is unavailable unless future credentials and access are confirmed.
-- Keep automated Reddit collection as a product goal, but manual import is
-  fallback only and no connector is active right now.
-- Use the honest Reddit-format User-Agent
-  `cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)`
-  for Reddit public JSON and any retained RSS safety helper.
+- Keep automated Reddit collection on the user-installed Reddit Connector path.
+  Manual import is fallback only, not the normal source-ingestion direction.
+- Do not reintroduce Worker-side Reddit public JSON or RSS fetchers without a
+  new product decision and fresh evidence.
 - Do not add fake browser headers, cookies, browser fingerprints,
   `sec-fetch`/`sec-ch` headers, or spoofed Chrome/Safari/Firefox identities.
 - Do not call OpenAI when source fetching fails.
@@ -111,29 +110,13 @@ Database migration:
 
 - `supabase/migrations/20260603152000_recover_reddit_rss_and_manual_import.sql`
 
-## Legacy Reddit RSS Safety Helper
+## Legacy Reddit RSS Helper Removed
 
-This section records safety behavior kept for historical/recovery work. It is
-not the normal supported Reddit product path.
-
-- Reddit RSS URLs are canonicalized before fetch to `www.reddit.com`.
-- `https://reddit.com/user/Advanced_pudding9228/.rss` becomes
-  `https://www.reddit.com/user/Advanced_pudding9228/.rss`.
-- Lowercase usernames remain supported.
-- RSS fetch uses the shared honest Reddit automation user agent:
-  `cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)`.
-- RSS/XML Accept remains:
-  `application/rss+xml, application/atom+xml, application/xml, text/xml, text/plain;q=0.9, */*;q=0.8`.
-- Existing protections remain in place: HTTPS-only validation, SSRF blocking,
-  manual redirects, redirect revalidation, max 5 redirects, timeout caps, body
-  size caps, and content-type validation.
-- RSS failures log safe metadata only: source id, job id, adapter, HTTP status,
-  original/attempted/final hosts, content type, canonicalized flag, and stable
-  error code. Response bodies are not logged.
-- `reddit_rss_http_403` marks the source `needs_attention` and sets
-  `blocked_until` to avoid aggressive retry loops.
-- RSS failure does not trigger OpenAI, source record creation, angle creation,
-  queue creation, public JSON fallback, or publishing.
+The old RSS helper has been deleted from active code. Existing RSS/public JSON
+mentions in migrations and logs are compatibility/history only. Active source
+ingestion must come from the user-installed connector or advanced manual import,
+and invalid or legacy inputs must fail closed before OpenAI, angle creation,
+queue creation, publishing, or production source fetching.
 
 ## Manual Import Now
 
@@ -165,9 +148,10 @@ credential columns. Existing misleading Reddit `acquisition_mode = oauth` rows
 are migrated to `public_json`, preserving source ids, ownership, values,
 filters, timestamps, and enabled/disabled state.
 
-This update:
+That update:
 
-- preserves the `reddit_public_json` adapter and May 21 working path
+- preserved the historical May 21 public JSON evidence without making it the
+  normal path
 - stops normal source fetching from attempting a Reddit OAuth token exchange
 - stops the backend worker from decrypting tenant Reddit client id/secret for
   source fetching
@@ -175,6 +159,9 @@ This update:
 - removes old per-source Reddit OAuth recommendation/warning copy
 - quarantines Reddit RSS from the normal product path
 - does not build new manual import behavior in this patch
+
+The later cleanup removed the public JSON adapter implementation from active
+code. The migration history and diagnostic evidence remain.
 
 ## Local Tests Passed Before Deploy
 
@@ -224,7 +211,7 @@ Recorded after deploy on 2026-06-03:
   `OneClickPostFactory/early-access (+https://www.oneclickpostfactory.com)`.
   As of the June 4 request identity correction, Reddit automation uses
   `cloudflare-worker:oneclickpostfactory:v0.1 (by /u/Advanced_Pudding9228)`.
-- RSS/XML Accept header: deployed code preserves
+- RSS/XML Accept header: then-deployed code preserved
   `application/rss+xml, application/atom+xml, application/xml, text/xml, text/plain;q=0.9, */*;q=0.8`.
 - Public JSON fallback attempted: no.
 - OpenAI ran: no; `openaiUsage.textCalls = 0` and

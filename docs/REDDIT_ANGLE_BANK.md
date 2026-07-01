@@ -44,19 +44,20 @@ become a `source_records`, `angle_records`, or `queue_items` row.
 
 Rules:
 
-- `source_scope = reddit_user` requires the fetched item's Reddit author to
-  match `target_author`. RSS author feeds are still checked after fetch; an RSS
-  item whose author does not match is rejected as `rejected_author_mismatch`.
+- `source_scope = reddit_user` requires the delivered Reddit item's author to
+  match `target_author`. Historical RSS diagnostics may mention
+  `rejected_author_mismatch`, but active collection comes from stored
+  source records rather than Worker-side RSS fetches.
 - `source_scope = subreddit` requires the item to belong to an allowed
   subreddit. If a tenant-level or source-level `target_author` exists, both
   subreddit and author must match.
 - `source_scope = generic_rss` is legacy metadata only. RSS is quarantined from
   normal product flow and should not be offered as a normal source path.
-- Manual Reddit import remains an advanced fallback for Reddit fetch blocks.
-  It is not the primary product direction. Any future approved connector must
-  store tenant-scoped `source_records` rows with enough `source_text` for later
-  explicit source-record processing. Metadata-only source records are not
-  draftable shortcuts.
+- Manual Reddit import remains an advanced fallback for source-connection
+  blocks. It is not the primary product direction. The user-installed Reddit
+  Connector must store tenant-scoped `source_records` rows with enough
+  `source_text` for later explicit source-record processing. Metadata-only
+  source records are not draftable shortcuts.
 
 Legacy `rss` rows are preserved for history but quarantined from normal
 ingestion. They should never silently bypass a tenant's Reddit author or
@@ -78,10 +79,9 @@ remain for history, but they should be disabled or marked `needs_attention` with
 `last_error_code = reddit_rss_source_unsupported`; the worker skips them before
 fetching and must not call OpenAI or create source/angle/queue rows from them.
 
-The old RSS fetch helper remains SSRF-tested safety code, not a supported
-product path. It keeps URL validation, manual redirect handling, redirect target
-revalidation, max redirects, timeout caps, body size caps, and content-type
-validation for any future focused recovery work.
+The old RSS fetch helper has been removed from active code. RSS remains
+compatibility metadata only; future focused recovery work must start from a new
+review rather than reusing hidden Worker-side RSS fetching.
 
 ### Verified May 21, 2026 Runtime Truth
 
@@ -115,9 +115,7 @@ Current strategy is: preserve old migration history and compatibility rows,
 quarantine public JSON/RSS/OAuth/Browser Run/Devvit from normal setup, and keep
 source-fetch failures from calling OpenAI.
 
-Public JSON settings still exist for explicit advanced/runtime control:
-
-- `REDDIT_PUBLIC_JSON_TRANSPORT=auto|fetch|node_https`
+Public JSON runtime settings have been removed from active configuration.
 
 Reddit OAuth credentials and encrypted per-user Reddit tokens are historical
 compatibility fields unless a future approved OAuth path is confirmed. The
@@ -142,28 +140,20 @@ Public JSON uses:
 - `Accept-Language: en-GB,en;q=0.9`
 - `Cache-Control: no-cache`
 
-The retained RSS safety helper uses the same User-Agent and preserves an
-RSS/XML-oriented Accept header:
-
-`application/rss+xml, application/atom+xml, application/xml, text/xml, text/plain;q=0.9, */*;q=0.8`
+The former RSS helper and its RSS/XML Accept header are historical notes only;
+they are not present as an active fetch implementation.
 
 Do not add fake browser headers, spoof Chrome/Safari/Firefox, send cookies, or
 add `sec-fetch`/`sec-ch` browser fingerprint headers. If Reddit blocks the
 Cloudflare Worker egress despite the honest request shape, record the failure,
 back off where supported, and keep OpenAI out of the failed source-fetch path.
 
-`REDDIT_PUBLIC_JSON_TRANSPORT=auto` uses `node:https` in local Node and `fetch`
-in Cloudflare. Forcing `node_https` in a runtime that cannot use it fails clearly
-with `reddit_node_https_unavailable_in_runtime`. If Reddit returns `429`, the
-worker records `reddit_public_json_rate_limited_429` with transport, runtime,
-endpoint kind, status, and a safe body snippet.
-
-If Cloudflare Worker egress receives `reddit_rss_http_403`, the worker records
-safe diagnostic metadata only: source id, job id, adapter, status, attempted
-host, final host, content type, canonicalized flag, and stable error code. It
-does not log response bodies or provider payloads. The source is marked
-`needs_attention` with temporary `blocked_until` backoff so scheduled fetches do
-not retry aggressively. No public JSON fallback is attempted. OpenAI is not
+If old logs contain `reddit_public_json_rate_limited_429` or
+`reddit_rss_http_403`, treat them as historical diagnostics. Active source
+collection must use the installed connector and write source records first; it
+must not call the old Worker-side fetchers. If a source row still carries
+`reddit_rss_source_unsupported`, the worker should report it as unsupported and
+avoid aggressive retry loops. No public JSON fallback is attempted. OpenAI is not
 called unless accepted posts, advanced manual imports, or authenticated-browser
 collector records with stored `source_text` exist and an explicit downstream
 processing job runs. Collector ingestion itself does not call OpenAI.
@@ -172,14 +162,16 @@ processing job runs. Collector ingestion itself does not call OpenAI.
 
 The production flow is:
 
-1. Load enabled tenant sources.
-2. Resolve each source's declared intent.
+1. Load enabled tenant source configs and tenant-owned source records.
+2. Treat source configs as connector allowlists, not as Worker-side fetch jobs.
 3. Process collected source records or advanced manual imports that contain
    stored source body.
-4. Reject fetched items that do not match author, subreddit, or RSS discovery
-   rules before source/angle/queue writes.
-5. Insert one tenant-scoped `source_records` row per accepted unique Reddit URL.
-6. Run OpenAI angle extraction only after accepted posts or manual imports exist.
+4. Reject source records that lack text, ownership, enabled source mapping, or
+   dedupe/progress eligibility before angle/queue writes.
+5. Keep source-record ingestion side effects limited to tenant-scoped
+   `source_records`.
+6. Run OpenAI angle extraction only after valid source records or manual imports
+   exist and an explicit downstream job runs.
 7. Insert one tenant-scoped `angle_records` row per angle and enabled platform.
 8. Draft one unused angle at a time into platform-specific `queue_items`.
 9. Publish ready queue rows on schedule.

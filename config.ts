@@ -21,7 +21,6 @@ export interface AppConfig {
   REDDIT_ALLOWED_SUBS: Set<string>;
   REDDIT_SORT: string;
   REDDIT_LIMIT: number;
-  REDDIT_PUBLIC_JSON_TRANSPORT: 'auto' | 'fetch' | 'node_https';
   OPENAI_API_KEY: string;
   OPENAI_MODEL: string;
   OPENAI_IMAGE_MODEL: string;
@@ -111,18 +110,6 @@ function parseBootstrapMode(value: string | undefined): 'disabled' | 'token' | '
   }
 }
 
-function parseRedditPublicJsonTransport(value: string | undefined): 'auto' | 'fetch' | 'node_https' {
-  switch ((value || 'auto').trim().toLowerCase()) {
-    case 'fetch':
-      return 'fetch';
-    case 'node_https':
-      return 'node_https';
-    case 'auto':
-    default:
-      return 'auto';
-  }
-}
-
 function toSubSet(value: string | string[] | Set<string> | undefined, fallback: string): Set<string> {
   if (value instanceof Set) return new Set(value);
   const entries = Array.isArray(value)
@@ -146,7 +133,6 @@ function buildBaseConfig(): AppConfig {
     REDDIT_ALLOWED_SUBS: toSubSet(process.env.REDDIT_ALLOWED_SUBS, 'openclawbot,lovablebuildershub'),
     REDDIT_SORT: process.env.REDDIT_SORT || 'new',
     REDDIT_LIMIT: Number.parseInt(process.env.REDDIT_LIMIT || '50', 10),
-    REDDIT_PUBLIC_JSON_TRANSPORT: parseRedditPublicJsonTransport(process.env.REDDIT_PUBLIC_JSON_TRANSPORT),
     OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
     OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o',
     OPENAI_IMAGE_MODEL: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
@@ -227,9 +213,6 @@ export function applyRuntimeConfig(patch: Record<string, unknown>): AppConfig {
   }
   if (typeof patch.REDDIT_SORT === 'string') config.REDDIT_SORT = patch.REDDIT_SORT;
   if (typeof patch.REDDIT_LIMIT === 'number' && Number.isFinite(patch.REDDIT_LIMIT)) config.REDDIT_LIMIT = patch.REDDIT_LIMIT;
-  if (typeof patch.REDDIT_PUBLIC_JSON_TRANSPORT === 'string') {
-    config.REDDIT_PUBLIC_JSON_TRANSPORT = parseRedditPublicJsonTransport(patch.REDDIT_PUBLIC_JSON_TRANSPORT);
-  }
   if (typeof patch.OPENAI_API_KEY === 'string') config.OPENAI_API_KEY = patch.OPENAI_API_KEY;
   if (typeof patch.OPENAI_MODEL === 'string') config.OPENAI_MODEL = patch.OPENAI_MODEL;
   if (typeof patch.OPENAI_IMAGE_MODEL === 'string') config.OPENAI_IMAGE_MODEL = patch.OPENAI_IMAGE_MODEL;

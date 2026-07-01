@@ -135,7 +135,6 @@ interface UserSourceRow {
 type SourceProvider = 'reddit' | 'generic_rss' | 'manual';
 type AcquisitionMode = 'public_json' | 'oauth' | 'rss' | 'devvit' | 'manual';
 type SourceScope = 'reddit_user' | 'subreddit' | 'reddit_search' | 'generic_rss';
-type SourceFetchAdapter = 'reddit_rss' | 'generic_rss';
 
 interface SourceIntent {
   provider: SourceProvider;
@@ -422,21 +421,6 @@ const OPENAI_IMAGE_ABORT_WINDOW_MS = 15 * 60_000;
 const OPENAI_SOURCE_BACKOFF_THRESHOLD = 2;
 const OPENAI_SOURCE_BACKOFF_WINDOW_MS = 6 * 60 * 60_000;
 const OPENAI_GENERATION_BACKOFF_MS = 30 * 60_000;
-const RSS_FETCH_MAX_REDIRECTS = 5;
-const RSS_FETCH_MAX_BYTES = 1_048_576;
-const RSS_FETCH_TIMEOUT_CAP_MS = 15_000;
-const REDDIT_RSS_USER_AGENT = 'OneClickPostFactory/early-access (+https://www.oneclickpostfactory.com)';
-const RSS_ACCEPT_HEADER =
-  'application/rss+xml, application/atom+xml, application/xml, text/xml, text/plain;q=0.9, */*;q=0.8';
-const RSS_ALLOWED_CONTENT_TYPES = new Set([
-  'application/atom+xml',
-  'application/rdf+xml',
-  'application/rss+xml',
-  'application/x-rss+xml',
-  'application/xml',
-  'text/plain',
-  'text/xml',
-]);
 
 interface QueueFromAnglesResult {
   queued: number;
@@ -459,35 +443,6 @@ class WorkerJobError extends Error {
   ) {
     super(message);
   }
-}
-
-class SourceFetchError extends Error {
-  constructor(
-    public readonly adapter: SourceFetchAdapter,
-    public readonly code: string,
-    message = code,
-    public readonly context?: JsonMap
-  ) {
-    super(message);
-  }
-}
-
-interface SafeRssFetchOptions {
-  fetchImpl?: typeof fetch;
-  maxBytes?: number;
-  maxRedirects?: number;
-  timeoutMs?: number;
-}
-
-interface SafeRssFetchResult {
-  text: string;
-  finalUrl: string;
-  attemptedUrl: string;
-  originalUrl: string;
-  canonicalized: boolean;
-  redirects: number;
-  status: number;
-  contentType: string | null;
 }
 
 interface SourceRecordRow {
@@ -780,7 +735,6 @@ function publicError(error: unknown): string {
   if (imageError) return imageError.userMessage;
   if (isPlatformPublishError(error)) return error.userMessage;
   if (error instanceof WorkerJobError) return error.code;
-  if (error instanceof SourceFetchError) return error.code;
   if (error instanceof Error) return error.message;
   return String(error);
 }
@@ -818,15 +772,6 @@ function safeErrorContext(error: unknown): JsonMap | null {
   return null;
 }
 
-function sourceUrlFailure(
-  adapter: SourceFetchAdapter,
-  code: string,
-  context: JsonMap = {},
-  message = code
-): SourceFetchError {
-  return new SourceFetchError(adapter, code, message, context);
-}
-
 function normalizedHost(hostname: string): string {
   return hostname
     .trim()
@@ -841,304 +786,6 @@ function safeUrlHost(value: string | null | undefined): string {
     return normalizedHost(new URL(String(value || '')).hostname);
   } catch {
     return '';
-  }
-}
-
-function ipv4Parts(hostname: string): number[] | null {
-  const parts = hostname.split('.');
-  if (parts.length !== 4) return null;
-  const parsed = parts.map(part => {
-    if (!/^\d{1,3}$/.test(part)) return Number.NaN;
-    return Number(part);
-  });
-  if (parsed.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return null;
-  return parsed;
-}
-
-function isPrivateIpv4(hostname: string): boolean {
-  const parts = ipv4Parts(hostname);
-  if (!parts) return false;
-  const [a, b] = parts;
-  return (
-    a === 0
-    || a === 10
-    || a === 127
-    || (a === 169 && b === 254)
-    || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 168)
-    || a >= 224
-  );
-}
-
-function isIpv6Literal(hostname: string): boolean {
-  return hostname.includes(':');
-}
-
-function isPrivateIpv6(hostname: string): boolean {
-  const compact = hostname.toLowerCase();
-  return (
-    compact === '::'
-    || compact === '::1'
-    || compact.startsWith('fc')
-    || compact.startsWith('fd')
-    || /^fe[89ab]/.test(compact)
-    || compact.startsWith('::ffff:0:')
-    || compact.startsWith('::ffff:10.')
-    || compact.startsWith('::ffff:127.')
-    || compact.startsWith('::ffff:169.254.')
-    || compact.startsWith('::ffff:172.16.')
-    || compact.startsWith('::ffff:172.17.')
-    || compact.startsWith('::ffff:172.18.')
-    || compact.startsWith('::ffff:172.19.')
-    || compact.startsWith('::ffff:172.2')
-    || compact.startsWith('::ffff:172.30.')
-    || compact.startsWith('::ffff:172.31.')
-    || compact.startsWith('::ffff:192.168.')
-  );
-}
-
-function isInternalHostname(hostname: string): boolean {
-  return (
-    hostname === 'localhost'
-    || hostname.endsWith('.localhost')
-    || hostname.endsWith('.local')
-    || hostname.endsWith('.localdomain')
-    || hostname.endsWith('.lan')
-    || hostname.endsWith('.home')
-    || hostname.endsWith('.internal')
-    || hostname.endsWith('.intranet')
-    || hostname.endsWith('.corp')
-    || hostname.endsWith('.private')
-  );
-}
-
-function validateRssSourceUrl(rawUrl: string, adapter: SourceFetchAdapter): URL {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    throw sourceUrlFailure(adapter, 'source_url_invalid_host');
-  }
-
-  if (parsed.protocol !== 'https:') {
-    throw sourceUrlFailure(adapter, 'source_url_invalid_scheme', { scheme: parsed.protocol.replace(':', '') });
-  }
-
-  if (parsed.username || parsed.password) {
-    throw sourceUrlFailure(adapter, 'source_url_credentials_not_allowed');
-  }
-
-  const host = normalizedHost(parsed.hostname);
-  if (!host || host.includes('_')) {
-    throw sourceUrlFailure(adapter, 'source_url_invalid_host');
-  }
-
-  if (isPrivateIpv4(host) || isInternalHostname(host) || (isIpv6Literal(host) && isPrivateIpv6(host))) {
-    throw sourceUrlFailure(adapter, 'source_url_private_network_blocked', { host });
-  }
-
-  if (ipv4Parts(host) || isIpv6Literal(host)) {
-    throw sourceUrlFailure(adapter, 'source_url_invalid_host', { host });
-  }
-
-  if (!host.includes('.') || host.endsWith('.test') || host.endsWith('.invalid') || host.endsWith('.example')) {
-    throw sourceUrlFailure(adapter, 'source_url_invalid_host', { host });
-  }
-
-  return parsed;
-}
-
-function validateRssRedirectUrl(
-  location: string | null,
-  currentUrl: URL,
-  adapter: SourceFetchAdapter
-): URL {
-  if (!location) {
-    throw sourceUrlFailure(adapter, 'source_url_redirect_blocked', { reason: 'missing_location' });
-  }
-
-  let nextUrl: URL;
-  try {
-    nextUrl = new URL(location, currentUrl);
-  } catch {
-    throw sourceUrlFailure(adapter, 'source_url_redirect_blocked', { reason: 'invalid_location' });
-  }
-
-  try {
-    return validateRssSourceUrl(nextUrl.toString(), adapter);
-  } catch (error) {
-    if (error instanceof SourceFetchError) {
-      throw sourceUrlFailure(adapter, 'source_url_redirect_blocked', {
-        blocked_code: error.code,
-        host: normalizedHost(nextUrl.hostname),
-      });
-    }
-    throw error;
-  }
-}
-
-function redirectStatus(status: number): boolean {
-  return [301, 302, 303, 307, 308].includes(status);
-}
-
-function redditRssUrlMetadata(url: URL): { kind: 'user' | 'subreddit'; value: string } | undefined {
-  const host = normalizedHost(url.hostname);
-  if (host !== 'reddit.com' && host !== 'www.reddit.com') return undefined;
-  const parts = url.pathname.split('/').filter(Boolean);
-  if (parts.length !== 3 || parts[2] !== '.rss') return undefined;
-  const scope = parts[0]?.toLowerCase();
-  const value = parts[1]?.trim();
-  if (!value) return undefined;
-  if (scope === 'user') return { kind: 'user', value };
-  if (scope === 'r') return { kind: 'subreddit', value };
-  return undefined;
-}
-
-function canonicalizeRedditRssUrl(url: URL): { url: URL; canonicalized: boolean } {
-  const metadata = redditRssUrlMetadata(url);
-  if (!metadata) return { url, canonicalized: false };
-
-  const path = metadata.kind === 'user'
-    ? `/user/${encodeURIComponent(metadata.value)}/.rss`
-    : `/r/${encodeURIComponent(metadata.value)}/.rss`;
-  const next = new URL(`https://www.reddit.com${path}`);
-  next.search = url.search;
-  return {
-    url: next,
-    canonicalized: next.toString() !== url.toString(),
-  };
-}
-
-function allowedRssContentType(value: string | null): boolean {
-  if (!value) return true;
-  const mediaType = value.split(';', 1)[0].trim().toLowerCase();
-  return RSS_ALLOWED_CONTENT_TYPES.has(mediaType) || mediaType.endsWith('+xml');
-}
-
-async function responseTextWithLimit(
-  response: Response,
-  adapter: SourceFetchAdapter,
-  maxBytes: number
-): Promise<string> {
-  if (!response.body) {
-    const text = await response.text();
-    if (Buffer.byteLength(text, 'utf8') > maxBytes) {
-      throw sourceUrlFailure(adapter, 'source_response_too_large', { max_bytes: maxBytes });
-    }
-    return text;
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw sourceUrlFailure(adapter, 'source_response_too_large', { max_bytes: maxBytes });
-    }
-    chunks.push(value);
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
-}
-
-function rssFetchTimeoutMs(options: SafeRssFetchOptions): number {
-  const configured = Number(options.timeoutMs || config.HTTP_TIMEOUT_MS || RSS_FETCH_TIMEOUT_CAP_MS);
-  if (!Number.isFinite(configured) || configured <= 0) return RSS_FETCH_TIMEOUT_CAP_MS;
-  return Math.min(configured, RSS_FETCH_TIMEOUT_CAP_MS);
-}
-
-async function fetchSafeRssText(
-  rawUrl: string,
-  adapter: SourceFetchAdapter,
-  options: SafeRssFetchOptions = {}
-): Promise<SafeRssFetchResult> {
-  const validatedUrl = validateRssSourceUrl(rawUrl, adapter);
-  const canonical = adapter === 'reddit_rss'
-    ? canonicalizeRedditRssUrl(validatedUrl)
-    : { url: validatedUrl, canonicalized: false };
-  let currentUrl = canonical.url;
-  const fetchImpl = options.fetchImpl || fetch;
-  const maxRedirects = Math.max(0, Math.min(options.maxRedirects ?? RSS_FETCH_MAX_REDIRECTS, RSS_FETCH_MAX_REDIRECTS));
-  const maxBytes = Math.max(1, Math.min(options.maxBytes ?? RSS_FETCH_MAX_BYTES, RSS_FETCH_MAX_BYTES));
-  const timeoutMs = rssFetchTimeoutMs(options);
-  let redirects = 0;
-
-  while (true) {
-    let response: Response;
-    try {
-      response = await fetchImpl(currentUrl.toString(), {
-        headers: {
-          'User-Agent': REDDIT_RSS_USER_AGENT,
-          Accept: RSS_ACCEPT_HEADER,
-        },
-        redirect: 'manual',
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-    } catch (error) {
-      const code = error instanceof Error && error.name === 'AbortError'
-        ? 'source_fetch_timeout'
-        : 'source_fetch_failed';
-      throw sourceUrlFailure(adapter, code, { host: normalizedHost(currentUrl.hostname), timeout_ms: timeoutMs });
-    }
-
-    if (redirectStatus(response.status)) {
-      if (redirects >= maxRedirects) {
-        throw sourceUrlFailure(adapter, 'source_url_too_many_redirects', { max_redirects: maxRedirects });
-      }
-      currentUrl = validateRssRedirectUrl(response.headers.get('location'), currentUrl, adapter);
-      redirects++;
-      continue;
-    }
-
-    if (!response.ok) {
-      const code = adapter === 'reddit_rss' ? `reddit_rss_http_${response.status}` : `generic_rss_http_${response.status}`;
-      throw sourceUrlFailure(adapter, code, {
-        status: response.status,
-        original_host: normalizedHost(validatedUrl.hostname),
-        attempted_host: normalizedHost(canonical.url.hostname),
-        final_host: normalizedHost(currentUrl.hostname),
-        content_type: response.headers.get('content-type') || '',
-        canonicalized_url: canonical.canonicalized,
-      });
-    }
-
-    const contentType = response.headers.get('content-type');
-    if (!allowedRssContentType(contentType)) {
-      throw sourceUrlFailure(adapter, 'source_content_type_unsupported', {
-        content_type: contentType || '',
-      });
-    }
-
-    try {
-      return {
-        text: await responseTextWithLimit(response, adapter, maxBytes),
-        finalUrl: currentUrl.toString(),
-        attemptedUrl: canonical.url.toString(),
-        originalUrl: validatedUrl.toString(),
-        canonicalized: canonical.canonicalized,
-        redirects,
-        status: response.status,
-        contentType,
-      };
-    } catch (error) {
-      if (error instanceof SourceFetchError) throw error;
-      const code = error instanceof Error && error.name === 'AbortError'
-        ? 'source_fetch_timeout'
-        : 'source_fetch_failed';
-      throw sourceUrlFailure(adapter, code, { host: normalizedHost(currentUrl.hostname), timeout_ms: timeoutMs });
-    }
   }
 }
 
@@ -2020,7 +1667,6 @@ function snapshotConfig(): Partial<AppConfig> {
     OPENAI_MODEL: config.OPENAI_MODEL,
     OPENAI_IMAGE_MODEL: config.OPENAI_IMAGE_MODEL,
     OPENAI_IMAGE_TIMEOUT_MS: config.OPENAI_IMAGE_TIMEOUT_MS,
-    REDDIT_PUBLIC_JSON_TRANSPORT: config.REDDIT_PUBLIC_JSON_TRANSPORT,
     CLOUDINARY_FOLDER: config.CLOUDINARY_FOLDER,
     ENABLE_THREADS: config.ENABLE_THREADS,
     ENABLE_INSTAGRAM: config.ENABLE_INSTAGRAM,
@@ -2376,63 +2022,6 @@ async function failJob(job: AgentJobRow, error: unknown): Promise<void> {
 
 function hashId(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 16);
-}
-
-function decodeXml(value: string): string {
-  return value
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function firstXmlTag(block: string, tag: string): string {
-  const match = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i'));
-  return decodeXml(match?.[1] || '');
-}
-
-function firstXmlLink(block: string): string {
-  const textLink = firstXmlTag(block, 'link');
-  if (textLink) return textLink;
-  const href = block.match(/<link[^>]+href=["']([^"']+)["'][^>]*>/i)?.[1];
-  return decodeXml(href || '');
-}
-
-function parseRss(xml: string, sourceUrl: string): RedditPost[] {
-  const itemBlocks = [...xml.matchAll(/<item[\s\S]*?<\/item>|<entry[\s\S]*?<\/entry>/gi)]
-    .map(match => match[0])
-    .slice(0, 20);
-
-  return itemBlocks.map(block => {
-    const title = firstXmlTag(block, 'title') || 'Untitled RSS item';
-    const link = firstXmlLink(block) || sourceUrl;
-    const description = firstXmlTag(block, 'description') || firstXmlTag(block, 'summary') || '';
-    const published = firstXmlTag(block, 'pubDate') || firstXmlTag(block, 'published') || firstXmlTag(block, 'updated');
-    const metadata = redditUrlMetadata(link);
-    const fallbackAuthor = metadata.author || redditUrlMetadata(sourceUrl).author;
-    const author = normalizeRedditUsername(
-      firstXmlTag(block, 'author')
-      || firstXmlTag(block, 'dc:creator')
-      || firstXmlTag(block, 'creator')
-      || fallbackAuthor
-    );
-    return {
-      id: metadata.postId || hashId(`${sourceUrl}:${link}:${title}`),
-      title,
-      selftext: description,
-      url: link,
-      score: 0,
-      comments: 0,
-      subreddit: metadata.subreddit || '',
-      author,
-      created: published ? Date.parse(published) / 1000 || Date.now() / 1000 : Date.now() / 1000,
-    };
-  });
 }
 
 function getPlatformDraftText(
@@ -4835,10 +4424,8 @@ export function startSupabaseWorkerLoop(log = logger): { stop: () => void } | un
 
 export const __test__ = {
   buildOpenAIUsageDailySummary,
-  canonicalizeRedditRssUrl,
   contentStrategyPromptOptions,
   draftCreationPreflightForAngle,
-  fetchSafeRssText,
   hasOpenActiveSlotForPlatform,
   hasRecentJobActivity,
   isActiveInternalOwnerOverride,
@@ -4853,15 +4440,11 @@ export const __test__ = {
   publishRequiresOpenAIMediaRepair,
   publishSuccessResult,
   recordOpenAIUsageOnSummary,
-  REDDIT_RSS_USER_AGENT,
-  RSS_ACCEPT_HEADER,
   reconstructStaleSummary,
-  parseRss,
   sourceIntentFor,
   sourceIntentRejectReasons,
   sourceScopeFor,
   stalePublishResult,
-  validateRssSourceUrl,
 };
 
 if (typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module) {
