@@ -17,10 +17,23 @@ interface ThreadsTokenResponse extends GraphErrorResponse {
   token_type?: string;
 }
 
+interface ThreadsMeResponse extends GraphErrorResponse {
+  id?: string;
+  username?: string;
+}
+
 export interface ThreadsTokenSet {
   accessToken: string;
   expiresIn?: number;
   tokenType?: string;
+  source: 'exchange' | 'refresh';
+}
+
+export interface ThreadsCredentialPreparation {
+  action: 'exchanged' | 'refreshed' | 'verified';
+  accountId: string;
+  username?: string;
+  expiresIn?: number;
 }
 
 type ThreadsTokenPersistence = (tokens: ThreadsTokenSet) => void | Promise<void>;
@@ -69,6 +82,118 @@ export async function refreshLongLivedAccessToken(): Promise<ThreadsTokenSet> {
     accessToken: data.access_token,
     expiresIn: data.expires_in,
     tokenType: data.token_type,
+    source: 'refresh',
+  };
+}
+
+export async function exchangeShortLivedAccessToken(): Promise<ThreadsTokenSet> {
+  const token = config.THREADS_ACCESS_TOKEN;
+  if (!token) {
+    throw new Error('THREADS_ACCESS_TOKEN not set');
+  }
+  if (!config.THREADS_APP_SECRET) {
+    throw new Error('THREADS_APP_SECRET not set');
+  }
+
+  const url = new URL('https://graph.threads.net/access_token');
+  url.searchParams.set('grant_type', 'th_exchange_token');
+  url.searchParams.set('client_secret', config.THREADS_APP_SECRET);
+  url.searchParams.set('access_token', token);
+
+  const { status, headers, data, rawText } = await requestJson<ThreadsTokenResponse>(url.toString(), {
+    method: 'GET',
+    timeoutMs: config.HTTP_TIMEOUT_MS,
+  });
+  if (data.error) {
+    throw normalizeThreadsError(
+      'token_exchange',
+      status,
+      headers.get('content-type'),
+      rawText,
+      data.error
+    );
+  }
+  if (status >= 400 || !data.access_token) {
+    throw unexpectedThreadsResponse('token_exchange', status, headers.get('content-type'), rawText);
+  }
+
+  return {
+    accessToken: data.access_token,
+    expiresIn: data.expires_in,
+    tokenType: data.token_type,
+    source: 'exchange',
+  };
+}
+
+export async function verifyCredentials(accessToken = config.THREADS_ACCESS_TOKEN): Promise<{
+  accountId: string;
+  username?: string;
+}> {
+  if (!accessToken) {
+    throw new Error('THREADS_ACCESS_TOKEN not set');
+  }
+
+  const { status, headers, data, rawText } = await requestJson<ThreadsMeResponse>(
+    'https://graph.threads.net/me?fields=id%2Cusername',
+    {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+      timeoutMs: config.HTTP_TIMEOUT_MS,
+    }
+  );
+  if (data.error) {
+    throw normalizeThreadsError(
+      'verify_credentials',
+      status,
+      headers.get('content-type'),
+      rawText,
+      data.error
+    );
+  }
+  if (status >= 400 || !data.id) {
+    throw unexpectedThreadsResponse('verify_credentials', status, headers.get('content-type'), rawText);
+  }
+
+  return {
+    accountId: data.id,
+    username: data.username,
+  };
+}
+
+export async function prepareAccessTokenForPublish(): Promise<ThreadsCredentialPreparation> {
+  let tokens: ThreadsTokenSet | undefined;
+
+  if (config.THREADS_APP_SECRET) {
+    try {
+      tokens = await exchangeShortLivedAccessToken();
+    } catch {
+      // A long-lived token cannot be exchanged again; try its refresh endpoint next.
+    }
+  }
+
+  if (!tokens) {
+    try {
+      tokens = await refreshLongLivedAccessToken();
+    } catch {
+      // Fresh long-lived tokens cannot be refreshed for 24 hours. Verification below
+      // distinguishes that valid state from an expired or revoked token.
+    }
+  }
+
+  if (tokens) {
+    await persistLongLivedAccessToken(tokens);
+  }
+
+  const verification = await verifyCredentials();
+  return {
+    action: tokens?.source === 'exchange'
+      ? 'exchanged'
+      : tokens?.source === 'refresh'
+        ? 'refreshed'
+        : 'verified',
+    accountId: verification.accountId,
+    username: verification.username,
+    expiresIn: tokens?.expiresIn,
   };
 }
 
@@ -184,7 +309,12 @@ function normalizeThreadsError(
       status,
       contentType,
       providerCode,
-      bodySnippet: safeBodySnippet(rawText),
+      bodySnippet: safeBodySnippet({
+        message: error.message,
+        type: error.type,
+        code: error.code,
+        error_subcode: error.error_subcode,
+      }),
     });
   }
 
@@ -201,7 +331,7 @@ function normalizeThreadsError(
     status,
     contentType,
     providerCode,
-    bodySnippet: safeBodySnippet(rawText),
+    bodySnippet: stage.startsWith('token_') ? null : safeBodySnippet(rawText),
   });
 }
 

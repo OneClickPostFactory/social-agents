@@ -37,6 +37,10 @@ export interface AppConfig {
   ENABLE_FACEBOOK: boolean;
   LINKEDIN_TOKEN: string;
   LINKEDIN_PERSON_URN: string;
+  LINKEDIN_REFRESH_TOKEN: string;
+  LINKEDIN_CLIENT_ID: string;
+  LINKEDIN_CLIENT_SECRET: string;
+  LINKEDIN_EXPIRES_AT: string;
   X_API_KEY: string;
   X_API_SECRET: string;
   X_ACCESS_TOKEN: string;
@@ -47,6 +51,7 @@ export interface AppConfig {
   X_CLIENT_SECRET: string;
   X_REDIRECT_URI: string;
   THREADS_ACCESS_TOKEN: string;
+  THREADS_APP_SECRET: string;
   THREADS_USER_ID: string;
   FACEBOOK_PAGE_ACCESS_TOKEN: string;
   INSTAGRAM_ACCOUNT_ID: string;
@@ -152,6 +157,10 @@ function buildBaseConfig(): AppConfig {
     ENABLE_FACEBOOK: parseBooleanEnv(process.env.ENABLE_FACEBOOK, true),
     LINKEDIN_TOKEN: process.env.LINKEDIN_TOKEN || '',
     LINKEDIN_PERSON_URN: process.env.LINKEDIN_PERSON_URN || '',
+    LINKEDIN_REFRESH_TOKEN: process.env.LINKEDIN_REFRESH_TOKEN || '',
+    LINKEDIN_CLIENT_ID: process.env.LINKEDIN_CLIENT_ID || '',
+    LINKEDIN_CLIENT_SECRET: process.env.LINKEDIN_CLIENT_SECRET || '',
+    LINKEDIN_EXPIRES_AT: process.env.LINKEDIN_EXPIRES_AT || '',
     X_API_KEY: process.env.X_API_KEY || '',
     X_API_SECRET: process.env.X_API_SECRET || '',
     X_ACCESS_TOKEN: process.env.X_ACCESS_TOKEN || '',
@@ -161,10 +170,8 @@ function buildBaseConfig(): AppConfig {
     X_CLIENT_ID: process.env.X_CLIENT_ID || process.env.X_OAUTH2_CLIENT_ID || '',
     X_CLIENT_SECRET: process.env.X_CLIENT_SECRET || process.env.X_OAUTH2_CLIENT_SECRET || '',
     X_REDIRECT_URI: process.env.X_REDIRECT_URI || `http://127.0.0.1:${process.env.GUI_PORT || '4001'}/auth/x/callback`,
-    THREADS_ACCESS_TOKEN:
-      process.env.THREADS_ACCESS_TOKEN ||
-      process.env.META_ACCESS_TOKEN ||
-      '',
+    THREADS_ACCESS_TOKEN: process.env.THREADS_ACCESS_TOKEN || '',
+    THREADS_APP_SECRET: process.env.THREADS_APP_SECRET || '',
     THREADS_USER_ID: process.env.THREADS_USER_ID || '',
     FACEBOOK_PAGE_ACCESS_TOKEN: process.env.FACEBOOK_PAGE_ACCESS_TOKEN || '',
     INSTAGRAM_ACCOUNT_ID: process.env.INSTAGRAM_ACCOUNT_ID || '',
@@ -231,6 +238,10 @@ export function applyRuntimeConfig(patch: Record<string, unknown>): AppConfig {
   if (typeof patch.ENABLE_FACEBOOK === 'boolean') config.ENABLE_FACEBOOK = patch.ENABLE_FACEBOOK;
   if (typeof patch.LINKEDIN_TOKEN === 'string') config.LINKEDIN_TOKEN = patch.LINKEDIN_TOKEN;
   if (typeof patch.LINKEDIN_PERSON_URN === 'string') config.LINKEDIN_PERSON_URN = patch.LINKEDIN_PERSON_URN;
+  if (typeof patch.LINKEDIN_REFRESH_TOKEN === 'string') config.LINKEDIN_REFRESH_TOKEN = patch.LINKEDIN_REFRESH_TOKEN;
+  if (typeof patch.LINKEDIN_CLIENT_ID === 'string') config.LINKEDIN_CLIENT_ID = patch.LINKEDIN_CLIENT_ID;
+  if (typeof patch.LINKEDIN_CLIENT_SECRET === 'string') config.LINKEDIN_CLIENT_SECRET = patch.LINKEDIN_CLIENT_SECRET;
+  if (typeof patch.LINKEDIN_EXPIRES_AT === 'string') config.LINKEDIN_EXPIRES_AT = patch.LINKEDIN_EXPIRES_AT;
   if (typeof patch.X_API_KEY === 'string') config.X_API_KEY = patch.X_API_KEY;
   if (typeof patch.X_API_SECRET === 'string') config.X_API_SECRET = patch.X_API_SECRET;
   if (typeof patch.X_ACCESS_TOKEN === 'string') config.X_ACCESS_TOKEN = patch.X_ACCESS_TOKEN;
@@ -241,6 +252,7 @@ export function applyRuntimeConfig(patch: Record<string, unknown>): AppConfig {
   if (typeof patch.X_CLIENT_SECRET === 'string') config.X_CLIENT_SECRET = patch.X_CLIENT_SECRET;
   if (typeof patch.X_REDIRECT_URI === 'string') config.X_REDIRECT_URI = patch.X_REDIRECT_URI;
   if (typeof patch.THREADS_ACCESS_TOKEN === 'string') config.THREADS_ACCESS_TOKEN = patch.THREADS_ACCESS_TOKEN;
+  if (typeof patch.THREADS_APP_SECRET === 'string') config.THREADS_APP_SECRET = patch.THREADS_APP_SECRET;
   if (typeof patch.THREADS_USER_ID === 'string') config.THREADS_USER_ID = patch.THREADS_USER_ID;
   if (typeof patch.FACEBOOK_PAGE_ACCESS_TOKEN === 'string') config.FACEBOOK_PAGE_ACCESS_TOKEN = patch.FACEBOOK_PAGE_ACCESS_TOKEN;
   if (typeof patch.INSTAGRAM_ACCOUNT_ID === 'string') config.INSTAGRAM_ACCOUNT_ID = patch.INSTAGRAM_ACCOUNT_ID;

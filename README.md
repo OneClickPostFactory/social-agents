@@ -135,9 +135,19 @@ Set:
 ENABLE_LINKEDIN=true
 LINKEDIN_TOKEN=...
 LINKEDIN_PERSON_URN=urn:li:person:...
+LINKEDIN_REFRESH_TOKEN=...
+LINKEDIN_CLIENT_ID=...
+LINKEDIN_CLIENT_SECRET=...
+LINKEDIN_EXPIRES_AT=...
 ```
 
-The LinkedIn publisher uses the UGC Posts API and is text-only.
+The LinkedIn publisher uses the UGC Posts API and is text-only. When the
+refresh token and matching client credentials are present, the worker renews
+the access token within seven days of expiry (or on the first publish when
+expiry metadata is not known) and persists rotated tokens encrypted. LinkedIn
+programmatic refresh tokens are available only to approved Marketing Developer
+Platform partners; otherwise the account must reconnect through the normal
+authorization-code flow.
 
 ### X / Twitter
 
@@ -176,7 +186,17 @@ Notes:
 
 ### Threads / Instagram / Facebook
 
-Get a Meta token from [Meta Graph API Explorer](https://developers.facebook.com/tools/explorer) with:
+Threads and Instagram credentials are intentionally separate. Never replace a
+working Instagram/Page token with a Threads user token.
+
+Create or open the Threads app in the
+[Meta App Dashboard](https://developers.facebook.com/apps/). Store its
+`THREADS_APP_SECRET` only as a server/Worker secret. A valid one-hour Threads
+user token can then be exchanged server-side for a 60-day token, and an
+unexpired long-lived token is refreshed before publishing. Expired tokens
+cannot be exchanged or refreshed and must be authorized again.
+
+Get the relevant user tokens from [Meta Graph API Explorer](https://developers.facebook.com/tools/explorer) with:
 - `threads_basic`
 - `threads_content_publish`
 - `instagram_basic`
@@ -186,10 +206,11 @@ Get a Meta token from [Meta Graph API Explorer](https://developers.facebook.com/
 - `publish_to_groups`
 - `groups_access_member_info`
 
-Resolve the Threads user ID:
+Resolve the Threads user ID without placing the token in the URL:
 
 ```bash
-curl "https://graph.threads.net/me?fields=id,username&access_token=YOUR_THREADS_TOKEN"
+curl -H "Authorization: Bearer YOUR_THREADS_TOKEN" \
+  "https://graph.threads.net/me?fields=id,username"
 ```
 
 Resolve the Instagram account from the linked Page:

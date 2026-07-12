@@ -22,6 +22,129 @@ interface LinkedInPublishResponse extends LinkedInPublishSuccess {
   message?: string;
 }
 
+interface LinkedInOAuthTokenResponse extends LinkedInPublishError {
+  access_token?: string;
+  expires_in?: number;
+  refresh_token?: string;
+  refresh_token_expires_in?: number;
+  scope?: string;
+  token_type?: string;
+  error?: string;
+  error_description?: string;
+}
+
+export interface LinkedInOAuthTokenSet {
+  accessToken: string;
+  expiresIn?: number;
+  refreshToken?: string;
+  refreshTokenExpiresIn?: number;
+  scope?: string;
+  tokenType?: string;
+}
+
+type LinkedInOAuthTokenPersistence = (
+  tokens: LinkedInOAuthTokenSet
+) => void | Promise<void>;
+
+const REFRESH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+let persistOAuth2TokensHandler: LinkedInOAuthTokenPersistence = persistOAuth2TokensToLocalRuntime;
+
+export function hasRefreshConfig(): boolean {
+  return Boolean(
+    config.LINKEDIN_REFRESH_TOKEN
+    && config.LINKEDIN_CLIENT_ID
+    && config.LINKEDIN_CLIENT_SECRET
+  );
+}
+
+export function shouldRefreshAccessToken(
+  expiresAt = config.LINKEDIN_EXPIRES_AT,
+  nowMs = Date.now()
+): boolean {
+  if (!hasRefreshConfig()) return false;
+  const expiresAtMs = Date.parse(expiresAt);
+  return !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs + REFRESH_WINDOW_MS;
+}
+
+export async function refreshOAuth2AccessToken(
+  refreshToken = config.LINKEDIN_REFRESH_TOKEN
+): Promise<LinkedInOAuthTokenSet> {
+  if (!refreshToken || !config.LINKEDIN_CLIENT_ID || !config.LINKEDIN_CLIENT_SECRET) {
+    throw new Error('LinkedIn refresh token, client ID, and client secret are required');
+  }
+
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: config.LINKEDIN_CLIENT_ID,
+    client_secret: config.LINKEDIN_CLIENT_SECRET,
+  });
+  const { status, headers, data, rawText } = await requestJson<LinkedInOAuthTokenResponse>(
+    'https://www.linkedin.com/oauth/v2/accessToken',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+      timeoutMs: config.HTTP_TIMEOUT_MS,
+    }
+  );
+
+  if (status >= 400 || data.error || !data.access_token) {
+    throw normalizeLinkedInOAuthError(
+      status,
+      headers.get('content-type'),
+      rawText,
+      data
+    );
+  }
+
+  return {
+    accessToken: data.access_token,
+    expiresIn: data.expires_in,
+    refreshToken: data.refresh_token,
+    refreshTokenExpiresIn: data.refresh_token_expires_in,
+    scope: data.scope,
+    tokenType: data.token_type,
+  };
+}
+
+export function setOAuth2TokenPersistence(handler: LinkedInOAuthTokenPersistence): () => void {
+  const previous = persistOAuth2TokensHandler;
+  persistOAuth2TokensHandler = handler;
+  return () => {
+    persistOAuth2TokensHandler = previous;
+  };
+}
+
+export async function persistOAuth2Tokens(tokens: LinkedInOAuthTokenSet): Promise<void> {
+  applyOAuth2TokensToConfig(tokens);
+  await persistOAuth2TokensHandler(tokens);
+}
+
+export async function refreshAndPersistOAuth2AccessToken(): Promise<LinkedInOAuthTokenSet> {
+  const tokens = await refreshOAuth2AccessToken();
+  await persistOAuth2Tokens(tokens);
+  return tokens;
+}
+
+function applyOAuth2TokensToConfig(tokens: LinkedInOAuthTokenSet): Record<string, string> {
+  const patch: Record<string, string> = {
+    LINKEDIN_TOKEN: tokens.accessToken,
+  };
+  config.LINKEDIN_TOKEN = tokens.accessToken;
+  if (tokens.refreshToken) {
+    config.LINKEDIN_REFRESH_TOKEN = tokens.refreshToken;
+    patch.LINKEDIN_REFRESH_TOKEN = tokens.refreshToken;
+  }
+  return patch;
+}
+
+function persistOAuth2TokensToLocalRuntime(tokens: LinkedInOAuthTokenSet): void {
+  const patch = applyOAuth2TokensToConfig(tokens);
+  const { updateRuntimeSecrets } = require('./control-plane') as typeof import('./control-plane');
+  updateRuntimeSecrets(patch);
+}
+
 export function publish(text: string): Promise<string> {
   if (!config.LINKEDIN_TOKEN || !config.LINKEDIN_PERSON_URN) {
     throw new Error('LINKEDIN_TOKEN or LINKEDIN_PERSON_URN not set');
@@ -74,6 +197,44 @@ export function publish(text: string): Promise<string> {
       });
     }
     throw error;
+  });
+}
+
+function normalizeLinkedInOAuthError(
+  status: number,
+  contentType: string | null,
+  rawText: string,
+  data: LinkedInOAuthTokenResponse
+): PlatformPublishError {
+  const message = data.error_description || data.message || data.error || `HTTP ${status}`;
+  const normalized = message.toLowerCase();
+  const needsReconnect =
+    status === 401
+    || data.error === 'invalid_grant'
+    || data.error === 'invalid_client'
+    || normalized.includes('expired')
+    || normalized.includes('revoked')
+    || normalized.includes('invalid');
+
+  return new PlatformPublishError({
+    platform: 'linkedin',
+    stage: 'oauth_refresh',
+    code: needsReconnect ? 'needs_reconnect' : 'platform_api_error',
+    userMessage: needsReconnect
+      ? 'LinkedIn refresh credentials are invalid, expired, or revoked. Reconnect LinkedIn.'
+      : 'LinkedIn could not refresh the access token.',
+    nextAction: needsReconnect
+      ? 'Reconnect LinkedIn and save a new access/refresh credential set.'
+      : 'Open Logs for the safe LinkedIn refresh error, then retry.',
+    status,
+    contentType,
+    providerCode: data.error || data.code || null,
+    bodySnippet: safeBodySnippet({
+      error: data.error,
+      error_description: data.error_description,
+      message: data.message,
+      status,
+    }),
   });
 }
 

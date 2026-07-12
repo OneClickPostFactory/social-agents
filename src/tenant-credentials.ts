@@ -15,6 +15,11 @@ export interface TenantCredentials {
   facebookPageAccessToken?: string;
   linkedinToken?: string;
   linkedinPersonUrn?: string;
+  linkedinRefreshToken?: string;
+  linkedinClientId?: string;
+  linkedinClientSecret?: string;
+  linkedinExpiresAt?: string;
+  linkedinRefreshTokenExpiresAt?: string;
   metaAccessToken?: string;
   xClientId?: string;
   xClientSecret?: string;
@@ -32,6 +37,11 @@ export interface TenantCredentialRow {
   facebook_page_access_token_enc?: string | null;
   linkedin_token_enc?: string | null;
   linkedin_person_urn_enc?: string | null;
+  linkedin_refresh_token_enc?: string | null;
+  linkedin_client_id_enc?: string | null;
+  linkedin_client_secret_enc?: string | null;
+  linkedin_expires_at?: string | null;
+  linkedin_refresh_token_expires_at?: string | null;
   meta_access_token_enc?: string | null;
   reddit_client_id_enc?: string | null;
   reddit_client_secret_enc?: string | null;
@@ -114,6 +124,11 @@ export function decryptTenantCredentials(row: TenantCredentialRow | null | undef
       facebookPageAccessToken: compact(decryptCredential(row.facebook_page_access_token_enc)),
       linkedinToken: compact(decryptCredential(row.linkedin_token_enc)),
       linkedinPersonUrn: compact(decryptCredential(row.linkedin_person_urn_enc)),
+      linkedinRefreshToken: compact(decryptCredential(row.linkedin_refresh_token_enc)),
+      linkedinClientId: compact(decryptCredential(row.linkedin_client_id_enc)),
+      linkedinClientSecret: compact(decryptCredential(row.linkedin_client_secret_enc)),
+      linkedinExpiresAt: compact(row.linkedin_expires_at || null),
+      linkedinRefreshTokenExpiresAt: compact(row.linkedin_refresh_token_expires_at || null),
       metaAccessToken: compact(decryptCredential(row.meta_access_token_enc)),
       xClientId: compact(decryptCredential(row.x_client_id_enc)),
       xClientSecret: compact(decryptCredential(row.x_client_secret_enc)),

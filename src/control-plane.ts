@@ -55,6 +55,10 @@ export interface RuntimeSecrets {
   OPENAI_API_KEY?: string;
   LINKEDIN_TOKEN?: string;
   LINKEDIN_PERSON_URN?: string;
+  LINKEDIN_REFRESH_TOKEN?: string;
+  LINKEDIN_CLIENT_ID?: string;
+  LINKEDIN_CLIENT_SECRET?: string;
+  LINKEDIN_EXPIRES_AT?: string;
   X_API_KEY?: string;
   X_API_SECRET?: string;
   X_ACCESS_TOKEN?: string;
@@ -65,6 +69,7 @@ export interface RuntimeSecrets {
   X_CLIENT_SECRET?: string;
   X_REDIRECT_URI?: string;
   THREADS_ACCESS_TOKEN?: string;
+  THREADS_APP_SECRET?: string;
   THREADS_USER_ID?: string;
   META_ACCESS_TOKEN?: string;
   FACEBOOK_PAGE_ACCESS_TOKEN?: string;
@@ -1113,6 +1118,10 @@ export function getRuntimeSecretPresence(): Record<keyof RuntimeSecrets, boolean
     OPENAI_API_KEY: Boolean(secrets.OPENAI_API_KEY),
     LINKEDIN_TOKEN: Boolean(secrets.LINKEDIN_TOKEN),
     LINKEDIN_PERSON_URN: Boolean(secrets.LINKEDIN_PERSON_URN),
+    LINKEDIN_REFRESH_TOKEN: Boolean(secrets.LINKEDIN_REFRESH_TOKEN),
+    LINKEDIN_CLIENT_ID: Boolean(secrets.LINKEDIN_CLIENT_ID),
+    LINKEDIN_CLIENT_SECRET: Boolean(secrets.LINKEDIN_CLIENT_SECRET),
+    LINKEDIN_EXPIRES_AT: Boolean(secrets.LINKEDIN_EXPIRES_AT),
     X_API_KEY: Boolean(secrets.X_API_KEY),
     X_API_SECRET: Boolean(secrets.X_API_SECRET),
     X_ACCESS_TOKEN: Boolean(secrets.X_ACCESS_TOKEN),
@@ -1123,6 +1132,7 @@ export function getRuntimeSecretPresence(): Record<keyof RuntimeSecrets, boolean
     X_CLIENT_SECRET: Boolean(secrets.X_CLIENT_SECRET),
     X_REDIRECT_URI: Boolean(secrets.X_REDIRECT_URI),
     THREADS_ACCESS_TOKEN: Boolean(secrets.THREADS_ACCESS_TOKEN),
+    THREADS_APP_SECRET: Boolean(secrets.THREADS_APP_SECRET),
     THREADS_USER_ID: Boolean(secrets.THREADS_USER_ID),
     META_ACCESS_TOKEN: Boolean(secrets.META_ACCESS_TOKEN),
     FACEBOOK_PAGE_ACCESS_TOKEN: Boolean(secrets.FACEBOOK_PAGE_ACCESS_TOKEN),

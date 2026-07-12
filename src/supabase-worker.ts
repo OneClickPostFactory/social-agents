@@ -1504,6 +1504,15 @@ function platformWarnings(tenant: TenantContext): string[] {
   ) {
     warnings.push('X OAuth2 credentials are stored but not refreshable. Reconnect X with client credentials and a refresh token.');
   }
+  if (
+    tenant.activePlatforms.includes('linkedin')
+    && tenant.credentials.linkedinToken
+    && (!tenant.credentials.linkedinRefreshToken
+      || !tenant.credentials.linkedinClientId
+      || !tenant.credentials.linkedinClientSecret)
+  ) {
+    warnings.push('LinkedIn credentials are stored but not refreshable. Add the matching refresh token and client credentials.');
+  }
   return warnings;
 }
 
@@ -1560,19 +1569,75 @@ async function verifyXCredentialForPublish(userId: string): Promise<x.XSafeAuthM
   }
 }
 
-async function refreshThreadsCredentialForPublish(userId: string): Promise<void> {
+async function prepareThreadsCredentialForPublish(userId: string): Promise<void> {
   try {
-    const tokens = await threads.refreshLongLivedAccessToken();
-    await threads.persistLongLivedAccessToken(tokens);
+    const preparation = await threads.prepareAccessTokenForPublish();
+    await supabaseUpdate('user_credentials', {
+      threads_verified_at: nowIso(),
+      threads_last_verification_failed_at: null,
+      threads_verification_status: 'verified',
+      threads_account_id: preparation.accountId,
+      threads_verification_error: null,
+    }, {
+      filters: [{ column: 'user_id', operator: 'eq', value: userId }],
+    });
+    await writeWorkerLog(userId, 'info', 'threads_credentials_verified', {
+      platform: 'threads',
+      action: preparation.action,
+      accountIdHash: hashId(preparation.accountId),
+    });
   } catch (error) {
     const context = isPlatformPublishError(error)
       ? platformErrorContext(error)
-      : { normalized_error_code: 'refresh_deferred', user_message: publicError(error) };
-    await writeWorkerLog(userId, 'warn', 'threads_token_refresh_deferred', {
+      : { normalized_error_code: 'verification_failed', user_message: publicError(error) };
+    await supabaseUpdate('user_credentials', {
+      threads_last_verification_failed_at: nowIso(),
+      threads_verification_status: 'needs_reconnect',
+      threads_verification_error: publicError(error),
+    }, {
+      filters: [{ column: 'user_id', operator: 'eq', value: userId }],
+    });
+    await writeWorkerLog(userId, 'warn', 'threads_credentials_verification_failed', {
       platform: 'threads',
       ...context,
     });
+    throw error;
   }
+}
+
+async function refreshLinkedInCredentialForPublish(userId: string): Promise<void> {
+  if (!linkedin.shouldRefreshAccessToken()) return;
+
+  try {
+    await linkedin.refreshAndPersistOAuth2AccessToken();
+  } catch (error) {
+    const context = isPlatformPublishError(error)
+      ? platformErrorContext(error)
+      : { normalized_error_code: 'refresh_failed', user_message: publicError(error) };
+    await supabaseUpdate('user_credentials', {
+      linkedin_last_verification_failed_at: nowIso(),
+      linkedin_verification_status: 'needs_reconnect',
+      linkedin_verification_error: publicError(error),
+    }, {
+      filters: [{ column: 'user_id', operator: 'eq', value: userId }],
+    });
+    await writeWorkerLog(userId, 'warn', 'linkedin_token_refresh_failed', {
+      platform: 'linkedin',
+      ...context,
+    });
+    throw error;
+  }
+}
+
+async function markLinkedInCredentialVerified(userId: string): Promise<void> {
+  await supabaseUpdate('user_credentials', {
+    linkedin_verified_at: nowIso(),
+    linkedin_last_verification_failed_at: null,
+    linkedin_verification_status: 'verified',
+    linkedin_verification_error: null,
+  }, {
+    filters: [{ column: 'user_id', operator: 'eq', value: userId }],
+  });
 }
 
 async function createPipelineSummary(
@@ -1689,8 +1754,13 @@ function snapshotConfig(): Partial<AppConfig> {
     ENABLE_X: config.ENABLE_X,
     ENABLE_FACEBOOK: config.ENABLE_FACEBOOK,
     THREADS_ACCESS_TOKEN: config.THREADS_ACCESS_TOKEN,
+    THREADS_APP_SECRET: config.THREADS_APP_SECRET,
     LINKEDIN_TOKEN: config.LINKEDIN_TOKEN,
     LINKEDIN_PERSON_URN: config.LINKEDIN_PERSON_URN,
+    LINKEDIN_REFRESH_TOKEN: config.LINKEDIN_REFRESH_TOKEN,
+    LINKEDIN_CLIENT_ID: config.LINKEDIN_CLIENT_ID,
+    LINKEDIN_CLIENT_SECRET: config.LINKEDIN_CLIENT_SECRET,
+    LINKEDIN_EXPIRES_AT: config.LINKEDIN_EXPIRES_AT,
     X_CLIENT_ID: config.X_CLIENT_ID,
     X_CLIENT_SECRET: config.X_CLIENT_SECRET,
     X_OAUTH2_ACCESS_TOKEN: config.X_OAUTH2_ACCESS_TOKEN,
@@ -1712,14 +1782,49 @@ function tenantCloudinaryFolder(baseFolder: string, userId: string): string {
 async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>): Promise<T> {
   const previous = snapshotConfig();
   const restoreThreadsTokenPersistence = threads.setTokenPersistence(async tokens => {
+    const expiresAt = secondsFromNowIso(tokens.expiresIn);
     await supabaseUpdate('user_credentials', {
       threads_token_enc: encryptCredential(tokens.accessToken),
+      ...(expiresAt ? { threads_expires_at: expiresAt } : {}),
     }, {
       filters: [{ column: 'user_id', operator: 'eq', value: tenant.userId }],
     });
-    await writeWorkerLog(tenant.userId, 'info', 'threads_token_refreshed', {
+    await writeWorkerLog(tenant.userId, 'info', 'threads_token_rotated', {
       platform: 'threads',
+      action: tokens.source,
       expires_in_present: Number.isFinite(tokens.expiresIn),
+    });
+  });
+  const restoreLinkedInTokenPersistence = linkedin.setOAuth2TokenPersistence(async tokens => {
+    const patch: Record<string, unknown> = {
+      linkedin_token_enc: encryptCredential(tokens.accessToken),
+      linkedin_verification_status: 'stored_not_verified',
+      linkedin_verification_error: null,
+    };
+    if (tokens.refreshToken) {
+      patch.linkedin_refresh_token_enc = encryptCredential(tokens.refreshToken);
+    }
+    if (tokens.scope) {
+      patch.linkedin_scopes = tokens.scope;
+    }
+    const expiresAt = secondsFromNowIso(tokens.expiresIn);
+    if (expiresAt) {
+      patch.linkedin_expires_at = expiresAt;
+      config.LINKEDIN_EXPIRES_AT = expiresAt;
+    }
+    const refreshTokenExpiresAt = secondsFromNowIso(tokens.refreshTokenExpiresIn);
+    if (refreshTokenExpiresAt) {
+      patch.linkedin_refresh_token_expires_at = refreshTokenExpiresAt;
+    }
+    await supabaseUpdate('user_credentials', patch, {
+      filters: [{ column: 'user_id', operator: 'eq', value: tenant.userId }],
+    });
+    await writeWorkerLog(tenant.userId, 'info', 'linkedin_oauth2_tokens_refreshed', {
+      platform: 'linkedin',
+      accessTokenUpdated: true,
+      refreshTokenUpdated: Boolean(tokens.refreshToken),
+      expiresAtUpdated: Boolean(expiresAt),
+      refreshTokenExpiresAtUpdated: Boolean(refreshTokenExpiresAt),
     });
   });
   const restoreXTokenPersistence = x.setOAuth2TokenPersistence(async tokens => {
@@ -1759,6 +1864,10 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
   config.THREADS_ACCESS_TOKEN = tenant.credentials.threadsToken || '';
   config.LINKEDIN_TOKEN = tenant.credentials.linkedinToken || '';
   config.LINKEDIN_PERSON_URN = tenant.credentials.linkedinPersonUrn || '';
+  config.LINKEDIN_REFRESH_TOKEN = tenant.credentials.linkedinRefreshToken || '';
+  config.LINKEDIN_CLIENT_ID = tenant.credentials.linkedinClientId || '';
+  config.LINKEDIN_CLIENT_SECRET = tenant.credentials.linkedinClientSecret || '';
+  config.LINKEDIN_EXPIRES_AT = tenant.credentials.linkedinExpiresAt || '';
   config.X_CLIENT_ID = tenant.credentials.xClientId || '';
   config.X_CLIENT_SECRET = tenant.credentials.xClientSecret || '';
   config.X_OAUTH2_ACCESS_TOKEN = tenant.credentials.xOAuth2AccessToken || '';
@@ -1773,6 +1882,7 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
     return await fn();
   } finally {
     restoreThreadsTokenPersistence();
+    restoreLinkedInTokenPersistence();
     restoreXTokenPersistence();
     Object.assign(config, previous);
   }
@@ -3231,12 +3341,18 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, settings: Us
     }
 
     if (current.platform === 'threads') {
-      await refreshThreadsCredentialForPublish(job.user_id);
+      await prepareThreadsCredentialForPublish(job.user_id);
+    }
+    if (current.platform === 'linkedin') {
+      await refreshLinkedInCredentialForPublish(job.user_id);
     }
     const authMode = current.platform === 'x'
       ? await verifyXCredentialForPublish(job.user_id)
       : undefined;
     const externalPostId = await publishPlatform(current);
+    if (current.platform === 'linkedin') {
+      await markLinkedInCredentialVerified(job.user_id);
+    }
     await supabaseUpdate('queue_items', {
       status: 'published',
       error_message: null,
