@@ -11,6 +11,20 @@ interface GraphSuccess {
   id: string;
 }
 
+interface ThreadsTokenResponse extends GraphErrorResponse {
+  access_token?: string;
+  expires_in?: number;
+  token_type?: string;
+}
+
+export interface ThreadsTokenSet {
+  accessToken: string;
+  expiresIn?: number;
+  tokenType?: string;
+}
+
+type ThreadsTokenPersistence = (tokens: ThreadsTokenSet) => void | Promise<void>;
+
 interface GraphErrorResponse {
   error?: {
     message?: string;
@@ -20,6 +34,61 @@ interface GraphErrorResponse {
     fbtrace_id?: string;
   };
   id?: string;
+}
+
+let persistThreadsTokenHandler: ThreadsTokenPersistence = persistThreadsTokenToLocalRuntime;
+
+export async function refreshLongLivedAccessToken(): Promise<ThreadsTokenSet> {
+  const token = config.THREADS_ACCESS_TOKEN;
+  if (!token) {
+    throw new Error('THREADS_ACCESS_TOKEN not set');
+  }
+
+  const url = new URL('https://graph.threads.net/refresh_access_token');
+  url.searchParams.set('grant_type', 'th_refresh_token');
+  url.searchParams.set('access_token', token);
+
+  const { status, headers, data, rawText } = await requestJson<ThreadsTokenResponse>(url.toString(), {
+    method: 'GET',
+    timeoutMs: config.HTTP_TIMEOUT_MS,
+  });
+  if (data.error) {
+    throw normalizeThreadsError(
+      'token_refresh',
+      status,
+      headers.get('content-type'),
+      rawText,
+      data.error
+    );
+  }
+  if (status >= 400 || !data.access_token) {
+    throw unexpectedThreadsResponse('token_refresh', status, headers.get('content-type'), rawText);
+  }
+
+  return {
+    accessToken: data.access_token,
+    expiresIn: data.expires_in,
+    tokenType: data.token_type,
+  };
+}
+
+export function setTokenPersistence(handler: ThreadsTokenPersistence): () => void {
+  const previous = persistThreadsTokenHandler;
+  persistThreadsTokenHandler = handler;
+  return () => {
+    persistThreadsTokenHandler = previous;
+  };
+}
+
+export async function persistLongLivedAccessToken(tokens: ThreadsTokenSet): Promise<void> {
+  config.THREADS_ACCESS_TOKEN = tokens.accessToken;
+  await persistThreadsTokenHandler(tokens);
+}
+
+function persistThreadsTokenToLocalRuntime(tokens: ThreadsTokenSet): void {
+  config.THREADS_ACCESS_TOKEN = tokens.accessToken;
+  const { updateRuntimeSecrets } = require('./control-plane') as typeof import('./control-plane');
+  updateRuntimeSecrets({ THREADS_ACCESS_TOKEN: tokens.accessToken });
 }
 
 export async function publish(text: string): Promise<string> {

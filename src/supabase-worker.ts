@@ -1560,6 +1560,21 @@ async function verifyXCredentialForPublish(userId: string): Promise<x.XSafeAuthM
   }
 }
 
+async function refreshThreadsCredentialForPublish(userId: string): Promise<void> {
+  try {
+    const tokens = await threads.refreshLongLivedAccessToken();
+    await threads.persistLongLivedAccessToken(tokens);
+  } catch (error) {
+    const context = isPlatformPublishError(error)
+      ? platformErrorContext(error)
+      : { normalized_error_code: 'refresh_deferred', user_message: publicError(error) };
+    await writeWorkerLog(userId, 'warn', 'threads_token_refresh_deferred', {
+      platform: 'threads',
+      ...context,
+    });
+  }
+}
+
 async function createPipelineSummary(
   job: AgentJobRow,
   tenant: TenantContext,
@@ -1696,6 +1711,17 @@ function tenantCloudinaryFolder(baseFolder: string, userId: string): string {
 
 async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>): Promise<T> {
   const previous = snapshotConfig();
+  const restoreThreadsTokenPersistence = threads.setTokenPersistence(async tokens => {
+    await supabaseUpdate('user_credentials', {
+      threads_token_enc: encryptCredential(tokens.accessToken),
+    }, {
+      filters: [{ column: 'user_id', operator: 'eq', value: tenant.userId }],
+    });
+    await writeWorkerLog(tenant.userId, 'info', 'threads_token_refreshed', {
+      platform: 'threads',
+      expires_in_present: Number.isFinite(tokens.expiresIn),
+    });
+  });
   const restoreXTokenPersistence = x.setOAuth2TokenPersistence(async tokens => {
     const patch: Record<string, unknown> = {
       x_oauth2_access_token_enc: encryptCredential(tokens.accessToken),
@@ -1746,6 +1772,7 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
   try {
     return await fn();
   } finally {
+    restoreThreadsTokenPersistence();
     restoreXTokenPersistence();
     Object.assign(config, previous);
   }
@@ -3203,6 +3230,9 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, settings: Us
       };
     }
 
+    if (current.platform === 'threads') {
+      await refreshThreadsCredentialForPublish(job.user_id);
+    }
     const authMode = current.platform === 'x'
       ? await verifyXCredentialForPublish(job.user_id)
       : undefined;
