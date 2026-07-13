@@ -163,6 +163,9 @@ interface QueueItemRow {
   angle?: string | null;
   angle_record_id?: string | null;
   error_message?: string | null;
+  retry_of?: string | null;
+  recovery_execution_id?: string | null;
+  recovery_reason?: string | null;
 }
 
 interface PublishHistoryRow {
@@ -3865,10 +3868,26 @@ async function loadAutomationSettingsByUser(): Promise<Map<string, AutomationSet
   return new Map(rows.map(row => [row.user_id, row]));
 }
 
+async function loadPriorFailedRecovery(row: QueueItemRow): Promise<QueueItemRow | undefined> {
+  if (!row.recovery_execution_id) return undefined;
+  const rows = await supabaseSelect<QueueItemRow>('queue_items', {
+    select: 'id,user_id,platform,status,scheduled_for,recovery_execution_id',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: row.user_id },
+      { column: 'platform', operator: 'eq', value: row.platform },
+      { column: 'status', operator: 'eq', value: 'failed' },
+      { column: 'scheduled_for', operator: 'lte', value: row.scheduled_for },
+    ],
+    order: 'scheduled_for.desc',
+    limit: 100,
+  });
+  return rows.find(candidate => Boolean(candidate.recovery_execution_id));
+}
+
 async function enqueueDuePublishJobs(stats: SchedulerStats, now: Date): Promise<void> {
   const settingsByUser = await loadAutomationSettingsByUser();
   const dueRows = await supabaseSelect<QueueItemRow>('queue_items', {
-    select: 'id,user_id,platform,status,slot_index,scheduled_for,scheduled_local_date,scheduled_timezone',
+    select: 'id,user_id,platform,status,slot_index,scheduled_for,scheduled_local_date,scheduled_timezone,retry_of,recovery_execution_id',
     filters: [
       { column: 'status', operator: 'in', value: ['pending', 'ready'] },
       { column: 'scheduled_for', operator: 'lte', value: now.toISOString() },
@@ -3881,6 +3900,34 @@ async function enqueueDuePublishJobs(stats: SchedulerStats, now: Date): Promise<
     const settings = settingsByUser.get(row.user_id);
     if (!settings || !settings.automation_publish_enabled) {
       incrementSchedulerSkip(stats, 'publish_automation_disabled');
+      continue;
+    }
+
+    const priorFailedRecovery = await loadPriorFailedRecovery(row);
+    if (priorFailedRecovery) {
+      incrementSchedulerSkip(stats, 'publish_recovery_paused_after_failure');
+      await supabaseUpdate('queue_items', {
+        status: 'skipped',
+        error_message: 'Recovery paused because an earlier recovery on this platform failed. Review the earlier attempt before rescheduling.',
+      }, {
+        filters: [
+          { column: 'id', operator: 'eq', value: row.id },
+          { column: 'user_id', operator: 'eq', value: row.user_id },
+          { column: 'status', operator: 'in', value: ['pending', 'ready'] },
+        ],
+      });
+      await recordAutomationSkip(
+        row.user_id,
+        'publish_now',
+        'publish_recovery_paused_after_failure',
+        'A scheduled recovery was paused because an earlier recovery on this platform failed.',
+        'Review the earlier recovery attempt before rescheduling this row.',
+        {
+          queueItemId: row.id,
+          platform: row.platform,
+          priorQueueItemId: priorFailedRecovery.id,
+        }
+      );
       continue;
     }
 
