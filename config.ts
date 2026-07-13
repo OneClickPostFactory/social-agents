@@ -75,6 +75,8 @@ export interface AppConfig {
   CREDENTIAL_ENCRYPTION_KEY: string;
   SUPABASE_WORKER_POLL_INTERVAL_MS: number;
   SUPABASE_WORKER_BATCH_SIZE: number;
+  DAILY_INVENTORY_PLANNER_ENABLED: boolean;
+  DAILY_INVENTORY_PLANNER_START_LOCAL_DATE: string;
 }
 
 const envPath = path.join(PROJECT_ROOT, '.env');
@@ -199,6 +201,8 @@ function buildBaseConfig(): AppConfig {
     CREDENTIAL_ENCRYPTION_KEY: process.env.CREDENTIAL_ENCRYPTION_KEY || '',
     SUPABASE_WORKER_POLL_INTERVAL_MS: Number.parseInt(process.env.SUPABASE_WORKER_POLL_INTERVAL_MS || '10000', 10),
     SUPABASE_WORKER_BATCH_SIZE: Number.parseInt(process.env.SUPABASE_WORKER_BATCH_SIZE || '10', 10),
+    DAILY_INVENTORY_PLANNER_ENABLED: parseBooleanEnv(process.env.DAILY_INVENTORY_PLANNER_ENABLED, false),
+    DAILY_INVENTORY_PLANNER_START_LOCAL_DATE: process.env.DAILY_INVENTORY_PLANNER_START_LOCAL_DATE || '',
   };
 }
 
@@ -266,6 +270,8 @@ export function applyRuntimeConfig(patch: Record<string, unknown>): AppConfig {
   if (typeof patch.CLOUDINARY_FOLDER === 'string') config.CLOUDINARY_FOLDER = patch.CLOUDINARY_FOLDER;
   if (typeof patch.TIMEZONE === 'string') config.TIMEZONE = patch.TIMEZONE;
   if (typeof patch.APP_DATA_DIR === 'string') config.APP_DATA_DIR = patch.APP_DATA_DIR;
+  if (typeof patch.DAILY_INVENTORY_PLANNER_ENABLED === 'boolean') config.DAILY_INVENTORY_PLANNER_ENABLED = patch.DAILY_INVENTORY_PLANNER_ENABLED;
+  if (typeof patch.DAILY_INVENTORY_PLANNER_START_LOCAL_DATE === 'string') config.DAILY_INVENTORY_PLANNER_START_LOCAL_DATE = patch.DAILY_INVENTORY_PLANNER_START_LOCAL_DATE;
 
   return config;
 }

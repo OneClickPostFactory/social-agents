@@ -156,6 +156,34 @@ async function main(): Promise<void> {
     assert.equal(snapshot.hasOpenSlots, false);
   });
 
+  await test('next-day capacity ignores occupied slots on other local dates', () => {
+    const occupied = new Set(fullPlatformSlots('threads', '2026-05-18'));
+    const snapshot = __test__.platformSlotCapacitySnapshot(
+      ['threads'] as any,
+      occupied,
+      '2026-05-19',
+    );
+
+    assert.equal(snapshot.hasOpenSlots, true);
+    assert.equal(snapshot.openSlotsByPlatform.threads, 4);
+  });
+
+  await test('next-day draft preflight blocks a full target date before OpenAI', () => {
+    const decision = __test__.draftCreationPreflightForAngle({
+      angleId: 'angle-next-day-full',
+      occupiedSlots: new Set([
+        ...fullPlatformSlots('threads', '2026-05-18'),
+        ...fullPlatformSlots('threads', '2026-05-19'),
+      ]),
+      platform: 'threads',
+      queuedAnglePlatformKeys: new Set(),
+      targetLocalDate: '2026-05-19',
+    });
+
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.code, 'threads_no_open_slot');
+  });
+
   await test('OpenAI usage telemetry records text call stages without prompt text', async () => {
     const previousKey = config.OPENAI_API_KEY;
     const originalFetch = globalThis.fetch;

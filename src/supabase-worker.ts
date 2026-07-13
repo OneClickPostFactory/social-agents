@@ -9,6 +9,7 @@ import * as linkedin from './linkedin';
 import * as logger from './logger';
 import * as threads from './threads';
 import * as x from './x';
+import { buildDailyInventoryPlan, type DailyInventoryQueueRow } from './daily-inventory-planner';
 import {
   isSupabaseWorkerConfigured,
   SupabaseRestError,
@@ -31,8 +32,10 @@ import {
   DAILY_SLOT_HOURS,
   buildPlatformSlotOccupancy,
   nextOpenPlatformSlot,
+  nextOpenPlatformSlotForLocalDate,
   platformSlotOccupancyKey,
   scheduledSlotWriteFields,
+  tenantLocalDatePlusDays,
   tenantTimeZone,
   type PlatformSlotOccupancy,
   type ScheduledPlatformSlot,
@@ -266,6 +269,8 @@ export interface SchedulerStats {
   fetchJobsEnqueued: number;
   slotFillJobsEnqueued: number;
   publishJobsEnqueued: number;
+  inventoryPlansChecked: number;
+  inventoryAlerts: number;
   skipped: Record<string, number>;
 }
 
@@ -1220,19 +1225,29 @@ function openAIUsageContext(
   };
 }
 
-function activeSlotCountForPlatform(platform: PlatformKey | string, occupiedSlots: PlatformSlotOccupancy): number {
-  const prefix = `${String(platform || '').trim()}:`;
-  if (!prefix.trim()) return 0;
+function activeSlotCountForPlatform(
+  platform: PlatformKey | string,
+  occupiedSlots: PlatformSlotOccupancy,
+  targetLocalDate?: string
+): number {
+  const platformPrefix = `${String(platform || '').trim()}:`;
+  if (!platformPrefix.trim()) return 0;
+  const prefix = targetLocalDate ? `${platformPrefix}${targetLocalDate}:` : platformPrefix;
   return [...occupiedSlots].filter(key => key.startsWith(prefix)).length;
 }
 
-function hasOpenActiveSlotForPlatform(platform: PlatformKey | string, occupiedSlots: PlatformSlotOccupancy): boolean {
-  return activeSlotCountForPlatform(platform, occupiedSlots) < DAILY_SLOT_HOURS.length;
+function hasOpenActiveSlotForPlatform(
+  platform: PlatformKey | string,
+  occupiedSlots: PlatformSlotOccupancy,
+  targetLocalDate?: string
+): boolean {
+  return activeSlotCountForPlatform(platform, occupiedSlots, targetLocalDate) < DAILY_SLOT_HOURS.length;
 }
 
 function platformSlotCapacitySnapshot(
   platforms: PlatformKey[],
-  occupiedSlots: PlatformSlotOccupancy
+  occupiedSlots: PlatformSlotOccupancy,
+  targetLocalDate?: string
 ): {
   activeSlotsByPlatform: Record<string, number>;
   hasOpenSlots: boolean;
@@ -1241,7 +1256,7 @@ function platformSlotCapacitySnapshot(
   const activeSlotsByPlatform: Record<string, number> = {};
   const openSlotsByPlatform: Record<string, number> = {};
   for (const platform of platforms) {
-    const active = activeSlotCountForPlatform(platform, occupiedSlots);
+    const active = activeSlotCountForPlatform(platform, occupiedSlots, targetLocalDate);
     activeSlotsByPlatform[platform] = active;
     openSlotsByPlatform[platform] = Math.max(0, DAILY_SLOT_HOURS.length - active);
   }
@@ -1261,8 +1276,9 @@ function draftCreationPreflightForAngle(input: {
   occupiedSlots: PlatformSlotOccupancy;
   platform: PlatformKey;
   queuedAnglePlatformKeys?: Set<string>;
+  targetLocalDate?: string;
 }): OpenAIGenerationGuardDecision {
-  if (!hasOpenActiveSlotForPlatform(input.platform, input.occupiedSlots)) {
+  if (!hasOpenActiveSlotForPlatform(input.platform, input.occupiedSlots, input.targetLocalDate)) {
     return blockedOpenAIGuard(
       `${input.platform}_no_open_slot`,
       'platform_draft',
@@ -2186,16 +2202,19 @@ function tenantAutomationTimeZone(tenant: TenantContext): string {
   return tenantTimeZone(tenant.settings.automation_timezone, tenant.settings.posting_timezone);
 }
 
-async function loadActiveSlotOccupancy(userId: string, timeZone: string): Promise<PlatformSlotOccupancy> {
-  const rows = await supabaseSelect<QueueItemRow>('queue_items', {
-    select: 'slot_index,status,platform,scheduled_for,scheduled_local_date',
+async function loadActiveQueueRows(userId: string): Promise<QueueItemRow[]> {
+  return supabaseSelect<QueueItemRow>('queue_items', {
+    select: 'id,user_id,slot_index,status,platform,scheduled_for,scheduled_local_date,scheduled_timezone,retry_of,recovery_execution_id',
     filters: [
       { column: 'user_id', operator: 'eq', value: userId },
       { column: 'status', operator: 'in', value: ACTIVE_QUEUE_STATUSES },
     ],
-    limit: 100,
+    limit: 500,
   });
-  return buildPlatformSlotOccupancy(rows, timeZone);
+}
+
+async function loadActiveSlotOccupancy(userId: string, timeZone: string): Promise<PlatformSlotOccupancy> {
+  return buildPlatformSlotOccupancy(await loadActiveQueueRows(userId), timeZone);
 }
 
 async function loadSourceUrlsWithAngles(userId: string): Promise<Set<string>> {
@@ -2830,12 +2849,27 @@ async function queueFromBankedAngles(
     rejected: 0,
   };
   let instagramImageGenerationBlocked = false;
+  const plannedLocalDate = typeof job.payload?.target_local_date === 'string'
+    && /^\d{4}-\d{2}-\d{2}$/.test(job.payload.target_local_date)
+    ? job.payload.target_local_date
+    : undefined;
+  const plannedPlatforms = plannedLocalDate
+    ? tenant.activePlatforms.filter(platform => hasOpenActiveSlotForPlatform(
+      platform,
+      occupiedSlots,
+      plannedLocalDate
+    ))
+    : tenant.activePlatforms;
+  if (plannedLocalDate && !plannedPlatforms.length) return result;
 
   const angles = await supabaseSelect<AngleRecordRow>('angle_records', {
     select: '*',
     filters: [
       { column: 'user_id', operator: 'eq', value: job.user_id },
       { column: 'status', operator: 'in', value: ACTIVE_ANGLE_STATUSES },
+      ...(plannedLocalDate
+        ? [{ column: 'intended_platform', operator: 'in' as const, value: plannedPlatforms }]
+        : []),
     ],
     order: 'created_at.asc',
     limit: 20,
@@ -2893,6 +2927,7 @@ async function queueFromBankedAngles(
       occupiedSlots,
       platform,
       queuedAnglePlatformKeys,
+      targetLocalDate: plannedLocalDate,
     });
     if (!draftPreflight.allowed) {
       if (draftPreflight.code === 'angle_platform_draft_already_queued') {
@@ -2958,8 +2993,17 @@ async function queueFromBankedAngles(
       continue;
     }
 
+    const slot = plannedLocalDate
+      ? nextOpenPlatformSlotForLocalDate(platform, occupiedSlots, timeZone, plannedLocalDate)
+      : nextOpenPlatformSlot(platform, occupiedSlots, timeZone);
+    if (!slot) {
+      if (summary) {
+        summary.drafts.skipped++;
+        incrementCounter(summary.drafts.skipReasons, 'planned_local_date_has_no_open_slot');
+      }
+      continue;
+    }
     if (summary) summary.drafts.attempted++;
-    const slot = nextOpenPlatformSlot(platform, occupiedSlots, timeZone);
 
     const locked = await supabaseUpdate<AngleRecordRow>('angle_records', {
       status: 'in_progress',
@@ -3775,6 +3819,71 @@ async function enqueueDueFetchJobs(stats: SchedulerStats, now: Date): Promise<vo
   }
 }
 
+async function hasProcessableSourceRecord(userId: string): Promise<boolean> {
+  const rows = await supabaseSelect<SourceRecordRow>('source_records', {
+    select: 'id,origin,status,used,source_text,url',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'origin', operator: 'in', value: [...PROCESSABLE_SOURCE_RECORD_ORIGINS] },
+      { column: 'status', operator: 'eq', value: 'banked' },
+      { column: 'used', operator: 'eq', value: false },
+    ],
+    order: 'created_at.asc',
+    limit: 10,
+  });
+  const sourceUrlsWithAngles = await loadSourceUrlsWithAngles(userId);
+  return rows.some(row => Boolean(row.url) && isProcessableSourceRecordForAngleExtraction(
+    row,
+    sourceUrlsWithAngles
+  ));
+}
+
+async function hasDailyInventoryAlert(userId: string, targetLocalDate: string): Promise<boolean> {
+  const rows = await supabaseSelect<{ context?: JsonMap | null }>('worker_logs', {
+    select: 'context',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'message', operator: 'eq', value: 'daily_inventory_insufficient' },
+      { column: 'created_at', operator: 'gte', value: addMinutesIso(new Date(), -1440) },
+    ],
+    order: 'created_at.desc',
+    limit: 20,
+  });
+  return rows.some(row => String(row.context?.targetLocalDate || '') === targetLocalDate);
+}
+
+function plannerActiveForTarget(targetLocalDate: string): boolean {
+  if (!config.DAILY_INVENTORY_PLANNER_ENABLED) return false;
+  const startsOn = config.DAILY_INVENTORY_PLANNER_START_LOCAL_DATE.trim();
+  return !startsOn || targetLocalDate >= startsOn;
+}
+
+async function recordDailyInventoryAlert(
+  settings: AutomationSettingsRow,
+  plan: ReturnType<typeof buildDailyInventoryPlan>,
+  stats: SchedulerStats
+): Promise<void> {
+  if (await hasDailyInventoryAlert(settings.user_id, plan.targetLocalDate)) {
+    incrementSchedulerSkip(stats, 'daily_inventory_alert_already_recorded');
+    return;
+  }
+  stats.inventoryAlerts++;
+  await recordAutomationSkip(
+    settings.user_id,
+    'refresh_queue',
+    'daily_inventory_insufficient',
+    'The next-day queue is incomplete and no approved source or unused angle is available. No post was fabricated.',
+    'Collect real source posts in Memory so the planner can prepare the missing platform slots.',
+    {
+      targetLocalDate: plan.targetLocalDate,
+      requiredSlotCount: plan.requiredSlotCount,
+      activeSlotCount: plan.activeSlotCount,
+      missingSlotCount: plan.missingSlotCount,
+      platformInventory: plan.platforms,
+    }
+  );
+}
+
 async function enqueueDueSlotFillJobs(stats: SchedulerStats, now: Date): Promise<void> {
   const settingsRows = await supabaseSelect<AutomationSettingsRow>('user_settings', {
     select: '*',
@@ -3813,7 +3922,75 @@ async function enqueueDueSlotFillJobs(stats: SchedulerStats, now: Date): Promise
     }
 
     const timeZone = tenantAutomationTimeZone(tenant);
-    const occupiedSlots = await loadActiveSlotOccupancy(settings.user_id, timeZone);
+    const targetLocalDate = tenantLocalDatePlusDays(now, timeZone, 1);
+    const activeRows = await loadActiveQueueRows(settings.user_id);
+    const occupiedSlots = buildPlatformSlotOccupancy(activeRows, timeZone);
+
+    if (plannerActiveForTarget(targetLocalDate)) {
+      stats.inventoryPlansChecked++;
+      const plan = buildDailyInventoryPlan(
+        tenant.activePlatforms,
+        activeRows as DailyInventoryQueueRow[],
+        targetLocalDate
+      );
+      if (plan.complete) {
+        incrementSchedulerSkip(stats, 'daily_inventory_complete');
+        continue;
+      }
+
+      if (await hasPendingOrRunningFetch(settings.user_id)) {
+        incrementSchedulerSkip(stats, 'daily_inventory_work_already_pending_or_running');
+        continue;
+      }
+
+      const missingPlatforms = tenant.activePlatforms.filter(
+        platform => plan.platforms[platform]?.missingSlotIndexes.length
+      );
+      const hasAngles = await hasDraftableActiveAngle(settings.user_id, missingPlatforms);
+      const hasSources = hasAngles ? false : await hasProcessableSourceRecord(settings.user_id);
+      if (!hasAngles && !hasSources) {
+        incrementSchedulerSkip(stats, 'daily_inventory_insufficient');
+        await recordDailyInventoryAlert(settings, plan, stats);
+        continue;
+      }
+
+      const inserted = await supabaseInsert<AgentJobRow>('agent_jobs', {
+        user_id: settings.user_id,
+        kind: 'refresh_queue',
+        payload: {
+          source: SCHEDULED_SOURCE,
+          scheduler: SCHEDULER_NAME,
+          mode: 'next_day_inventory',
+          fill_existing_angles_only: hasAngles,
+          target_local_date: targetLocalDate,
+          due_at: now.toISOString(),
+        },
+      }, true);
+      const job = inserted[0];
+      await updateAutomationResult(settings.user_id, {
+        jobId: job?.id || null,
+        kind: 'refresh_queue',
+        status: 'pending',
+        origin: 'scheduled',
+        mode: 'next_day_inventory',
+        targetLocalDate,
+        message: 'Bounded next-day inventory work was queued.',
+        nextAction: 'Wait for the worker to prepare approved drafts for the missing slots.',
+        dueAt: now.toISOString(),
+        missingSlotCount: plan.missingSlotCount,
+      }, {
+        last_scheduled_job_id: job?.id || null,
+      });
+      stats.slotFillJobsEnqueued++;
+      await writeWorkerLog(settings.user_id, 'info', 'daily_inventory_fill_enqueued', {
+        jobId: job?.id || null,
+        targetLocalDate,
+        missingSlotCount: plan.missingSlotCount,
+        scheduler: SCHEDULER_NAME,
+      });
+      continue;
+    }
+
     const capacity = platformSlotCapacitySnapshot(tenant.activePlatforms, occupiedSlots);
     if (!capacity.hasOpenSlots) {
       incrementSchedulerSkip(stats, 'refresh_queue_skipped_no_open_slots');
@@ -4521,6 +4698,8 @@ export async function runSupabaseAutomationScheduler(): Promise<SchedulerStats> 
     fetchJobsEnqueued: 0,
     slotFillJobsEnqueued: 0,
     publishJobsEnqueued: 0,
+    inventoryPlansChecked: 0,
+    inventoryAlerts: 0,
     skipped: {},
   };
   const now = new Date();

@@ -6,6 +6,8 @@ interface Env {
   SERVICE_ROLE_KEY?: string;
   CREDENTIAL_ENCRYPTION_KEY?: string;
   SUPABASE_WORKER_BATCH_SIZE?: string;
+  DAILY_INVENTORY_PLANNER_ENABLED?: string;
+  DAILY_INVENTORY_PLANNER_START_LOCAL_DATE?: string;
   HTTP_TIMEOUT_MS?: string;
   OPENAI_MODEL?: string;
   OPENAI_IMAGE_MODEL?: string;
@@ -63,7 +65,7 @@ async function runScheduledTick(env: Env): Promise<Response> {
   const schedulerStats = await runSupabaseAutomationScheduler();
   const stats = await processPendingSupabaseJobs();
   logger.info(
-    `Cloudflare scheduled worker tick | scheduled_fetch:${schedulerStats.fetchJobsEnqueued} scheduled_fill:${schedulerStats.slotFillJobsEnqueued} scheduled_publish:${schedulerStats.publishJobsEnqueued} stale_failed:${schedulerStats.staleJobsFailed} claimed:${stats.claimed} completed:${stats.completed} failed:${stats.failed}`
+    `Cloudflare scheduled worker tick | scheduled_fetch:${schedulerStats.fetchJobsEnqueued} scheduled_fill:${schedulerStats.slotFillJobsEnqueued} scheduled_publish:${schedulerStats.publishJobsEnqueued} inventory_plans:${schedulerStats.inventoryPlansChecked} inventory_alerts:${schedulerStats.inventoryAlerts} stale_failed:${schedulerStats.staleJobsFailed} claimed:${stats.claimed} completed:${stats.completed} failed:${stats.failed}`
   );
 
   return Response.json({ ok: true, schedulerStats, stats });

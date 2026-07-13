@@ -55,6 +55,8 @@ Configured in `wrangler.toml`:
 
 - `NODE_ENV=production`
 - `SUPABASE_WORKER_BATCH_SIZE=5`
+- `DAILY_INVENTORY_PLANNER_ENABLED=true`
+- `DAILY_INVENTORY_PLANNER_START_LOCAL_DATE=YYYY-MM-DD`
 - `HTTP_TIMEOUT_MS=45000`
 - `OPENAI_IMAGE_MODEL=gpt-image-2`
 - `OPENAI_IMAGE_TIMEOUT_MS=120000`
@@ -67,6 +69,18 @@ only to OpenAI image generation. Keep it finite; image timeouts must fail as
 The Worker derives a tenant-specific Cloudinary subfolder from `job.user_id`
 using a hash. This keeps assets grouped per tenant without exposing raw user
 IDs in Cloudinary paths.
+
+## Daily Inventory Planner
+
+When enabled, the scheduled Worker prepares the next tenant-local day at 05:00,
+07:00, 12:00, and 15:00 for every enabled production platform. Active recovery
+rows reserve their matching platform slot and replace, rather than add to, the
+normal four-slot inventory.
+
+The planner creates only future-dated work. It never backfills a missed slot,
+retries a historical row, or fabricates content to reach the target. When no
+approved unused angle or processable source record exists, it records the
+`daily_inventory_insufficient` operator result and leaves the queue unchanged.
 
 ## Deployment
 

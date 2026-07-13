@@ -132,6 +132,51 @@ export function tenantLocalDateForInstant(value: string | Date, timeZone: string
   return localDateKey(partsForInstant(date, timeZone));
 }
 
+export function tenantLocalDatePlusDays(
+  value: string | Date,
+  timeZone: string,
+  days: number
+): string {
+  const date = value instanceof Date ? value : new Date(value);
+  return localDateKey(addLocalDays(partsForInstant(date, timeZone), days));
+}
+
+export function nextOpenPlatformSlotForLocalDate(
+  platform: string,
+  occupied: PlatformSlotOccupancy,
+  timeZone: string,
+  targetLocalDate: string,
+  now: Date = new Date()
+): ScheduledPlatformSlot | undefined {
+  const match = targetLocalDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return undefined;
+  const localDay = { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
+  const validationDate = new Date(Date.UTC(localDay.year, localDay.month - 1, localDay.day, 12));
+  if (
+    validationDate.getUTCFullYear() !== localDay.year
+    || validationDate.getUTCMonth() + 1 !== localDay.month
+    || validationDate.getUTCDate() !== localDay.day
+  ) {
+    return undefined;
+  }
+
+  const normalizedPlatform = platform.trim();
+  for (const [slotIndex, hour] of DAILY_SLOT_HOURS.entries()) {
+    const scheduled = localDateTimeToUtc(localDay, hour, timeZone);
+    if (scheduled.getTime() <= now.getTime()) continue;
+    if (occupied.has(platformSlotOccupancyKey(normalizedPlatform, targetLocalDate, slotIndex))) continue;
+    return {
+      platform: normalizedPlatform,
+      slotIndex,
+      localDate: targetLocalDate,
+      localHour: hour,
+      scheduledFor: scheduled.toISOString(),
+    };
+  }
+
+  return undefined;
+}
+
 export function platformSlotOccupancyKey(platform: string, localDate: string, slotIndex: number): string {
   return `${platform}:${localDate}:${slotIndex}`;
 }
