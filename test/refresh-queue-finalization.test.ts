@@ -88,6 +88,41 @@ test('Instagram-only image interruption is specific instead of worker runtime', 
   assert.doesNotMatch(String(summary.failedStage), /worker_runtime/i);
 });
 
+test('refresh queue jobs yield after one durable row', () => {
+  assert.equal(__test__.refreshQueueJobCapacityReached(0), false);
+  assert.equal(__test__.refreshQueueJobCapacityReached(1), true);
+  assert.equal(__test__.refreshQueueJobCapacityReached(2), true);
+});
+
+test('stale cleanup correlates snake-case OpenAI logs and releases their angle ids', () => {
+  const logs = [
+    {
+      level: 'info' as const,
+      message: 'openai_call_recorded',
+      created_at: '2026-07-13T10:17:30.000Z',
+      context: {
+        job_id: 'job-runtime',
+        angle_id: 'angle-instagram',
+        stage: OPENAI_IMAGE_GENERATION_STAGE,
+        call_status: 'started',
+      },
+    },
+    {
+      level: 'info' as const,
+      message: 'queued_banked_angle',
+      created_at: '2026-07-13T10:17:29.000Z',
+      context: { jobId: 'job-runtime', angleId: 'angle-threads' },
+    },
+  ];
+
+  assert.equal(__test__.workerLogBelongsToJob(logs[0], 'job-runtime'), true);
+  assert.equal(__test__.workerLogBelongsToJob(logs[1], 'job-runtime'), true);
+  assert.deepEqual(__test__.staleAngleIdsFromLogs(logs), ['angle-instagram', 'angle-threads']);
+  const failure = __test__.staleFailureFromLogs(logs);
+  assert.equal(failure?.stage, OPENAI_IMAGE_GENERATION_STAGE);
+  assert.equal(failure?.platform, 'instagram');
+});
+
 test('stale cleanup can identify recent refresh_queue activity', () => {
   assert.equal(
     __test__.hasRecentJobActivity([

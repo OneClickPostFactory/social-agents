@@ -6,6 +6,7 @@ import {
   OPENAI_IMAGE_GENERATION_STAGE,
   generateInstagramImageFromText,
   openAIImageErrorDetails,
+  openAIImageQualityForModel,
   openAIImageTimeoutMs,
 } from '../src/ai';
 import { __test__ } from '../src/supabase-worker';
@@ -22,6 +23,12 @@ async function test(name: string, fn: () => Promise<void> | void): Promise<void>
 }
 
 async function main(): Promise<void> {
+  await test('GPT image requests use the low-latency quality profile', () => {
+    assert.equal(openAIImageQualityForModel('gpt-image-2'), 'low');
+    assert.equal(openAIImageQualityForModel('chatgpt-image-latest'), 'low');
+    assert.equal(openAIImageQualityForModel('dall-e-3'), 'standard');
+  });
+
   await test('OpenAI image generation uses the image-specific timeout and does not retry aborts', async () => {
     const previousTimeout = config.OPENAI_IMAGE_TIMEOUT_MS;
     const previousKey = config.OPENAI_API_KEY;

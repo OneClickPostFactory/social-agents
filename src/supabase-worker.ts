@@ -508,6 +508,7 @@ const SCHEDULER_NAME = 'cloudflare_cron';
 const SCHEDULED_SOURCE = 'scheduled';
 const STALE_RUNNING_JOB_MINUTES = 3;
 const REFRESH_QUEUE_STALE_RUNNING_JOB_MINUTES = 8;
+const REFRESH_QUEUE_ROWS_PER_JOB = 1;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -1269,6 +1270,10 @@ function platformSlotCapacitySnapshot(
 
 function anglePlatformDraftKey(angleId: string | null | undefined, platform: string | null | undefined): string {
   return `${String(angleId || '').trim()}:${String(platform || '').trim()}`;
+}
+
+function refreshQueueJobCapacityReached(queuedRows: number): boolean {
+  return queuedRows >= REFRESH_QUEUE_ROWS_PER_JOB;
 }
 
 function draftCreationPreflightForAngle(input: {
@@ -3127,6 +3132,14 @@ async function queueFromBankedAngles(
         angleId: currentAngle.id,
         platforms: rows.map(row => row.platform),
       });
+      if (refreshQueueJobCapacityReached(result.queued)) {
+        await writeWorkerLog(job.user_id, 'info', 'refresh_queue_job_yielded', {
+          jobId: job.id,
+          queuedRows: result.queued,
+          reason: 'bounded_rows_per_worker_invocation',
+        });
+        break;
+      }
     } catch (error) {
       result.failures++;
       const imageError = ai.openAIImageErrorDetails(error);
@@ -4194,6 +4207,24 @@ function logContext(row: WorkerLogRow): JsonMap {
     : {};
 }
 
+function workerLogJobId(row: WorkerLogRow): string {
+  const context = logContext(row);
+  return logString(context, 'jobId') || logString(context, 'job_id');
+}
+
+function workerLogBelongsToJob(row: WorkerLogRow, jobId: string): boolean {
+  return workerLogJobId(row) === jobId;
+}
+
+function staleAngleIdsFromLogs(logs: WorkerLogRow[]): string[] {
+  return [...new Set(logs
+    .map(row => {
+      const context = logContext(row);
+      return logString(context, 'angleId') || logString(context, 'angle_id');
+    })
+    .filter(Boolean))];
+}
+
 function logString(context: JsonMap, key: string): string {
   const value = context[key];
   return typeof value === 'string' ? value : '';
@@ -4297,7 +4328,26 @@ async function staleJobLogs(job: AgentJobRow): Promise<WorkerLogRow[]> {
     order: 'created_at.desc',
     limit: 50,
   });
-  return logs.filter(row => logString(logContext(row), 'jobId') === job.id);
+  return logs.filter(row => workerLogBelongsToJob(row, job.id));
+}
+
+async function releaseStaleRefreshAngleLocks(job: AgentJobRow, logs: WorkerLogRow[]): Promise<number> {
+  if (job.kind !== 'refresh_queue') return 0;
+  let released = 0;
+  for (const angleId of staleAngleIdsFromLogs(logs)) {
+    const rows = await supabaseUpdate<AngleRecordRow>('angle_records', {
+      status: 'unused',
+    }, {
+      filters: [
+        { column: 'id', operator: 'eq', value: angleId },
+        { column: 'user_id', operator: 'eq', value: job.user_id },
+        { column: 'status', operator: 'eq', value: 'in_progress' },
+      ],
+      returning: true,
+    });
+    released += rows.length;
+  }
+  return released;
 }
 
 function reconstructStaleSummary(logs: WorkerLogRow[], failure?: StaleFailureDetails): JsonMap {
@@ -4660,6 +4710,7 @@ async function cleanupStaleRunningJobs(stats: SchedulerStats, now: Date): Promis
       continue;
     }
 
+    const releasedAngleLocks = await releaseStaleRefreshAngleLocks(job, logs);
     const details = staleFailureFromLogs(logs);
     const result = job.kind === 'publish_now'
       ? await stalePublishJobResult(job, logs)
@@ -4686,6 +4737,7 @@ async function cleanupStaleRunningJobs(stats: SchedulerStats, now: Date): Promis
       reason: error,
       status,
       failedStage: typeof summary.failedStage === 'string' ? summary.failedStage : null,
+      releasedAngleLocks,
       startedAt: job.started_at || null,
     });
   }
@@ -4829,6 +4881,10 @@ export const __test__ = {
   publishSuccessResult,
   recordOpenAIUsageOnSummary,
   reconstructStaleSummary,
+  refreshQueueJobCapacityReached,
+  staleAngleIdsFromLogs,
+  staleFailureFromLogs,
+  workerLogBelongsToJob,
   sourceIntentFor,
   sourceIntentRejectReasons,
   sourceScopeFor,

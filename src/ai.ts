@@ -1042,6 +1042,10 @@ function imageMimeType(outputFormat: string | undefined): string {
   }
 }
 
+export function openAIImageQualityForModel(model: string): 'low' | 'standard' {
+  return model.startsWith('gpt-image') || model === 'chatgpt-image-latest' ? 'low' : 'standard';
+}
+
 function imageGenerationBody(imagePrompt: string): Record<string, unknown> {
   const model = config.OPENAI_IMAGE_MODEL || 'gpt-image-2';
   const body: Record<string, unknown> = {
@@ -1052,7 +1056,7 @@ function imageGenerationBody(imagePrompt: string): Record<string, unknown> {
   };
 
   if (model.startsWith('gpt-image') || model === 'chatgpt-image-latest') {
-    body.quality = 'medium';
+    body.quality = openAIImageQualityForModel(model);
     body.output_format = 'png';
     body.background = 'auto';
   } else {
