@@ -84,6 +84,14 @@ retries a historical row, or fabricates content to reach the target. When no
 approved unused angle or processable source record exists, it records the
 `daily_inventory_insufficient` operator result and leaves the queue unchanged.
 
+## OpenAI Generation Safety
+
+Every OpenAI call records a durable `started` event and a terminal `completed`
+or `failed` event in `worker_logs`. The Worker will not automatically repeat the
+same source or angle operation while an earlier start lacks terminal telemetry;
+an operator must first resolve the uncertain attempt. Tenant limits override
+the fail-closed defaults of 40 text calls and 4 image calls per UTC day.
+
 ## Deployment
 
 Push to `origin/main` on `https://github.com/OneClickPostFactory/social-agents.git`.

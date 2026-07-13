@@ -201,6 +201,7 @@ interface OpenAIUsageSummaryEvent {
   outputSizeEstimate?: number;
   platform?: string;
   queueItemId?: string;
+  retryAttempt: number;
   sourceRecordId?: string;
   stage: string;
   type: ai.OpenAIUsageCallType;
@@ -416,6 +417,11 @@ const OPENAI_IMAGE_PAUSED_REPEATED_ABORTS_CODE = 'openai_image_paused_repeated_a
 const OPENAI_SOURCE_EXTRACTION_BACKOFF_ACTIVE_CODE = 'openai_source_extraction_backoff_active';
 const OPENAI_IMAGE_DAILY_LIMIT_REACHED_CODE = 'openai_image_daily_limit_reached';
 const OPENAI_TEXT_DAILY_LIMIT_REACHED_CODE = 'openai_text_daily_limit_reached';
+const OPENAI_GENERATION_ATTEMPT_UNCERTAIN_CODE = 'openai_generation_attempt_uncertain';
+const OPENAI_GENERATION_ATTEMPT_UNCERTAIN_MESSAGE =
+  'Generation is paused because a prior OpenAI attempt started without a recorded terminal result. Existing queue items can still publish.';
+const OPENAI_GENERATION_ATTEMPT_UNCERTAIN_NEXT_ACTION =
+  'Inspect the prior attempt and Queue before manually deciding whether another paid generation call is safe.';
 const OPENAI_IMAGE_GENERATION_DISABLED_CODE = 'openai_image_generation_disabled';
 const OPENAI_IMAGE_REQUIRES_MANUAL_APPROVAL_CODE = 'openai_image_requires_manual_approval';
 const OPENAI_GENERATION_PAUSED_MESSAGE =
@@ -429,6 +435,8 @@ const OPENAI_IMAGE_ABORT_WINDOW_MS = 15 * 60_000;
 const OPENAI_SOURCE_BACKOFF_THRESHOLD = 2;
 const OPENAI_SOURCE_BACKOFF_WINDOW_MS = 6 * 60 * 60_000;
 const OPENAI_GENERATION_BACKOFF_MS = 30 * 60_000;
+const DEFAULT_OPENAI_TEXT_DAILY_CALL_LIMIT = 40;
+const DEFAULT_OPENAI_IMAGE_DAILY_CALL_LIMIT = 4;
 
 interface QueueFromAnglesResult {
   queued: number;
@@ -848,8 +856,10 @@ function emptyOpenAIUsageDailySummary(settings: UserSettingsRow): OpenAIUsageDai
     imageGenerationEnabled: imageGenerationEnabled(settings),
     imageRequiresManualApproval: imageRequiresManualApproval(settings),
     configuredLimits: {
-      textDailyCallLimit: configuredPositiveInteger(settings.openai_text_daily_call_limit),
-      imageDailyCallLimit: configuredPositiveInteger(settings.openai_image_daily_call_limit),
+      textDailyCallLimit: configuredPositiveInteger(settings.openai_text_daily_call_limit)
+        ?? DEFAULT_OPENAI_TEXT_DAILY_CALL_LIMIT,
+      imageDailyCallLimit: configuredPositiveInteger(settings.openai_image_daily_call_limit)
+        ?? DEFAULT_OPENAI_IMAGE_DAILY_CALL_LIMIT,
     },
     generationPaused: {
       active: false,
@@ -897,6 +907,7 @@ function openAIUsageEventFromLog(row: WorkerLogRow): OpenAIUsageSummaryEvent | u
     outputSizeEstimate: contextNumber(context, 'output_size_estimate', 'outputSizeEstimate'),
     platform: contextString(context, 'platform'),
     queueItemId: contextString(context, 'queue_item_id', 'queueItemId'),
+    retryAttempt: contextNumber(context, 'retry_attempt', 'retryAttempt') || 1,
     sourceRecordId: contextString(context, 'source_record_id', 'sourceRecordId'),
     stage,
     type,
@@ -917,6 +928,7 @@ function openAIUsageSummaryEventFromUsageEvent(event: ai.OpenAIUsageEvent): Open
     outputSizeEstimate: event.output_size_estimate,
     platform: event.platform,
     queueItemId: event.queue_item_id,
+    retryAttempt: event.retry_attempt,
     sourceRecordId: event.source_record_id,
     stage: event.stage,
     type: event.type,
@@ -1050,6 +1062,57 @@ function allowedOpenAIGuard(): OpenAIGenerationGuardDecision {
   return { allowed: true };
 }
 
+function openAIGenerationEventMatchesRequest(
+  event: OpenAIUsageSummaryEvent,
+  request: OpenAIGenerationGuardRequest
+): boolean {
+  if (event.type !== request.type) return false;
+  if (request.angleId) {
+    return event.angleId === request.angleId
+      && (!request.platform || event.platform === request.platform);
+  }
+  if (request.queueItemId) return event.queueItemId === request.queueItemId;
+  if (request.sourceRecordId) {
+    return event.sourceRecordId === request.sourceRecordId && event.stage === request.stage;
+  }
+  return event.stage === request.stage
+    && (!request.platform || event.platform === request.platform);
+}
+
+function openAIGenerationAttemptIdentity(event: OpenAIUsageSummaryEvent): string {
+  return [
+    event.jobId || '',
+    event.angleId || '',
+    event.sourceRecordId || '',
+    event.queueItemId || '',
+    event.stage,
+    event.platform || '',
+    event.retryAttempt,
+  ].join(':');
+}
+
+function openAIUncertainAttemptDecision(
+  logs: WorkerLogRow[],
+  request: OpenAIGenerationGuardRequest
+): OpenAIGenerationGuardDecision | undefined {
+  const attemptBalances = new Map<string, number>();
+  for (const event of logs.map(openAIUsageEventFromLog)) {
+    if (!event || !openAIGenerationEventMatchesRequest(event, request)) continue;
+    const identity = openAIGenerationAttemptIdentity(event);
+    const delta = event.callStatus === 'started' ? 1 : -1;
+    attemptBalances.set(identity, (attemptBalances.get(identity) || 0) + delta);
+  }
+
+  if (![...attemptBalances.values()].some(balance => balance > 0)) return undefined;
+  return blockedOpenAIGuard(
+    OPENAI_GENERATION_ATTEMPT_UNCERTAIN_CODE,
+    request.stage,
+    undefined,
+    OPENAI_GENERATION_ATTEMPT_UNCERTAIN_MESSAGE,
+    OPENAI_GENERATION_ATTEMPT_UNCERTAIN_NEXT_ACTION
+  );
+}
+
 function openAIConfiguredLimitDecision(
   settings: UserSettingsRow,
   usageToday: OpenAIUsageDailySummary,
@@ -1074,8 +1137,9 @@ function openAIConfiguredLimitDecision(
         'Approve or attach an image before retrying generation for this item.'
       );
     }
-    const limit = configuredPositiveInteger(settings.openai_image_daily_call_limit);
-    if (limit !== null && usageToday.imageCallCountToday >= limit) {
+    const limit = configuredPositiveInteger(settings.openai_image_daily_call_limit)
+      ?? DEFAULT_OPENAI_IMAGE_DAILY_CALL_LIMIT;
+    if (usageToday.imageCallCountToday >= limit) {
       return blockedOpenAIGuard(
         OPENAI_IMAGE_DAILY_LIMIT_REACHED_CODE,
         request.stage,
@@ -1087,8 +1151,9 @@ function openAIConfiguredLimitDecision(
   }
 
   if (request.type === 'text') {
-    const limit = configuredPositiveInteger(settings.openai_text_daily_call_limit);
-    if (limit !== null && usageToday.textCallCountToday >= limit) {
+    const limit = configuredPositiveInteger(settings.openai_text_daily_call_limit)
+      ?? DEFAULT_OPENAI_TEXT_DAILY_CALL_LIMIT;
+    if (usageToday.textCallCountToday >= limit) {
       return blockedOpenAIGuard(
         OPENAI_TEXT_DAILY_LIMIT_REACHED_CODE,
         request.stage,
@@ -1153,7 +1218,8 @@ function preflightOpenAIGeneration(
   request: OpenAIGenerationGuardRequest,
   now = new Date()
 ): OpenAIGenerationGuardDecision {
-  return openAIConfiguredLimitDecision(settings, usageToday, request)
+  return openAIUncertainAttemptDecision(logs, request)
+    || openAIConfiguredLimitDecision(settings, usageToday, request)
     || openAIRunawayProtectionDecision(logs, request, now)
     || allowedOpenAIGuard();
 }
@@ -4881,6 +4947,7 @@ export const __test__ = {
   isProcessableSourceRecordForAngleExtraction,
   isUnsupportedRedditRssSource,
   OPENAI_GENERATION_PAUSED_REPEATED_FAILURES_CODE,
+  OPENAI_GENERATION_ATTEMPT_UNCERTAIN_CODE,
   OPENAI_IMAGE_DAILY_LIMIT_REACHED_CODE,
   OPENAI_IMAGE_PAUSED_REPEATED_ABORTS_CODE,
   OPENAI_SOURCE_EXTRACTION_BACKOFF_ACTIVE_CODE,

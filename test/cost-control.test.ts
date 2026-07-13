@@ -65,10 +65,12 @@ function openAIUsageLog(input: {
   angleId?: string;
   callStatus: 'started' | 'completed' | 'failed';
   createdAt: string;
+  jobId?: string;
   model?: string;
   normalizedErrorCode?: string;
   platform?: string;
   queueItemId?: string;
+  retryAttempt?: number;
   sourceRecordId?: string;
   stage: string;
   type: 'text' | 'image';
@@ -82,11 +84,13 @@ function openAIUsageLog(input: {
       call_status: input.callStatus,
       elapsed_ms: input.callStatus === 'started' ? undefined : 1234,
       input_size_estimate: 120,
+      job_id: input.jobId,
       model: input.model || (input.type === 'image' ? 'gpt-image-2' : 'gpt-4o-mini'),
       normalized_error_code: input.normalizedErrorCode,
       output_size_estimate: input.callStatus === 'completed' ? 400 : undefined,
       platform: input.platform,
       queue_item_id: input.queueItemId,
+      retry_attempt: input.retryAttempt || 1,
       source_record_id: input.sourceRecordId,
       stage: input.stage,
       timestamp: input.createdAt,
@@ -1066,6 +1070,53 @@ async function main(): Promise<void> {
     assert.equal(decision.code, __test__.OPENAI_SOURCE_EXTRACTION_BACKOFF_ACTIVE_CODE);
   });
 
+  await test('unterminated OpenAI attempt blocks another paid call for the same angle', () => {
+    const logs = [openAIUsageLog({
+      angleId: 'angle-uncertain',
+      callStatus: 'started',
+      createdAt: '2026-05-18T11:55:00.000Z',
+      jobId: 'job-uncertain',
+      platform: 'threads',
+      retryAttempt: 1,
+      stage: 'platform_draft',
+      type: 'text',
+    })];
+    const usage = __test__.buildOpenAIUsageDailySummary(logs, {});
+    const decision = __test__.preflightOpenAIGeneration({}, usage, logs, {
+      angleId: 'angle-uncertain',
+      platform: 'threads',
+      stage: 'platform_draft',
+      type: 'text',
+    });
+
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.code, __test__.OPENAI_GENERATION_ATTEMPT_UNCERTAIN_CODE);
+  });
+
+  await test('matching terminal telemetry clears the uncertain-attempt guard', () => {
+    const base = {
+      angleId: 'angle-complete',
+      jobId: 'job-complete',
+      platform: 'threads',
+      retryAttempt: 1,
+      stage: 'platform_draft',
+      type: 'text' as const,
+    };
+    const logs = [
+      openAIUsageLog({ ...base, callStatus: 'started', createdAt: '2026-05-18T11:55:00.000Z' }),
+      openAIUsageLog({ ...base, callStatus: 'completed', createdAt: '2026-05-18T11:55:03.000Z' }),
+    ];
+    const usage = __test__.buildOpenAIUsageDailySummary(logs, {});
+    const decision = __test__.preflightOpenAIGeneration({}, usage, logs, {
+      angleId: 'angle-complete',
+      platform: 'threads',
+      stage: 'platform_draft',
+      type: 'text',
+    });
+
+    assert.equal(decision.allowed, true);
+  });
+
   await test('no open slot skips generation before OpenAI', () => {
     const decision = __test__.draftCreationPreflightForAngle({
       angleId: 'angle-full',
@@ -1099,6 +1150,13 @@ async function main(): Promise<void> {
         stage: OPENAI_IMAGE_GENERATION_STAGE,
         type: 'image',
       }),
+      openAIUsageLog({
+        callStatus: 'completed',
+        createdAt: '2026-05-18T10:00:01.000Z',
+        platform: 'instagram',
+        stage: OPENAI_IMAGE_GENERATION_STAGE,
+        type: 'image',
+      }),
     ];
     const settings = {
       openai_image_daily_call_limit: 1,
@@ -1115,14 +1173,27 @@ async function main(): Promise<void> {
     assert.equal(decision.code, __test__.OPENAI_IMAGE_DAILY_LIMIT_REACHED_CODE);
   });
 
-  await test('no configured limit means no daily hard cap', () => {
-    const logs = Array.from({ length: 250 }, (_entry, index) => openAIUsageLog({
-      callStatus: 'started',
-      createdAt: `2026-05-18T10:${String(index % 60).padStart(2, '0')}:00.000Z`,
-      platform: 'instagram',
-      stage: OPENAI_IMAGE_GENERATION_STAGE,
-      type: 'image',
-    }));
+  await test('unset tenant limits use fail-closed daily defaults', () => {
+    const logs = Array.from({ length: 4 }, (_entry, index) => {
+      const base = {
+        jobId: 'image-job-' + index,
+        platform: 'instagram',
+        stage: OPENAI_IMAGE_GENERATION_STAGE,
+        type: 'image' as const,
+      };
+      return [
+        openAIUsageLog({
+          ...base,
+          callStatus: 'started',
+          createdAt: '2026-05-18T10:0' + index + ':00.000Z',
+        }),
+        openAIUsageLog({
+          ...base,
+          callStatus: 'completed',
+          createdAt: '2026-05-18T10:0' + index + ':01.000Z',
+        }),
+      ];
+    }).flat();
     const usage = __test__.buildOpenAIUsageDailySummary(logs, {});
     const decision = __test__.preflightOpenAIGeneration({}, usage, logs, {
       platform: 'instagram',
@@ -1130,8 +1201,11 @@ async function main(): Promise<void> {
       type: 'image',
     }, new Date('2026-05-18T12:00:00.000Z'));
 
-    assert.equal(usage.imageCallCountToday, 250);
-    assert.equal(decision.allowed, true);
+    assert.equal(usage.imageCallCountToday, 4);
+    assert.equal(usage.configuredLimits.imageDailyCallLimit, 4);
+    assert.equal(usage.configuredLimits.textDailyCallLimit, 40);
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.code, __test__.OPENAI_IMAGE_DAILY_LIMIT_REACHED_CODE);
   });
 
   await test('existing queue publish path remains OpenAI-free for durable media', () => {
