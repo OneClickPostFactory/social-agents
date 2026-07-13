@@ -57,6 +57,11 @@ interface ConnectorSourceRow {
   allowed_subreddits?: string[] | null;
 }
 
+interface ConnectorSourceRecordRow {
+  reddit_post_id?: string | null;
+  subreddit?: string | null;
+}
+
 export async function handleRedditConnectorRequest(
   request: Request,
   env: RedditConnectorEnv = process.env
@@ -259,6 +264,7 @@ function connectorTokenFromRequest(request: Request): string {
 async function connectorSources(userId: string, env: RedditConnectorEnv): Promise<JsonRecord> {
   const author = await enabledAuthorFilter(userId);
   const subredditSources = await enabledSubredditSources(userId, env);
+  const existingRedditPostIds = await existingRedditPostIdsForSources(userId, subredditSources);
   if (!author) {
     return {
       status: 'reddit_author_filter_required',
@@ -267,6 +273,7 @@ async function connectorSources(userId: string, env: RedditConnectorEnv): Promis
       author_filter: null,
       subreddit_sources: subredditSources,
       sources: subredditSources,
+      existing_reddit_post_ids: existingRedditPostIds,
     };
   }
 
@@ -275,7 +282,36 @@ async function connectorSources(userId: string, env: RedditConnectorEnv): Promis
     author_filter: author,
     subreddit_sources: subredditSources,
     sources: subredditSources,
+    existing_reddit_post_ids: existingRedditPostIds,
   };
+}
+
+async function existingRedditPostIdsForSources(userId: string, sources: JsonRecord[]): Promise<string[]> {
+  const rows = await supabaseSelect<ConnectorSourceRecordRow>('source_records', {
+    select: 'reddit_post_id,subreddit',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'origin', operator: 'eq', value: 'authenticated_browser' },
+    ],
+    order: 'created_at.desc',
+    limit: 500,
+  });
+  const enabledSubreddits = new Set(sources
+    .map(source => normalizeSubreddit(String(source.subreddit || source.source_value || '')))
+    .filter(Boolean));
+  return knownRedditPostIds(rows, enabledSubreddits);
+}
+
+function knownRedditPostIds(rows: ConnectorSourceRecordRow[], enabledSubreddits: Set<string>): string[] {
+  return [...new Set(rows
+    .filter(row => enabledSubreddits.has(normalizeSubreddit(String(row.subreddit || ''))))
+    .map(row => normalizeRedditPostId(String(row.reddit_post_id || '')))
+    .filter(Boolean))];
+}
+
+function normalizeRedditPostId(value: string): string {
+  const match = value.trim().toLowerCase().match(/^(?:t3_)?([a-z0-9]+)$/);
+  return match ? 't3_' + match[1] : '';
 }
 
 async function enabledAuthorFilter(userId: string): Promise<JsonRecord | null> {
@@ -499,6 +535,11 @@ function withCors(request: Request, env: RedditConnectorEnv, response: Response)
   }
   return new Response(response.body, { status: response.status, headers });
 }
+
+export const redditConnectorTest = {
+  knownRedditPostIds,
+  normalizeRedditPostId,
+};
 
 function allowedOrigins(env: RedditConnectorEnv): string[] {
   return String(env.APP_ALLOWED_ORIGINS || process.env.APP_ALLOWED_ORIGINS || '')

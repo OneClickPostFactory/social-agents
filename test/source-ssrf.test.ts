@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { redditConnectorTest } from '../src/reddit-connector';
 import { __test__ } from '../src/supabase-worker';
 
 async function test(name: string, fn: () => Promise<void> | void): Promise<void> {
@@ -186,6 +187,23 @@ async function main(): Promise<void> {
     assert.match(connector, /target_author/);
     assert.match(connector, /limit: 50/);
     assert.doesNotMatch(connector, /openclawbot|lovablebuildershub|five_cards_dev/);
+  });
+
+  await test('connector source contract exposes only normalized known ids for enabled subreddits', () => {
+    assert.equal(redditConnectorTest.normalizeRedditPostId('ABC123'), 't3_abc123');
+    assert.equal(redditConnectorTest.normalizeRedditPostId('t3_ABC123'), 't3_abc123');
+    assert.equal(redditConnectorTest.normalizeRedditPostId('unsafe/id'), '');
+    assert.deepEqual(redditConnectorTest.knownRedditPostIds([
+      { reddit_post_id: 'ABC123', subreddit: 'OpenClawBot' },
+      { reddit_post_id: 't3_abc123', subreddit: 'openclawbot' },
+      { reddit_post_id: 'other1', subreddit: 'not-enabled' },
+      { reddit_post_id: null, subreddit: 'openclawbot' },
+    ], new Set(['openclawbot'])), ['t3_abc123']);
+
+    const connector = fs.readFileSync(path.join(process.cwd(), 'src', 'reddit-connector.ts'), 'utf8');
+    assert.match(connector, /existing_reddit_post_ids/);
+    assert.match(connector, /column: 'user_id', operator: 'eq', value: userId/);
+    assert.match(connector, /column: 'origin', operator: 'eq', value: 'authenticated_browser'/);
   });
 
   await test('internal owner override grants non-expiring billing exemption only when active', () => {
