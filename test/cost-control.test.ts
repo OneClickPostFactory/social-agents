@@ -1050,6 +1050,18 @@ async function main(): Promise<void> {
     assert.equal(decision.code, 'instagram_no_open_slot');
   });
 
+  await test('any existing queue history blocks automatic angle reuse before OpenAI', () => {
+    const decision = __test__.draftCreationPreflightForAngle({
+      angleId: 'angle-with-history',
+      occupiedSlots: new Set(),
+      platform: 'threads',
+      queuedAnglePlatformKeys: new Set(['angle-with-history:threads']),
+    });
+
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.code, 'angle_platform_draft_already_queued');
+  });
+
   await test('user-configured image limit blocks image generation when enabled', () => {
     const logs = [
       openAIUsageLog({

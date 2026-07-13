@@ -2417,12 +2417,14 @@ async function hasActiveBankedAngles(userId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-async function loadQueuedAnglePlatformKeys(userId: string): Promise<Set<string>> {
+async function loadQueuedAnglePlatformKeys(userId: string, angleIds: string[]): Promise<Set<string>> {
+  if (!angleIds.length) return new Set();
+
   const rows = await supabaseSelect<{ angle_record_id?: string | null; platform?: string | null }>('queue_items', {
     select: 'angle_record_id,platform',
     filters: [
       { column: 'user_id', operator: 'eq', value: userId },
-      { column: 'status', operator: 'in', value: ACTIVE_QUEUE_STATUSES },
+      { column: 'angle_record_id', operator: 'in', value: angleIds },
     ],
     limit: 500,
   });
@@ -2828,7 +2830,6 @@ async function queueFromBankedAngles(
     rejected: 0,
   };
   let instagramImageGenerationBlocked = false;
-  const queuedAnglePlatformKeys = await loadQueuedAnglePlatformKeys(job.user_id);
 
   const angles = await supabaseSelect<AngleRecordRow>('angle_records', {
     select: '*',
@@ -2839,6 +2840,10 @@ async function queueFromBankedAngles(
     order: 'created_at.asc',
     limit: 20,
   });
+  const queuedAnglePlatformKeys = await loadQueuedAnglePlatformKeys(
+    job.user_id,
+    angles.map(angle => angle.id)
+  );
 
   for (const angleRow of angles) {
     const platform = anglePlatform(angleRow, tenant);
@@ -2890,6 +2895,17 @@ async function queueFromBankedAngles(
       queuedAnglePlatformKeys,
     });
     if (!draftPreflight.allowed) {
+      if (draftPreflight.code === 'angle_platform_draft_already_queued') {
+        await supabaseUpdate('angle_records', {
+          status: 'drafted',
+        }, {
+          filters: [
+            { column: 'id', operator: 'eq', value: angleRow.id },
+            { column: 'user_id', operator: 'eq', value: job.user_id },
+            { column: 'status', operator: 'in', value: ACTIVE_ANGLE_STATUSES },
+          ],
+        });
+      }
       applyDraftPreflightSkip(summary, draftPreflight, platform);
       await writeWorkerLog(job.user_id, 'info', 'banked_angle_draft_skipped', {
         jobId: job.id,
