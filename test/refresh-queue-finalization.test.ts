@@ -89,9 +89,10 @@ test('Instagram-only image interruption is specific instead of worker runtime', 
 });
 
 test('refresh queue jobs yield after one durable row', () => {
-  assert.equal(__test__.refreshQueueJobCapacityReached(0), false);
-  assert.equal(__test__.refreshQueueJobCapacityReached(1), true);
-  assert.equal(__test__.refreshQueueJobCapacityReached(2), true);
+  assert.equal(__test__.refreshQueueJobCapacityReached(0, 0), false);
+  assert.equal(__test__.refreshQueueJobCapacityReached(1, 0), true);
+  assert.equal(__test__.refreshQueueJobCapacityReached(2, 0), true);
+  assert.equal(__test__.refreshQueueJobCapacityReached(0, 1), true);
 });
 
 test('stale cleanup correlates snake-case OpenAI logs and releases their angle ids', () => {

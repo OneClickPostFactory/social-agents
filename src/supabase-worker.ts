@@ -1272,8 +1272,8 @@ function anglePlatformDraftKey(angleId: string | null | undefined, platform: str
   return `${String(angleId || '').trim()}:${String(platform || '').trim()}`;
 }
 
-function refreshQueueJobCapacityReached(queuedRows: number): boolean {
-  return queuedRows >= REFRESH_QUEUE_ROWS_PER_JOB;
+function refreshQueueJobCapacityReached(queuedRows: number, failures = 0): boolean {
+  return queuedRows >= REFRESH_QUEUE_ROWS_PER_JOB || failures > 0;
 }
 
 function draftCreationPreflightForAngle(input: {
@@ -3190,6 +3190,15 @@ async function queueFromBankedAngles(
           next_action: textError.nextAction,
         });
         return result;
+      }
+      if (refreshQueueJobCapacityReached(result.queued, result.failures)) {
+        await writeWorkerLog(job.user_id, 'warn', 'refresh_queue_job_yielded', {
+          jobId: job.id,
+          queuedRows: result.queued,
+          failures: result.failures,
+          reason: 'bounded_after_draft_failure',
+        });
+        break;
       }
     }
   }
