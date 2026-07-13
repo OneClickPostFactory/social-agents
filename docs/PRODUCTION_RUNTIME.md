@@ -59,13 +59,14 @@ Configured in `wrangler.toml`:
 - `DAILY_INVENTORY_PLANNER_START_LOCAL_DATE=YYYY-MM-DD`
 - `HTTP_TIMEOUT_MS=45000`
 - `OPENAI_IMAGE_MODEL=gpt-image-2`
-- `OPENAI_IMAGE_TIMEOUT_MS=20000`
+- `OPENAI_IMAGE_TIMEOUT_MS=90000`
 - `CLOUDINARY_FOLDER=social-agent/instagram`
 
 `OPENAI_IMAGE_TIMEOUT_MS` is separate from the generic HTTP timeout and applies
-only to OpenAI image generation. Keep it below the Cloudflare invocation
-budget; image timeouts must fail as `instagram_image_generation` errors, release
-the angle, and yield the current job rather than becoming worker-runtime failures.
+only to OpenAI image generation. The 90-second bound is based on measured
+production image latency; image failures must surface as
+`instagram_image_generation` errors, release the angle, and yield the current job
+rather than continuing into another operation or becoming stale runtime failures.
 
 The Worker derives a tenant-specific Cloudinary subfolder from `job.user_id`
 using a hash. This keeps assets grouped per tenant without exposing raw user
