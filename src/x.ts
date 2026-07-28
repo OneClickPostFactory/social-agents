@@ -401,6 +401,23 @@ export async function verifyCredentials(): Promise<{
   };
 }
 
+export async function verifyPublished(postId: string): Promise<{
+  confirmed: boolean;
+  providerResultId: string;
+}> {
+  const response = await apiRequest<XPublishResponse>(
+    'GET',
+    `/2/tweets/${encodeURIComponent(postId)}`
+  );
+  if (!response.data?.id) {
+    throw new Error('X API: published tweet lookup returned no id');
+  }
+  return {
+    confirmed: response.data.id === postId,
+    providerResultId: response.data.id,
+  };
+}
+
 export async function publish(text: string): Promise<string> {
   const trimmed = text.trim();
   if (!trimmed) {

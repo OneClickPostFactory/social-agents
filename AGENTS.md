@@ -29,7 +29,9 @@ Current content flow:
 - `src/supabase-client.ts`: small server-side Supabase REST client that requires `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` or aliases `SUPABASE_SECRET_KEY`/`SERVICE_ROLE_KEY`, and `CREDENTIAL_ENCRYPTION_KEY` for the worker path.
 - `src/tenant-credentials.ts`: decrypts SaaS `user_credentials.*_enc` values using `CREDENTIAL_ENCRYPTION_KEY`.
 - `src/content-engine.ts`: shared source-bank / angle-bank / queue orchestration.
-- `src/publish.ts`: shared publish orchestrator. This is the main place to change multi-platform posting behavior.
+- `src/publish.ts`: retired shared publish orchestrator. Threads and Instagram
+  adapters fail closed and cannot reach Meta; canonical publication belongs to
+  the workspace deterministic outbox workers.
 - `src/runtime-policy.ts`: runtime readiness checks, platform readiness, and automation gating.
 - `src/control-plane.ts`: single-install users, sessions, MFA/RBAC, billing state, runtime settings/secrets, and audit logs.
 - `src/validators.ts`: API request validation for auth, settings, and queue mutations.
@@ -37,8 +39,10 @@ Current content flow:
 - `src/http-client.ts`: shared HTTP helper with timeout/error handling.
 - `src/linkedin.ts`: LinkedIn publisher using the UGC Posts API.
 - `src/x.ts`: X/Twitter publisher using OAuth 1.0a or OAuth 2.0 user-context auth depending on configured credentials.
-- `src/threads.ts`: Threads publisher using `graph.threads.net` `/me/...` endpoints.
-- `src/instagram.ts`: Instagram publisher using Graph API media container + publish flow.
+- `src/threads.ts`: read-only Threads credential and verification support;
+  publication fails closed with `legacy_meta_publication_disabled`.
+- `src/instagram.ts`: read-only Instagram identity and verification support;
+  publication fails closed with `legacy_meta_publication_disabled`.
 - `src/facebook.ts`: Facebook Group publisher using Graph API feed posts.
 - `src/test-meta.ts`: Meta diagnostics for identity, Page, Instagram linkage, Group access, and Threads account checks.
 - `src/test-x.ts`: X diagnostics for the configured auth mode and optional live-post smoke tests.
@@ -100,14 +104,16 @@ As of May 13, 2026:
 - Stored encrypted credential fields only prove that a user saved values. They do not prove the platform token still works. UI and docs must say `Stored, not verified` until there is a recent read check, successful publish, or explicit verification result.
 - Meta/Threads auth failures such as OAuth code `190` / `Failed to decode`, LinkedIn `INVALID_ACCESS_TOKEN` or `401`, and X `401 Unauthorized` / `unauthorized_client` mean the tenant must reconnect that platform. Do not rewrite publisher payloads when read-only token checks already fail.
 - Failed publish rows should store a user-facing reconnect/payload message in `queue_items.error_message` and log safe diagnostics in `worker_logs` without tokens, full headers, or full response bodies.
-- Threads posting was confirmed working earlier with the old local/global credential path.
-- Instagram posting was confirmed working earlier against the accessible Page-linked account.
+- Threads and Instagram posting are retired from this project. Approved
+  publications must use `scripts/threads-outbox-runner.mjs` or
+  `scripts/instagram-publisher-outbox-runner.mjs` in the workspace.
 - LinkedIn code has been merged from `linkedin-agent-v4`, but SaaS tenants must provide valid encrypted LinkedIn credentials before live-posting.
 - X is implemented as a first-class text-only platform. Production SaaS currently uses tenant-scoped OAuth 2.0 user-context credentials, verifies them with `/2/users/me`, and logs the safe auth mode as `x_oauth2_user_context`.
 - X OAuth 2.0 connect, callback, token persistence, refresh-token support, and portal-token import are implemented in `src/x.ts`, `src/server.ts`, and `src/cli.ts`.
 - X live-post smoke test succeeded as `@JohnWOE15` on April 29, 2026: `https://x.com/i/web/status/2049570569494958455`.
 - Threads now uses its own token path through `THREADS_ACCESS_TOKEN`.
-- Threads uses `/me`, `/me/threads`, and `/me/threads_publish` on `graph.threads.net`.
+- Threads uses read-only identity and verification endpoints here. This source
+  tree contains no `/me/threads_publish` dispatch.
 - Facebook/Instagram Graph defaults were bumped to `v25.0`.
 - Instagram can now auto-discover the page-linked `instagram_business_account` and derive a Page access token from `FACEBOOK_PAGE_ID` + `META_ACCESS_TOKEN`.
 - Instagram generated images must be persisted to Cloudinary before an Instagram queue row is considered publishable; this avoids expiring OpenAI provider URLs in scheduled slots.

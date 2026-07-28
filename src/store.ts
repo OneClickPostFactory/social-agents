@@ -96,6 +96,26 @@ db.exec(`
     expires_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS app_social_action_ledger (
+    idempotency_key TEXT PRIMARY KEY,
+    live_session_id TEXT NOT NULL,
+    execution_path TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    account_key TEXT NOT NULL,
+    action_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    content_fingerprint TEXT,
+    status TEXT NOT NULL,
+    provider_result_id TEXT,
+    error_category TEXT,
+    requested_at TEXT NOT NULL,
+    verified_at TEXT,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_social_action_provider_result
+    ON app_social_action_ledger(platform, provider_result_id);
+
   CREATE TABLE IF NOT EXISTS app_store_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -308,6 +328,163 @@ function readQueueRow(slotId: SlotId): QueueItem | null {
 }
 
 importLegacyDataIfNeeded();
+
+export type SocialActionExecutionPath = 'api' | 'relay';
+export type SocialActionStatus =
+  | 'pending'
+  | 'success'
+  | 'confirmed_failure'
+  | 'ambiguous'
+  | 'rate_limited'
+  | 'authentication_failure'
+  | 'permission_failure'
+  | 'unsupported';
+
+export interface SocialActionLedgerEntry {
+  idempotencyKey: string;
+  liveSessionId: string;
+  executionPath: SocialActionExecutionPath;
+  platform: string;
+  accountKey: string;
+  actionType: string;
+  targetId: string;
+  contentFingerprint?: string;
+  status: SocialActionStatus;
+  providerResultId?: string;
+  errorCategory?: string;
+  requestedAt: string;
+  verifiedAt?: string;
+  updatedAt: string;
+}
+
+interface SocialActionLedgerRow {
+  idempotency_key: string;
+  live_session_id: string;
+  execution_path: SocialActionExecutionPath;
+  platform: string;
+  account_key: string;
+  action_type: string;
+  target_id: string;
+  content_fingerprint?: string | null;
+  status: SocialActionStatus;
+  provider_result_id?: string | null;
+  error_category?: string | null;
+  requested_at: string;
+  verified_at?: string | null;
+  updated_at: string;
+}
+
+function toSocialActionLedgerEntry(row: SocialActionLedgerRow): SocialActionLedgerEntry {
+  return {
+    idempotencyKey: row.idempotency_key,
+    liveSessionId: row.live_session_id,
+    executionPath: row.execution_path,
+    platform: row.platform,
+    accountKey: row.account_key,
+    actionType: row.action_type,
+    targetId: row.target_id,
+    ...(row.content_fingerprint ? { contentFingerprint: row.content_fingerprint } : {}),
+    status: row.status,
+    ...(row.provider_result_id ? { providerResultId: row.provider_result_id } : {}),
+    ...(row.error_category ? { errorCategory: row.error_category } : {}),
+    requestedAt: row.requested_at,
+    ...(row.verified_at ? { verifiedAt: row.verified_at } : {}),
+    updatedAt: row.updated_at,
+  };
+}
+
+export function getSocialAction(idempotencyKey: string): SocialActionLedgerEntry | undefined {
+  const row = db.prepare(`
+    SELECT * FROM app_social_action_ledger WHERE idempotency_key = ?
+  `).get(idempotencyKey) as SocialActionLedgerRow | undefined;
+  return row ? toSocialActionLedgerEntry(row) : undefined;
+}
+
+export function reserveSocialAction(
+  entry: Omit<SocialActionLedgerEntry, 'status' | 'requestedAt' | 'updatedAt'>
+): { reserved: boolean; entry: SocialActionLedgerEntry } {
+  return transaction(() => {
+    const existing = getSocialAction(entry.idempotencyKey);
+    if (existing) {
+      return { reserved: false, entry: existing };
+    }
+
+    const requestedAt = nowIso();
+    db.prepare(`
+      INSERT INTO app_social_action_ledger (
+        idempotency_key,
+        live_session_id,
+        execution_path,
+        platform,
+        account_key,
+        action_type,
+        target_id,
+        content_fingerprint,
+        status,
+        requested_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    `).run(
+      entry.idempotencyKey,
+      entry.liveSessionId,
+      entry.executionPath,
+      entry.platform,
+      entry.accountKey,
+      entry.actionType,
+      entry.targetId,
+      entry.contentFingerprint || null,
+      requestedAt,
+      requestedAt
+    );
+
+    return {
+      reserved: true,
+      entry: getSocialAction(entry.idempotencyKey)!,
+    };
+  });
+}
+
+export function finalizeSocialAction(
+  idempotencyKey: string,
+  patch: {
+    status: SocialActionStatus;
+    providerResultId?: string;
+    errorCategory?: string;
+    verified?: boolean;
+  }
+): SocialActionLedgerEntry | undefined {
+  return transaction(() => {
+    const updatedAt = nowIso();
+    db.prepare(`
+      UPDATE app_social_action_ledger
+      SET status = ?,
+          provider_result_id = COALESCE(?, provider_result_id),
+          error_category = ?,
+          verified_at = CASE WHEN ? = 1 THEN ? ELSE verified_at END,
+          updated_at = ?
+      WHERE idempotency_key = ?
+    `).run(
+      patch.status,
+      patch.providerResultId || null,
+      patch.errorCategory || null,
+      patch.verified ? 1 : 0,
+      updatedAt,
+      updatedAt,
+      idempotencyKey
+    );
+    return getSocialAction(idempotencyKey);
+  });
+}
+
+export function listSocialActions(liveSessionId: string, limit = 100): SocialActionLedgerEntry[] {
+  const rows = db.prepare(`
+    SELECT * FROM app_social_action_ledger
+    WHERE live_session_id = ?
+    ORDER BY requested_at DESC
+    LIMIT ?
+  `).all(liveSessionId, Math.max(1, Math.min(500, limit))) as unknown as SocialActionLedgerRow[];
+  return rows.map(toSocialActionLedgerEntry);
+}
 
 export function getQueue(): QueueState {
   const queue: QueueState = { ...EMPTY_QUEUE };

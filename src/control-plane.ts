@@ -1209,6 +1209,38 @@ export function getStoredRuntimeConfigPatch(): Record<string, unknown> {
   };
 }
 
+export function getStoredSocialConnectorConfigPatch(): Record<string, unknown> {
+  const settings = getRuntimeSettings();
+  const secrets = getRuntimeSecrets();
+
+  return {
+    ENABLE_X: settings.ENABLE_X,
+    ENABLE_THREADS: settings.ENABLE_THREADS,
+    ENABLE_INSTAGRAM: settings.ENABLE_INSTAGRAM,
+    ENABLE_FACEBOOK: settings.ENABLE_FACEBOOK,
+    META_GRAPH_VERSION: settings.META_GRAPH_VERSION,
+    THREADS_GRAPH_VERSION: settings.THREADS_GRAPH_VERSION,
+    X_API_KEY: secrets.X_API_KEY,
+    X_API_SECRET: secrets.X_API_SECRET,
+    X_ACCESS_TOKEN: secrets.X_ACCESS_TOKEN,
+    X_ACCESS_TOKEN_SECRET: secrets.X_ACCESS_TOKEN_SECRET,
+    X_OAUTH2_ACCESS_TOKEN: secrets.X_OAUTH2_ACCESS_TOKEN,
+    X_OAUTH2_REFRESH_TOKEN: secrets.X_OAUTH2_REFRESH_TOKEN,
+    X_CLIENT_ID: secrets.X_CLIENT_ID,
+    X_CLIENT_SECRET: secrets.X_CLIENT_SECRET,
+    X_REDIRECT_URI: secrets.X_REDIRECT_URI,
+    THREADS_ACCESS_TOKEN: secrets.THREADS_ACCESS_TOKEN,
+    THREADS_APP_SECRET: secrets.THREADS_APP_SECRET,
+    THREADS_USER_ID: secrets.THREADS_USER_ID,
+    META_ACCESS_TOKEN: secrets.META_ACCESS_TOKEN,
+    FACEBOOK_PAGE_ACCESS_TOKEN: secrets.FACEBOOK_PAGE_ACCESS_TOKEN,
+    INSTAGRAM_ACCOUNT_ID: secrets.INSTAGRAM_ACCOUNT_ID,
+    FACEBOOK_GROUP_ID: secrets.FACEBOOK_GROUP_ID,
+    FACEBOOK_USER_ID: secrets.FACEBOOK_USER_ID,
+    FACEBOOK_PAGE_ID: secrets.FACEBOOK_PAGE_ID,
+  };
+}
+
 export function getSetupStatus(): {
   initialized: boolean;
   hasOwner: boolean;

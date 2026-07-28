@@ -69,6 +69,29 @@ Lovable app -> Supabase agent_jobs -> social-agent worker -> Supabase tenant tab
 
 The browser app must not call this backend directly. The worker polls `agent_jobs`, processes each job by `job.user_id`, checks entitlement from Supabase `profiles`, decrypts tenant credentials from `user_credentials`, and writes tenant-scoped results back to `queue_items`, `publish_history`, `source_records`, `angle_records`, and `worker_logs`.
 
+### OpenClaw Live Mode connector
+
+OpenClaw's `social-agent-connector` plugin calls this service over the
+user-only `data/social-connector.sock` Unix socket. The registered tool is
+`social_connector`; it exposes non-sensitive status, dry-run-gated
+`publish_post`, provider verification, and a shared API/Browser Relay
+idempotency ledger. The plugin does not load platform credentials and the tool
+schema rejects credential-bearing arguments.
+
+The connector truthfully leaves comments, replies, DMs, likes, follows,
+reposts, quote-posts, public discovery, and insights to Browser Relay because
+the current platform clients do not implement those API operations.
+
+Start only the connector facade, without cron or queue automation:
+
+```bash
+npm run build
+npm run start:connector
+```
+
+The full agent also starts the same private connector socket as part of
+`npm start`. Do not run both entrypoints against the same socket.
+
 Required worker env:
 
 ```env
@@ -222,6 +245,11 @@ curl "https://graph.facebook.com/v25.0/PAGE_ID?fields=instagram_business_account
 
 If `FACEBOOK_PAGE_ID` is set, the app can auto-discover the linked Instagram business account and derive a Page access token for Instagram publishing.
 
+> Runtime boundary: Threads and Instagram publication is retired in this
+> project. The local adapters retain read-only identity/verification support
+> but fail closed before any Meta write. Approved Threads and Instagram work
+> must enter the canonical workspace outbox workers.
+
 Find the Facebook Group ID from `facebook.com/groups/GROUP_ID`.
 
 ## Platform behavior
@@ -250,6 +278,8 @@ Find the Facebook Group ID from `facebook.com/groups/GROUP_ID`.
 | `npm start` | Start the production service from compiled JavaScript. | `node dist/src/agent.js` |
 | `npm run start:supabase` | Start the production SaaS worker from compiled JavaScript. | `node dist/src/supabase-worker.js` |
 | `npm run start:pm2` | Start the compiled production service under PM2 supervision. | `pm2 start dist/src/agent.js --name social-agent --restart-delay=5000` |
+| `npm run connector` | Start only the private OpenClaw social connector from TypeScript; no cron or queue worker. | `tsx src/social-connector-main.ts` |
+| `npm run start:connector` | Start only the compiled private OpenClaw social connector; no cron or queue worker. | `node dist/src/social-connector-main.js` |
 | `npm run deploy:cloudflare` | Deploy the SaaS worker as a Cloudflare scheduled Worker. | `wrangler deploy` |
 | `npm run deploy -- --ref origin/main` | Backup data, rebuild, restart PM2, and health-check a deployment. | `tsx scripts/deploy.ts` |
 | `npm run backup` | Snapshot runtime state before deploys or risky operations. | `tsx scripts/backup.ts` |

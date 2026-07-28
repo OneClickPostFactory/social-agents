@@ -13,6 +13,40 @@ function getProjectRoot(): string {
 
 const PROJECT_ROOT = getProjectRoot();
 const IS_CLOUDFLARE_WORKER = process.env.CF_WORKER_RUNTIME === 'true';
+const IS_SOCIAL_CONNECTOR_ONLY = process.env.SOCIAL_CONNECTOR_ONLY === 'true';
+const SOCIAL_CONNECTOR_ENV_KEYS = new Set([
+  'NODE_ENV',
+  'APP_DATA_DIR',
+  'APP_ENCRYPTION_KEY',
+  'HTTP_TIMEOUT_MS',
+  'GUI_PORT',
+  'ENABLE_X',
+  'ENABLE_THREADS',
+  'ENABLE_INSTAGRAM',
+  'ENABLE_FACEBOOK',
+  'META_ACCESS_TOKEN',
+  'META_GRAPH_VERSION',
+  'THREADS_GRAPH_VERSION',
+  'THREADS_ACCESS_TOKEN',
+  'THREADS_APP_SECRET',
+  'THREADS_USER_ID',
+  'FACEBOOK_PAGE_ACCESS_TOKEN',
+  'INSTAGRAM_ACCOUNT_ID',
+  'FACEBOOK_GROUP_ID',
+  'FACEBOOK_USER_ID',
+  'FACEBOOK_PAGE_ID',
+  'X_API_KEY',
+  'X_API_SECRET',
+  'X_ACCESS_TOKEN',
+  'X_ACCESS_TOKEN_SECRET',
+  'X_OAUTH2_ACCESS_TOKEN',
+  'X_OAUTH2_REFRESH_TOKEN',
+  'X_CLIENT_ID',
+  'X_CLIENT_SECRET',
+  'X_OAUTH2_CLIENT_ID',
+  'X_OAUTH2_CLIENT_SECRET',
+  'X_REDIRECT_URI',
+]);
 
 export interface AppConfig {
   NODE_ENV: string;
@@ -93,7 +127,11 @@ if (!IS_CLOUDFLARE_WORKER && fs.existsSync(envPath)) {
     const key = trimmed.substring(0, eqIdx).trim();
     const val = trimmed.substring(eqIdx + 1).trim().replace(/^["']|["']$/g, '');
 
-    if (key && !(key in process.env)) {
+    if (
+      key
+      && (!IS_SOCIAL_CONNECTOR_ONLY || SOCIAL_CONNECTOR_ENV_KEYS.has(key))
+      && !(key in process.env)
+    ) {
       process.env[key] = val;
     }
   }
@@ -140,7 +178,7 @@ function buildBaseConfig(): AppConfig {
     REDDIT_ALLOWED_SUBS: toSubSet(process.env.REDDIT_ALLOWED_SUBS, 'openclawbot,lovablebuildershub'),
     REDDIT_SORT: process.env.REDDIT_SORT || 'new',
     REDDIT_LIMIT: Number.parseInt(process.env.REDDIT_LIMIT || '50', 10),
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+    OPENAI_API_KEY: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.OPENAI_API_KEY || '',
     OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o',
     OPENAI_IMAGE_MODEL: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
     OPENAI_IMAGE_TIMEOUT_MS: Number.parseInt(process.env.OPENAI_IMAGE_TIMEOUT_MS || '120000', 10),
@@ -157,12 +195,12 @@ function buildBaseConfig(): AppConfig {
     ENABLE_THREADS: parseBooleanEnv(process.env.ENABLE_THREADS, true),
     ENABLE_INSTAGRAM: parseBooleanEnv(process.env.ENABLE_INSTAGRAM, true),
     ENABLE_FACEBOOK: parseBooleanEnv(process.env.ENABLE_FACEBOOK, true),
-    LINKEDIN_TOKEN: process.env.LINKEDIN_TOKEN || '',
-    LINKEDIN_PERSON_URN: process.env.LINKEDIN_PERSON_URN || '',
-    LINKEDIN_REFRESH_TOKEN: process.env.LINKEDIN_REFRESH_TOKEN || '',
-    LINKEDIN_CLIENT_ID: process.env.LINKEDIN_CLIENT_ID || '',
-    LINKEDIN_CLIENT_SECRET: process.env.LINKEDIN_CLIENT_SECRET || '',
-    LINKEDIN_EXPIRES_AT: process.env.LINKEDIN_EXPIRES_AT || '',
+    LINKEDIN_TOKEN: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.LINKEDIN_TOKEN || '',
+    LINKEDIN_PERSON_URN: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.LINKEDIN_PERSON_URN || '',
+    LINKEDIN_REFRESH_TOKEN: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.LINKEDIN_REFRESH_TOKEN || '',
+    LINKEDIN_CLIENT_ID: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.LINKEDIN_CLIENT_ID || '',
+    LINKEDIN_CLIENT_SECRET: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.LINKEDIN_CLIENT_SECRET || '',
+    LINKEDIN_EXPIRES_AT: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.LINKEDIN_EXPIRES_AT || '',
     X_API_KEY: process.env.X_API_KEY || '',
     X_API_SECRET: process.env.X_API_SECRET || '',
     X_ACCESS_TOKEN: process.env.X_ACCESS_TOKEN || '',
@@ -180,25 +218,27 @@ function buildBaseConfig(): AppConfig {
     FACEBOOK_GROUP_ID: process.env.FACEBOOK_GROUP_ID || '',
     FACEBOOK_USER_ID: process.env.FACEBOOK_USER_ID || '',
     FACEBOOK_PAGE_ID: process.env.FACEBOOK_PAGE_ID || '',
-    CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || '',
-    CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY || '',
-    CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET || '',
-    CLOUDINARY_UPLOAD_PRESET: process.env.CLOUDINARY_UPLOAD_PRESET || '',
+    CLOUDINARY_CLOUD_NAME: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.CLOUDINARY_CLOUD_NAME || '',
+    CLOUDINARY_API_KEY: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.CLOUDINARY_API_KEY || '',
+    CLOUDINARY_API_SECRET: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.CLOUDINARY_API_SECRET || '',
+    CLOUDINARY_UPLOAD_PRESET: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.CLOUDINARY_UPLOAD_PRESET || '',
     CLOUDINARY_FOLDER: process.env.CLOUDINARY_FOLDER || 'social-agent/instagram',
     TIMEZONE: process.env.TIMEZONE || 'Europe/London',
     GUI_PORT: Number.parseInt(process.env.GUI_PORT || '4001', 10),
     TRUST_PROXY: parseBooleanEnv(process.env.TRUST_PROXY, false),
     BOOTSTRAP_MODE: parseBootstrapMode(process.env.BOOTSTRAP_MODE),
-    BOOTSTRAP_TOKEN: process.env.BOOTSTRAP_TOKEN || '',
+    BOOTSTRAP_TOKEN: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.BOOTSTRAP_TOKEN || '',
     HTTP_TIMEOUT_MS: Number.parseInt(process.env.HTTP_TIMEOUT_MS || '15000', 10),
     BILLING_BYPASS_FOR_LOCAL_DEV: parseBooleanEnv(process.env.BILLING_BYPASS_FOR_LOCAL_DEV, false),
-    SUPABASE_URL: process.env.SUPABASE_URL || '',
+    SUPABASE_URL: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.SUPABASE_URL || '',
     SUPABASE_SERVICE_ROLE_KEY:
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-      || process.env.SUPABASE_SECRET_KEY
-      || process.env.SERVICE_ROLE_KEY
-      || '',
-    CREDENTIAL_ENCRYPTION_KEY: process.env.CREDENTIAL_ENCRYPTION_KEY || '',
+      IS_SOCIAL_CONNECTOR_ONLY
+        ? ''
+        : process.env.SUPABASE_SERVICE_ROLE_KEY
+          || process.env.SUPABASE_SECRET_KEY
+          || process.env.SERVICE_ROLE_KEY
+          || '',
+    CREDENTIAL_ENCRYPTION_KEY: IS_SOCIAL_CONNECTOR_ONLY ? '' : process.env.CREDENTIAL_ENCRYPTION_KEY || '',
     SUPABASE_WORKER_POLL_INTERVAL_MS: Number.parseInt(process.env.SUPABASE_WORKER_POLL_INTERVAL_MS || '10000', 10),
     SUPABASE_WORKER_BATCH_SIZE: Number.parseInt(process.env.SUPABASE_WORKER_BATCH_SIZE || '10', 10),
     DAILY_INVENTORY_PLANNER_ENABLED: parseBooleanEnv(process.env.DAILY_INVENTORY_PLANNER_ENABLED, false),
@@ -281,8 +321,12 @@ export function reloadRuntimeConfigFromStorage(): AppConfig {
     return config;
   }
 
-  const { getStoredRuntimeConfigPatch } = require('./src/control-plane') as typeof import('./src/control-plane');
-  return applyRuntimeConfig(getStoredRuntimeConfigPatch());
+  const controlPlane = require('./src/control-plane') as typeof import('./src/control-plane');
+  return applyRuntimeConfig(
+    IS_SOCIAL_CONNECTOR_ONLY
+      ? controlPlane.getStoredSocialConnectorConfigPatch()
+      : controlPlane.getStoredRuntimeConfigPatch()
+  );
 }
 
 reloadRuntimeConfigFromStorage();

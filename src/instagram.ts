@@ -1,9 +1,6 @@
 import config from '../config';
 import { requestJson } from './http-client';
-
-interface GraphSuccess {
-  id: string;
-}
+import { assertCanonicalMetaPublicationPath } from './meta-publication-boundary';
 
 interface GraphErrorResponse {
   error?: {
@@ -19,26 +16,60 @@ interface PageDetailsResponse extends GraphErrorResponse {
   };
 }
 
-export async function publish(caption: string, imageUrl: string): Promise<string> {
-  const version = config.META_GRAPH_VERSION;
+interface InstagramAccountResponse extends GraphErrorResponse {
+  id?: string;
+  username?: string;
+  name?: string;
+}
 
+interface InstagramMediaResponse extends GraphErrorResponse {
+  id?: string;
+  permalink?: string;
+}
+
+export async function verifyCredentials(): Promise<{
+  accountId: string;
+  username?: string;
+  name?: string;
+}> {
   const accountId = await resolveInstagramAccountId();
   const token = await resolveInstagramAccessToken();
-
-  if (!imageUrl) {
-    throw new Error('imageUrl is required for Instagram posts');
+  const account = await apiGet<InstagramAccountResponse>(
+    `/${config.META_GRAPH_VERSION}/${accountId}?fields=id,username,name`,
+    token
+  );
+  if (account.error || !account.id) {
+    throw new Error('Instagram API: ' + (account.error?.message || 'Authenticated account lookup returned no id'));
   }
+  return {
+    accountId: account.id,
+    username: account.username,
+    name: account.name,
+  };
+}
 
-  const containerId = await apiPost(`/${version}/${accountId}/media`, {
-    caption,
-    image_url: imageUrl,
-  }, token);
+export async function verifyPublished(postId: string): Promise<{
+  confirmed: boolean;
+  providerResultId: string;
+  permalink?: string;
+}> {
+  const token = await resolveInstagramAccessToken();
+  const media = await apiGet<InstagramMediaResponse>(
+    `/${config.META_GRAPH_VERSION}/${encodeURIComponent(postId)}?fields=id,permalink`,
+    token
+  );
+  if (media.error || !media.id) {
+    throw new Error('Instagram API: ' + (media.error?.message || 'Published media lookup returned no id'));
+  }
+  return {
+    confirmed: media.id === postId,
+    providerResultId: media.id,
+    permalink: media.permalink,
+  };
+}
 
-  await sleep(3000);
-
-  return apiPost(`/${version}/${accountId}/media_publish`, {
-    creation_id: containerId,
-  }, token);
+export async function publish(_caption: string, _imageUrl: string): Promise<string> {
+  assertCanonicalMetaPublicationPath('instagram');
 }
 
 async function resolveInstagramAccountId(): Promise<string> {
@@ -108,26 +139,4 @@ function apiGet<T extends GraphErrorResponse>(pathname: string, token: string): 
     },
     timeoutMs: config.HTTP_TIMEOUT_MS,
   }).then(({ data }) => data);
-}
-
-function apiPost(pathname: string, params: Record<string, string>, token: string): Promise<string> {
-  const body = JSON.stringify(params);
-  return requestJson<GraphErrorResponse & GraphSuccess>(`https://graph.facebook.com${pathname}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body,
-    timeoutMs: config.HTTP_TIMEOUT_MS,
-  }).then(({ data }) => {
-    if (data.error) {
-      throw new Error('Instagram API: ' + (data.error.message || 'Unknown error'));
-    }
-    return data.id;
-  });
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }

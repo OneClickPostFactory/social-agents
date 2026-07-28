@@ -8,6 +8,7 @@ import { runFetch, runPostSlot } from './automation-service';
 import { getMemoryStats, getSlotPost } from './store';
 import { getAutomationGate, getEnabledPlatformLabels } from './runtime-policy';
 import { startServer } from './server';
+import { startSocialConnectorServer } from './social-connector-server';
 import { startSupabaseWorkerLoop } from './supabase-worker';
 
 import type { Slot } from './types';
@@ -84,6 +85,7 @@ async function fireSlot(slot: Slot): Promise<void> {
 async function start(): Promise<void> {
   logger.info('Social Agent starting');
   startServer();
+  startSocialConnectorServer();
   startSupabaseWorkerLoop(logger);
   logAutomationGate('Startup status');
 
