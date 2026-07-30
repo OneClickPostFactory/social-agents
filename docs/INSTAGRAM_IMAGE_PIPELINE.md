@@ -56,6 +56,29 @@ Required in the Worker runtime:
 `CLOUDINARY_UPLOAD_PRESET` is supported for unsigned upload mode, but signed
 uploads using API key and secret are preferred for production.
 
+## OpenClaw generated-media delivery proxy
+
+The narrowly scoped Supabase Edge Function is canonically owned by the
+`relay-live-business-engagement-connector` repository at
+`supabase/functions/cloudinary-upload-proxy/index.ts`. It belongs to the
+OpenClaw campaign-delivery lane rather than this tenant queue worker.
+
+Its contract is intentionally smaller than the normal Cloudinary module:
+
+- one authenticated `POST` containing PNG or JPEG bytes;
+- public IDs must remain beneath `tailwagging-generated/`;
+- the caller-provided SHA-256 must match the received bytes;
+- Cloudinary overwrite and unique-name mutation are disabled;
+- the function downloads the resulting HTTPS asset and verifies its SHA-256;
+- the OpenClaw caller performs a second independent delivery checksum;
+- no list, search, transform, rename, update, archive, delete, or social action
+  is exposed.
+
+Host-specific deployment remains owned by the private `openclaw-ops`
+repository through `scripts/deploy-cloudinary-upload-proxy.mjs`. This
+repository neither owns nor deploys that function, and it must not acquire a
+second copy of either component.
+
 `OPENAI_IMAGE_TIMEOUT_MS` is deliberately separate from `HTTP_TIMEOUT_MS` so
 image generation can take longer than normal API calls without waiting forever.
 Do not remove the timeout completely.
