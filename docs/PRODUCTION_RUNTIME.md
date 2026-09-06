@@ -22,6 +22,9 @@ Worker uses the service-role key only in the trusted Worker runtime.
 
 - Local mode uses SQLite files under `APP_DATA_DIR` for queue, history, source,
   angle, platform state, and local control-plane state.
+- Any host-local runtime must set `APP_DATA_DIR` to a protected path outside
+  the Git checkout. The repository-local `data/` fallback is for disposable
+  development only and must not become a service-owned production path.
 - Production mode uses Supabase for `profiles`, `user_credentials`,
   `user_sources`, `user_settings`, `source_records`, `angle_records`,
   `queue_items`, `publish_history`, `worker_logs`, and `agent_jobs`.
