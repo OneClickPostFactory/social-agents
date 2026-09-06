@@ -1,3 +1,9 @@
+interface WorkerVersionMetadata {
+  id: string;
+  tag?: string;
+  timestamp: string;
+}
+
 interface Env {
   NODE_ENV?: string;
   SUPABASE_URL?: string;
@@ -32,7 +38,8 @@ interface Env {
   REDDIT_CONNECTOR_PAIRING_TTL_SECONDS?: string;
   REDDIT_CONNECTOR_PAIRING_SECRET?: string;
   APP_ALLOWED_ORIGINS?: string;
-  [key: string]: string | undefined;
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
+  [key: string]: string | WorkerVersionMetadata | undefined;
 }
 
 interface ScheduledController {
@@ -42,6 +49,58 @@ interface ScheduledController {
 
 interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
+}
+
+const SCHEMA_CONTRACT = 'pre-publication-ledger-v1';
+
+function canonicalGitSha(versionTag: string | undefined): string | null {
+  const tag = String(versionTag || '').trim();
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(tag) ? tag : null;
+}
+
+function publicationCapabilities(): Record<string, { state: string; code: string }> {
+  return {
+    threads: {
+      state: 'unavailable',
+      code: 'legacy_meta_publication_disabled',
+    },
+    instagram: {
+      state: 'unavailable',
+      code: 'legacy_meta_publication_disabled',
+    },
+    linkedin: {
+      state: 'compatibility_unverified',
+      code: 'provider_contract_unverified',
+    },
+    x: {
+      state: 'tenant_scoped',
+      code: 'tenant_connection_required',
+    },
+    facebook: {
+      state: 'paused',
+      code: 'facebook_publication_paused',
+    },
+  };
+}
+
+function healthPayload(env: Env): Record<string, unknown> {
+  const metadata = env.CF_VERSION_METADATA;
+  return {
+    ok: true,
+    liveness: 'ok',
+    readiness: 'not_evaluated',
+    service: 'oneclickpostfactory-agent',
+    mode: 'cloudflare-scheduled-worker',
+    release: {
+      workerVersionId: metadata?.id || null,
+      versionTag: metadata?.tag || null,
+      gitSha: canonicalGitSha(metadata?.tag),
+      versionTimestamp: metadata?.timestamp || null,
+      schemaContract: SCHEMA_CONTRACT,
+      appliedSchema: 'unverified',
+    },
+    publicationCapabilities: publicationCapabilities(),
+  };
 }
 
 function applyCloudflareEnv(env: Env): void {
@@ -80,11 +139,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === '/healthz') {
       applyCloudflareEnv(env);
-      return Response.json({
-        ok: true,
-        service: 'oneclickpostfactory-agent',
-        mode: 'cloudflare-scheduled-worker',
-      });
+      return Response.json(healthPayload(env));
     }
 
     if (url.pathname === '/api/collector/reddit/source-records' && request.method === 'POST') {
