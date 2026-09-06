@@ -1,3 +1,5 @@
+import { createExclusiveRunGate } from './exclusive-run-gate';
+
 interface WorkerVersionMetadata {
   id: string;
   tag?: string;
@@ -52,6 +54,7 @@ interface ExecutionContext {
 }
 
 const SCHEMA_CONTRACT = 'pre-publication-ledger-v1';
+const scheduledTickGate = createExclusiveRunGate();
 
 function canonicalGitSha(versionTag: string | undefined): string | null {
   const tag = String(versionTag || '').trim();
@@ -100,6 +103,7 @@ function healthPayload(env: Env): Record<string, unknown> {
       appliedSchema: 'unverified',
     },
     publicationCapabilities: publicationCapabilities(),
+    executionGate: scheduledTickGate.snapshot(),
   };
 }
 
@@ -113,7 +117,7 @@ function applyCloudflareEnv(env: Env): void {
   }
 }
 
-async function runScheduledTick(env: Env): Promise<Response> {
+async function executeScheduledTick(env: Env): Promise<Response> {
   applyCloudflareEnv(env);
 
   const [{ processPendingSupabaseJobs, runSupabaseAutomationScheduler }, logger] = await Promise.all([
@@ -128,6 +132,10 @@ async function runScheduledTick(env: Env): Promise<Response> {
   );
 
   return Response.json({ ok: true, schedulerStats, stats });
+}
+
+function runScheduledTick(env: Env): Promise<Response> {
+  return scheduledTickGate.run(() => executeScheduledTick(env));
 }
 
 export default {
