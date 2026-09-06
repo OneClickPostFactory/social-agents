@@ -7,6 +7,7 @@ import * as cloudinary from './cloudinary';
 import * as instagram from './instagram';
 import * as linkedin from './linkedin';
 import * as logger from './logger';
+import { activePlatformsFromSettings } from './platform-settings';
 import * as threads from './threads';
 import * as x from './x';
 import { buildDailyInventoryPlan, type DailyInventoryQueueRow } from './daily-inventory-planner';
@@ -1514,12 +1515,7 @@ async function loadTenantContext(userId: string): Promise<TenantContext> {
   }))[0];
 
   const credentials = decryptTenantCredentials(credentialRow);
-  const activePlatforms: PlatformKey[] = [];
-  if (settings.threads_enabled ?? true) activePlatforms.push('threads');
-  if (settings.instagram_enabled ?? true) activePlatforms.push('instagram');
-  if (settings.linkedin_enabled ?? true) activePlatforms.push('linkedin');
-  if (settings.x_enabled ?? false) activePlatforms.push('x');
-  if (settings.facebook_enabled ?? false) activePlatforms.push('facebook');
+  const activePlatforms = activePlatformsFromSettings(settings);
 
   return {
     userId,
