@@ -5,6 +5,7 @@ import {
   safeBodySnippet,
 } from './platform-errors';
 import { assertCanonicalMetaPublicationPath } from './meta-publication-boundary';
+import { getScopedHandler, setScopedHandler } from './runtime-scope';
 
 interface ThreadsTokenResponse extends GraphErrorResponse {
   access_token?: string;
@@ -44,6 +45,7 @@ interface GraphErrorResponse {
   id?: string;
 }
 
+const THREADS_TOKEN_PERSISTENCE_HANDLER = 'threads_token_persistence';
 let persistThreadsTokenHandler: ThreadsTokenPersistence = persistThreadsTokenToLocalRuntime;
 
 export async function refreshLongLivedAccessToken(): Promise<ThreadsTokenSet> {
@@ -224,6 +226,12 @@ export async function prepareAccessTokenForPublish(): Promise<ThreadsCredentialP
 }
 
 export function setTokenPersistence(handler: ThreadsTokenPersistence): () => void {
+  const scopedRestore = setScopedHandler<ThreadsTokenPersistence>(
+    THREADS_TOKEN_PERSISTENCE_HANDLER,
+    handler
+  );
+  if (scopedRestore) return scopedRestore;
+
   const previous = persistThreadsTokenHandler;
   persistThreadsTokenHandler = handler;
   return () => {
@@ -233,7 +241,9 @@ export function setTokenPersistence(handler: ThreadsTokenPersistence): () => voi
 
 export async function persistLongLivedAccessToken(tokens: ThreadsTokenSet): Promise<void> {
   config.THREADS_ACCESS_TOKEN = tokens.accessToken;
-  await persistThreadsTokenHandler(tokens);
+  const handler = getScopedHandler<ThreadsTokenPersistence>(THREADS_TOKEN_PERSISTENCE_HANDLER)
+    || persistThreadsTokenHandler;
+  await handler(tokens);
 }
 
 function persistThreadsTokenToLocalRuntime(tokens: ThreadsTokenSet): void {

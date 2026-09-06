@@ -6,6 +6,7 @@ import {
   PlatformPublishError,
   safeBodySnippet,
 } from './platform-errors';
+import { getScopedHandler, setScopedHandler } from './runtime-scope';
 
 interface LinkedInPublishSuccess {
   id?: string;
@@ -47,6 +48,7 @@ type LinkedInOAuthTokenPersistence = (
 ) => void | Promise<void>;
 
 const REFRESH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const LINKEDIN_TOKEN_PERSISTENCE_HANDLER = 'linkedin_oauth2_token_persistence';
 let persistOAuth2TokensHandler: LinkedInOAuthTokenPersistence = persistOAuth2TokensToLocalRuntime;
 
 export function hasRefreshConfig(): boolean {
@@ -109,6 +111,12 @@ export async function refreshOAuth2AccessToken(
 }
 
 export function setOAuth2TokenPersistence(handler: LinkedInOAuthTokenPersistence): () => void {
+  const scopedRestore = setScopedHandler<LinkedInOAuthTokenPersistence>(
+    LINKEDIN_TOKEN_PERSISTENCE_HANDLER,
+    handler
+  );
+  if (scopedRestore) return scopedRestore;
+
   const previous = persistOAuth2TokensHandler;
   persistOAuth2TokensHandler = handler;
   return () => {
@@ -118,7 +126,9 @@ export function setOAuth2TokenPersistence(handler: LinkedInOAuthTokenPersistence
 
 export async function persistOAuth2Tokens(tokens: LinkedInOAuthTokenSet): Promise<void> {
   applyOAuth2TokensToConfig(tokens);
-  await persistOAuth2TokensHandler(tokens);
+  const handler = getScopedHandler<LinkedInOAuthTokenPersistence>(LINKEDIN_TOKEN_PERSISTENCE_HANDLER)
+    || persistOAuth2TokensHandler;
+  await handler(tokens);
 }
 
 export async function refreshAndPersistOAuth2AccessToken(): Promise<LinkedInOAuthTokenSet> {

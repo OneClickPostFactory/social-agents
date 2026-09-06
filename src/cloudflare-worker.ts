@@ -1,4 +1,5 @@
 import { createExclusiveRunGate } from './exclusive-run-gate';
+import { installScopedConfig, runWithRuntimeScope } from './runtime-scope';
 
 interface WorkerVersionMetadata {
   id: string;
@@ -120,18 +121,28 @@ function applyCloudflareEnv(env: Env): void {
 async function executeScheduledTick(env: Env): Promise<Response> {
   applyCloudflareEnv(env);
 
-  const [{ processPendingSupabaseJobs, runSupabaseAutomationScheduler }, logger] = await Promise.all([
-    import('./supabase-worker'),
-    import('./logger'),
-  ]);
+  // Config must be constructed after Worker bindings are copied into process.env.
+  // Instrument the shared object once, then keep every tenant mutation inside this
+  // async execution scope rather than process-global state.
+  const { default: config } = await import('../config');
+  installScopedConfig(config);
 
-  const schedulerStats = await runSupabaseAutomationScheduler();
-  const stats = await processPendingSupabaseJobs();
-  logger.info(
-    `Cloudflare scheduled worker tick | scheduled_fetch:${schedulerStats.fetchJobsEnqueued} scheduled_fill:${schedulerStats.slotFillJobsEnqueued} scheduled_publish:${schedulerStats.publishJobsEnqueued} inventory_plans:${schedulerStats.inventoryPlansChecked} inventory_alerts:${schedulerStats.inventoryAlerts} stale_failed:${schedulerStats.staleJobsFailed} claimed:${stats.claimed} completed:${stats.completed} failed:${stats.failed}`
-  );
+  return runWithRuntimeScope(async () => {
+    const [{ processPendingSupabaseJobs, runSupabaseAutomationScheduler }, logger] = await Promise.all([
+      import('./supabase-worker'),
+      import('./logger'),
+    ]);
 
-  return Response.json({ ok: true, schedulerStats, stats });
+    const schedulerStats = await runSupabaseAutomationScheduler();
+    const stats = await processPendingSupabaseJobs();
+    logger.info(
+      `Cloudflare scheduled worker tick | scheduled_fetch:${schedulerStats.fetchJobsEnqueued} scheduled_fill:${schedulerStats.slotFillJobsEnqueued} scheduled_publish:${schedulerStats.publishJobsEnqueued} inventory_plans:${schedulerStats.inventoryPlansChecked} inventory_alerts:${schedulerStats.inventoryAlerts} stale_failed:${schedulerStats.staleJobsFailed} claimed:${stats.claimed} completed:${stats.completed} failed:${stats.failed}`
+    );
+
+    return Response.json({ ok: true, schedulerStats, stats });
+  }, {
+    execution: 'cloudflare_saas_tick',
+  });
 }
 
 function runScheduledTick(env: Env): Promise<Response> {

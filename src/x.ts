@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import config from '../config';
 import { requestJson } from './http-client';
 import { PlatformPublishError, safeBodySnippet } from './platform-errors';
+import { getScopedHandler, setScopedHandler } from './runtime-scope';
 
 interface XApiErrorDetail {
   message?: string;
@@ -61,6 +62,7 @@ export type XAuthMode = 'oauth1-user' | 'oauth2-user' | 'unconfigured';
 export type XSafeAuthMode = 'x_oauth1_user_context' | 'x_oauth2_user_context' | 'unconfigured';
 export type XErrorKind = 'publish-access-tier' | 'project-required' | 'auth' | 'other';
 
+const X_TOKEN_PERSISTENCE_HANDLER = 'x_oauth2_token_persistence';
 let persistOAuth2TokensHandler: XOAuth2TokenPersistence = persistOAuth2TokensToLocalRuntime;
 
 function encodeOAuthComponent(value: string): string {
@@ -558,6 +560,12 @@ function persistOAuth2TokensToLocalRuntime(tokens: XOAuth2TokenSet): void {
 }
 
 export function setOAuth2TokenPersistence(handler: XOAuth2TokenPersistence): () => void {
+  const scopedRestore = setScopedHandler<XOAuth2TokenPersistence>(
+    X_TOKEN_PERSISTENCE_HANDLER,
+    handler
+  );
+  if (scopedRestore) return scopedRestore;
+
   const previous = persistOAuth2TokensHandler;
   persistOAuth2TokensHandler = handler;
   return () => {
@@ -567,5 +575,7 @@ export function setOAuth2TokenPersistence(handler: XOAuth2TokenPersistence): () 
 
 export async function persistOAuth2Tokens(tokens: XOAuth2TokenSet): Promise<void> {
   applyOAuth2TokensToConfig(tokens);
-  await persistOAuth2TokensHandler(tokens);
+  const handler = getScopedHandler<XOAuth2TokenPersistence>(X_TOKEN_PERSISTENCE_HANDLER)
+    || persistOAuth2TokensHandler;
+  await handler(tokens);
 }
