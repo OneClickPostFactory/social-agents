@@ -6,6 +6,9 @@ compatibility_flags = ["nodejs_compat"]
 [triggers]
 crons = ["*/1 * * * *"]
 
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
 [vars]
 NODE_ENV = "production"
 SUPABASE_WORKER_BATCH_SIZE = "5"
