@@ -4,7 +4,7 @@ This file records only implementation status that is evidenced by repository cha
 
 ## Sequence 1: release identity and complete CI gate
 
-Status: implemented on `codex/reliability-foundation-1` and proven by upstream pull-request CI on head `a73d1d9202f5013a944b9a2320ebb22be7caf4b1`.
+Status: merged to upstream `main` through PR #2. The final pre-merge branch head was proven by the complete upstream pull-request CI gate before merge.
 
 Evidence:
 
@@ -16,7 +16,7 @@ Evidence:
 
 ## D03 containment: overlapping tenant runtime state
 
-Status: implemented and proven by upstream pull-request CI on head `ee377775030d27117b2568bc10426da8304c7a24`.
+Status: merged to upstream `main` through PR #3 after fresh upstream CI passed on the branch synchronised to the PR #2 merge commit.
 
 The Cloudflare scheduled and authenticated `/tick` job-drain entry points share one per-isolate exclusive run gate. This prevents two overlapping SaaS drains in the same Worker isolate from entering the mutable tenant runtime concurrently. Separate Worker isolates do not share process globals.
 
@@ -24,9 +24,9 @@ The containment regression deliberately interleaves two executions, proves maxim
 
 ## D03 runtime isolation: process-global config and token callbacks
 
-Status: implemented on `codex/immutable-tenant-runtime`; upstream CI evidence is still required before this layer can be marked proven.
+Status: merged to upstream `main` through PR #4. Fresh upstream CI run #88 passed `npm ci` and the complete `npm run ci` gate on synchronised head `f68e4434efc18053d11c85ff1b3d2dd334c5dc3d` before merge. The upstream PR #4 merge commit is `033b9b578c120bec0b725311eba1db3d3bfe5530`.
 
-The Worker now installs async-scoped accessors on the existing config object only after Cloudflare bindings have been copied into `process.env`. Each scheduled/authenticated SaaS drain then runs inside its own `AsyncLocalStorage` context.
+The Worker installs async-scoped accessors on the existing config object only after Cloudflare bindings have been copied into `process.env`. Each scheduled/authenticated SaaS drain then runs inside its own `AsyncLocalStorage` context.
 
 Within that context:
 
@@ -38,16 +38,26 @@ Within that context:
 
 The current `processPendingSupabaseJobs()` implementation remains serial, so tenant runtime mutation is restored between jobs inside a drain. The earlier exclusive run gate remains defence-in-depth but is no longer the only boundary preventing overlapping Worker invocations from sharing config or token callbacks.
 
-Acceptance evidence required before this layer is considered proven:
+The proven regression covers overlapping tenant credentials, scope-local Threads/LinkedIn/X persistence callbacks, rotated-token isolation, base-config isolation and failure cleanup. Explicit provider-client arguments remain desirable architectural cleanup, but the process-global cross-tenant safety defect is no longer the active blocker.
 
-- two deliberately overlapping runtime scopes resolve different OpenAI/provider credentials;
-- Threads, LinkedIn and X token rotations invoke only the persistence callback belonging to their own scope;
-- rotated credentials remain visible inside the originating scope but do not change the base config or the other scope;
-- a failed scoped execution cannot leak its config into the next execution;
-- the complete `npm run ci` gate passes on the exact branch SHA.
+No provider is re-enabled and no deployment was performed by these D03 repairs.
 
-No provider is re-enabled and no deployment is performed by this refactor.
+## D22: fail-closed tenant platform activation
+
+Status: implemented on `codex/fail-closed-platform-settings`; upstream pull-request CI evidence is required before merge.
+
+Tenant platform activation now has one explicit policy: a platform is active only when its persisted `*_enabled` setting is exactly boolean `true`. Missing settings rows, missing fields, `null` and `false` all remain disabled.
+
+The regression covers:
+
+- a missing settings object enabling no platforms;
+- all-null flags enabling no platforms;
+- all-false flags enabling no platforms;
+- mixed settings enabling only explicit `true` entries;
+- canonical platform ordering when all five platforms are explicitly enabled.
+
+No provider is re-enabled, no credential semantics change, no queue or billing behaviour changes, and no deployment is performed by this repair.
 
 ## Next bounded repair
 
-After runtime isolation is green, make missing tenant platform settings fail closed (D22), then proceed to atomic database claims/fencing and publication-attempt identity. Meta publication remains disabled until the publication ledger and provider-specific restoration work are ready.
+After D22 is green and merged, proceed to atomic database claims/fencing for jobs, sources and angles, then publication-attempt identity and unknown-outcome handling. Meta publication remains disabled until the publication ledger and provider-specific restoration work are ready.
