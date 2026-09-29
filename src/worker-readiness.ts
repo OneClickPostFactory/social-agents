@@ -128,8 +128,10 @@ export async function handleWorkerReadiness(
     const dependencies = await Promise.all(READINESS_CONTRACTS.map(async expected => {
       let response: Response | undefined;
       try {
+        // workerd rejects redirect:error before transport. manual plus the exact
+        // status check below preserves no-follow/no-credential-forwarding safety.
         response = await fetchImpl(`${origin}/rest/v1/rpc/${expected.rpc}`, {
-          method: 'POST', body: '{}', redirect: 'error', cache: 'no-store', signal: controller.signal,
+          method: 'POST', body: '{}', redirect: 'manual', cache: 'no-store', signal: controller.signal,
           headers: { Authorization: `Bearer ${key}`, apikey: key, 'Content-Type': 'application/json', Accept: 'application/json' },
         });
         if (response.status !== 200) {

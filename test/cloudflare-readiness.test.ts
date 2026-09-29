@@ -47,7 +47,7 @@ test('readiness proves exact identity and all schema capabilities without execut
   assert.equal(body.readiness, 'dependencies_verified'); assert.equal(calls.length, 3);
   for (const { url, init } of calls) {
     assert.ok(READINESS_CONTRACTS.some(c => url === `https://database.example/rest/v1/rpc/${c.rpc}`));
-    assert.equal(init?.method, 'POST'); assert.equal(init?.body, '{}'); assert.equal(init?.redirect, 'error');
+    assert.equal(init?.method, 'POST'); assert.equal(init?.body, '{}'); assert.equal(init?.redirect, 'manual');
     assert.equal(init?.cache, 'no-store'); assert.ok(init?.signal instanceof AbortSignal);
     assert.equal((init?.headers as Record<string, string>).apikey, env.SUPABASE_SERVICE_ROLE_KEY);
   }

@@ -32,5 +32,7 @@ jobs:
         run: |
           node --import tsx --test test/cloudflare-readiness.test.ts
           node --import tsx test/cloudflare-health.test.ts
+      - name: Actual workerd transport and redirect-security regressions
+        run: node --test test/cloudflare-readiness.workerd.mjs
       - name: No generated or fixture files changed the source
         run: git diff --exit-code
