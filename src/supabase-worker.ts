@@ -1,3 +1,4 @@
+import { AgentJobOwnershipLostError, assertAgentJobsContract, assertActiveAgentJob, claimAgentJob, enqueueScheduledAgentJob, finishAgentJob, scheduledOperationKey, withAgentJobLease, type AgentJobRow } from './agent-jobs';
 import * as crypto from 'node:crypto';
 
 import config from '../config';
@@ -64,18 +65,6 @@ type JobKind =
 type JsonMap = Record<string, unknown>;
 type WorkerLevel = 'debug' | 'info' | 'warn' | 'error';
 
-interface AgentJobRow {
-  id: string;
-  user_id: string;
-  kind: string;
-  payload: JsonMap | null;
-  status: string;
-  created_at: string;
-  started_at?: string | null;
-  completed_at?: string | null;
-  error?: string | null;
-  result?: JsonMap | null;
-}
 
 interface ProfileRow {
   subscription_status?: string | null;
@@ -2166,20 +2155,7 @@ async function listPendingJobs(): Promise<AgentJobRow[]> {
 }
 
 async function claimJob(job: AgentJobRow): Promise<AgentJobRow | null> {
-  const claimed = await supabaseUpdate<AgentJobRow>('agent_jobs', {
-    status: 'running',
-    started_at: nowIso(),
-    completed_at: null,
-    error: null,
-    result: null,
-  }, {
-    filters: [
-      { column: 'id', operator: 'eq', value: job.id },
-      { column: 'status', operator: 'eq', value: 'pending' },
-    ],
-    returning: true,
-  });
-  return claimed[0] || null;
+  return claimAgentJob(job);
 }
 
 function resultSummary(result: JsonMap): JsonMap {
@@ -2337,19 +2313,6 @@ function automationResultPayload(job: AgentJobRow, status: string, result: JsonM
   };
 }
 
-async function recordScheduledAutomationResult(job: AgentJobRow, status: string, result: JsonMap): Promise<void> {
-  if (!isScheduledJob(job)) return;
-  try {
-    await supabaseUpdate('user_settings', {
-      last_scheduled_job_id: job.id,
-      last_automation_result: automationResultPayload(job, status, result),
-    }, {
-      filters: [{ column: 'user_id', operator: 'eq', value: job.user_id }],
-    });
-  } catch (error) {
-    logger.warn(`Scheduled automation result update failed: ${publicError(error)}`);
-  }
-}
 
 async function extractSourceBankWithJobTimeout(
   post: RedditPost,
@@ -2363,6 +2326,7 @@ async function extractSourceBankWithJobTimeout(
   );
   try {
     // Await cancellation and usage bookkeeping before the source claim can be released.
+    await assertActiveAgentJob();
     const extraction = await ai.extractSourceBank(post, {
       usageContext, ...contentStrategyOptions, signal: controller.signal,
     });
@@ -2375,48 +2339,16 @@ async function extractSourceBankWithJobTimeout(
 
 async function completeJob(job: AgentJobRow, result: JsonMap): Promise<string> {
   const status = terminalStatusForResult(result);
-  await supabaseUpdate('agent_jobs', {
-    status,
-    completed_at: nowIso(),
-    result,
-    error: resultErrorMessage(result, status),
-  }, {
-    filters: [
-      { column: 'id', operator: 'eq', value: job.id },
-      { column: 'user_id', operator: 'eq', value: job.user_id },
-    ],
-  });
-  await recordScheduledAutomationResult(job, status, result);
+  await finishAgentJob(job, status, result, resultErrorMessage(result, status),
+    isScheduledJob(job) ? automationResultPayload(job, status, result) : null);
   return status;
 }
 
 async function failJob(job: AgentJobRow, error: unknown): Promise<void> {
   const message = publicError(error);
-  const context = safeErrorContext(error);
-  const result = {
-    outcome: 'blocked',
-    message,
-    nextAction: errorNextAction(error),
-    error: message,
-    context,
-  };
-  await writeWorkerLog(job.user_id, 'error', message, {
-    jobId: job.id,
-    kind: job.kind,
-    ...(context ? { context } : {}),
-  });
-  await supabaseUpdate('agent_jobs', {
-    status: 'failed',
-    completed_at: nowIso(),
-    error: message,
-    result,
-  }, {
-    filters: [
-      { column: 'id', operator: 'eq', value: job.id },
-      { column: 'user_id', operator: 'eq', value: job.user_id },
-    ],
-  });
-  await recordScheduledAutomationResult(job, 'failed', result);
+  const result = { outcome: 'blocked', message, nextAction: errorNextAction(error), error: message, context: safeErrorContext(error) };
+  await finishAgentJob(job, 'failed', result, message,
+    isScheduledJob(job) ? automationResultPayload(job, 'failed', result) : null);
 }
 
 function hashId(value: string): string {
@@ -3333,6 +3265,7 @@ async function queueFromBankedAngles(
 
     let draft: Awaited<ReturnType<typeof ai.draftPlatforms>>;
     try {
+      await assertActiveAgentJob();
       draft = await ai.draftPlatforms(
         post,
         sourceSummary,
@@ -3716,7 +3649,7 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
         };
         return {
           providerAccountRef,
-          send: async () => ({ externalPostId: await publishPlatform(frozenRow) }),
+          send: async () => { await assertActiveAgentJob(); return { externalPostId: await publishPlatform(frozenRow) }; },
         };
       },
       afterAccepted: async (_attempt, payload) => {
@@ -3876,6 +3809,11 @@ async function hasEnabledSource(userId: string): Promise<boolean> {
     limit: 1,
   });
   return rows.length > 0;
+}
+
+function inventoryJobRevision(rows: QueueItemRow[], platforms: PlatformKey[]): unknown {
+  return [platforms.slice().sort(), rows.map(row => [row.id, row.platform, row.status, row.scheduled_for])
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])))];
 }
 
 async function hasPendingOrRunningFetch(userId: string): Promise<boolean> {
@@ -4056,35 +3994,12 @@ async function enqueueDueFetchJobs(stats: SchedulerStats, now: Date): Promise<vo
         continue;
       }
 
-      const dueAt = settings.next_fetch_at || now.toISOString();
-      const inserted = await supabaseInsert<AgentJobRow>('agent_jobs', {
-        user_id: settings.user_id,
-        kind: 'fetch_sources',
-        payload: {
-          source: SCHEDULED_SOURCE,
-          scheduler: SCHEDULER_NAME,
-          due_at: dueAt,
-        },
-      }, true);
-      const job = inserted[0];
-      const nextFetchAt = addMinutesIso(now, cadenceMinutes(settings));
-      await supabaseUpdate('user_settings', {
-        last_scheduled_fetch_at: now.toISOString(),
-        last_scheduled_job_id: job?.id || null,
-        next_fetch_at: nextFetchAt,
-        last_automation_result: {
-          jobId: job?.id || null,
-          kind: 'fetch_sources',
-          status: 'pending',
-          origin: 'scheduled',
-          message: 'Scheduled fetch was queued by Cloudflare cron.',
-          nextAction: 'Wait for the worker to process this scheduled fetch.',
-          dueAt,
-          nextFetchAt,
-        },
-      }, {
-        filters: [{ column: 'user_id', operator: 'eq', value: settings.user_id }],
-      });
+      const dueAt = settings.next_fetch_at || '1970-01-01T00:00:00.000Z';
+      const job = await enqueueScheduledAgentJob(settings.user_id, 'fetch_sources', {
+        source: SCHEDULED_SOURCE, scheduler: SCHEDULER_NAME, due_at: dueAt,
+      }, scheduledOperationKey('fetch', dueAt));
+      if (!job) { incrementSchedulerSkip(stats, 'fetch_identity_replayed'); continue; }
+      const nextFetchAt = 'database-owned';
       stats.fetchJobsEnqueued++;
       await writeWorkerLog(settings.user_id, 'info', 'scheduled_fetch_enqueued', {
         jobId: job?.id || null,
@@ -4240,33 +4155,13 @@ async function enqueueDueSlotFillJobs(stats: SchedulerStats, now: Date): Promise
           continue;
         }
 
-        const inserted = await supabaseInsert<AgentJobRow>('agent_jobs', {
-          user_id: settings.user_id,
-          kind: 'refresh_queue',
-          payload: {
-            source: SCHEDULED_SOURCE,
-            scheduler: SCHEDULER_NAME,
-            mode: 'next_day_inventory',
-            fill_existing_angles_only: hasAngles,
-            target_local_date: targetLocalDate,
-            due_at: now.toISOString(),
-          },
-        }, true);
-        const job = inserted[0];
-        await updateAutomationResult(settings.user_id, {
-          jobId: job?.id || null,
-          kind: 'refresh_queue',
-          status: 'pending',
-          origin: 'scheduled',
-          mode: 'next_day_inventory',
-          targetLocalDate,
-          message: 'Bounded next-day inventory work was queued.',
-          nextAction: 'Wait for the worker to prepare approved drafts for the missing slots.',
-          dueAt: now.toISOString(),
-          missingSlotCount: plan.missingSlotCount,
-        }, {
-          last_scheduled_job_id: job?.id || null,
-        });
+        const revision = inventoryJobRevision(activeRows, tenant.activePlatforms);
+        const job = await enqueueScheduledAgentJob(settings.user_id, 'refresh_queue', {
+          source: SCHEDULED_SOURCE, scheduler: SCHEDULER_NAME, mode: 'next_day_inventory',
+          fill_existing_angles_only: hasAngles, target_local_date: targetLocalDate,
+          due_at: `${targetLocalDate}T00:00:00.000Z`,
+        }, scheduledOperationKey('inventory', [targetLocalDate, timeZone, hasAngles, revision]));
+        if (!job) { incrementSchedulerSkip(stats, 'fill_identity_replayed'); continue; }
         stats.slotFillJobsEnqueued++;
         await writeWorkerLog(settings.user_id, 'info', 'daily_inventory_fill_enqueued', {
           jobId: job?.id || null,
@@ -4305,30 +4200,12 @@ async function enqueueDueSlotFillJobs(stats: SchedulerStats, now: Date): Promise
         continue;
       }
 
-      const inserted = await supabaseInsert<AgentJobRow>('agent_jobs', {
-        user_id: settings.user_id,
-        kind: 'refresh_queue',
-        payload: {
-          source: SCHEDULED_SOURCE,
-          scheduler: SCHEDULER_NAME,
-          mode: 'fill_existing_angles',
-          fill_existing_angles_only: true,
-          due_at: now.toISOString(),
-        },
-      }, true);
-      const job = inserted[0];
-      await updateAutomationResult(settings.user_id, {
-        jobId: job?.id || null,
-        kind: 'refresh_queue',
-        status: 'pending',
-        origin: 'scheduled',
-        mode: 'fill_existing_angles',
-        message: 'Scheduled slot fill was queued from existing unused angles.',
-        nextAction: 'Wait for the worker to draft an unused angle into the next open slot.',
-        dueAt: now.toISOString(),
-      }, {
-        last_scheduled_job_id: job?.id || null,
-      });
+      const fillDate = tenantLocalDatePlusDays(now, timeZone, 0);
+      const job = await enqueueScheduledAgentJob(settings.user_id, 'refresh_queue', {
+        source: SCHEDULED_SOURCE, scheduler: SCHEDULER_NAME, mode: 'fill_existing_angles',
+        fill_existing_angles_only: true, due_at: `${fillDate}T00:00:00.000Z`,
+      }, scheduledOperationKey('fill', [fillDate, timeZone, inventoryJobRevision(activeRows, tenant.activePlatforms)]));
+      if (!job) { incrementSchedulerSkip(stats, 'fill_identity_replayed'); continue; }
       stats.slotFillJobsEnqueued++;
       await writeWorkerLog(settings.user_id, 'info', 'scheduled_slot_fill_enqueued', {
         jobId: job?.id || null,
@@ -4458,29 +4335,10 @@ async function enqueueDuePublishJobs(stats: SchedulerStats, now: Date): Promise<
         continue;
       }
 
-      const inserted = await supabaseInsert<AgentJobRow>('agent_jobs', {
-        user_id: row.user_id,
-        kind: 'publish_now',
-        payload: {
-          source: SCHEDULED_SOURCE,
-          scheduler: SCHEDULER_NAME,
-          queue_item_id: row.id,
-          due_at: row.scheduled_for,
-        },
-      }, true);
-      const job = inserted[0];
-      await updateAutomationResult(row.user_id, {
-        jobId: job?.id || null,
-        kind: 'publish_now',
-        status: 'pending',
-        origin: 'scheduled',
-        message: `Scheduled ${row.platform} publish was queued.`,
-        nextAction: 'Wait for the worker to publish this due queue item.',
-        queueItemId: row.id,
-        dueAt: row.scheduled_for,
-      }, {
-        last_scheduled_job_id: job?.id || null,
-      });
+      const job = await enqueueScheduledAgentJob(row.user_id, 'publish_now', {
+        source: SCHEDULED_SOURCE, scheduler: SCHEDULER_NAME, queue_item_id: row.id, due_at: row.scheduled_for,
+      }, scheduledOperationKey('publish', [row.id, row.scheduled_for]));
+      if (!job) { incrementSchedulerSkip(stats, 'publish_identity_replayed'); continue; }
       stats.publishJobsEnqueued++;
       await writeWorkerLog(row.user_id, 'info', 'scheduled_publish_enqueued', {
         jobId: job?.id || null,
@@ -4858,72 +4716,28 @@ async function stalePublishJobResult(job: AgentJobRow, _logs: WorkerLogRow[]): P
 async function cleanupStaleRunningJobs(stats: SchedulerStats, now: Date): Promise<void> {
   const allowedUserIds = rolloutAllowedUserIds();
   if (allowedUserIds?.length === 0) return;
-  const cutoff = addMinutesIso(now, -STALE_RUNNING_JOB_MINUTES);
   const jobs = await supabaseSelect<AgentJobRow>('agent_jobs', {
-    select: '*',
-    filters: [
+    select: '*', filters: [
       { column: 'status', operator: 'eq', value: 'running' },
-      { column: 'started_at', operator: 'lte', value: cutoff },
-      ...(allowedUserIds
-        ? [{ column: 'user_id', operator: 'in' as const, value: allowedUserIds }]
-        : []),
-    ],
-    order: 'started_at.asc',
-    limit: 50,
+      { column: 'claim_expires_at', operator: 'lte', value: now.toISOString() },
+      ...(allowedUserIds ? [{ column: 'user_id', operator: 'in' as const, value: allowedUserIds }] : []),
+    ], order: 'claim_expires_at.asc', limit: 50,
   });
-
-  for (const job of jobs) {
+  for (const expired of jobs) {
     try {
-      const staleCutoff = addMinutesIso(now, -staleMinutesForJob(job));
-      const startedAt = Date.parse(job.started_at || '');
-      const staleCutoffMs = Date.parse(staleCutoff);
-      if (
-        Number.isFinite(startedAt)
-        && Number.isFinite(staleCutoffMs)
-        && startedAt > staleCutoffMs
-      ) {
-        incrementSchedulerSkip(stats, 'stale_job_within_kind_runtime');
-        continue;
-      }
-
-      const logs = await staleJobLogs(job);
-      if (job.kind === 'refresh_queue' && hasRecentJobActivity(logs, cutoff)) {
-        incrementSchedulerSkip(stats, 'stale_refresh_recent_activity');
-        continue;
-      }
-
-      const releasedAngleLocks = await releaseStaleRefreshAngleLocks(job, logs);
-      const details = staleFailureFromLogs(logs);
-      const result = job.kind === 'publish_now'
-        ? await stalePublishJobResult(job, logs)
-        : staleJobResult(job, logs, details);
-      const summary = resultSummary(result);
-      const error = String(summary.failureCode || result.error || 'worker_job_timed_out');
-      const status = terminalStatusForResult(result);
-      await supabaseUpdate('agent_jobs', {
-        status,
-        completed_at: now.toISOString(),
-        error,
-        result,
-      }, {
-        filters: [
-          { column: 'id', operator: 'eq', value: job.id },
-          { column: 'status', operator: 'eq', value: 'running' },
-        ],
+      const job = await claimAgentJob(expired, true);
+      if (!job) { incrementSchedulerSkip(stats, 'recovery_owner_changed'); continue; }
+      const result = await withAgentJobLease(job, async () => {
+        const logs = await staleJobLogs(job);
+        return job.kind === 'publish_now' ? stalePublishJobResult(job, logs)
+          : staleJobResult(job, logs, staleFailureFromLogs(logs));
       });
-      await recordScheduledAutomationResult(job, status, result);
+      // No log-derived angle release or blind execute/re-enqueue. The independent
+      // source/angle/publication ledgers retain their own recovery authority.
+      await completeJob(job, result);
       stats.staleJobsFailed++;
-      await writeWorkerLog(job.user_id, 'warn', 'stale_running_job_failed', {
-        jobId: job.id,
-        kind: job.kind,
-        reason: error,
-        status,
-        failedStage: typeof summary.failedStage === 'string' ? summary.failedStage : null,
-        releasedAngleLocks,
-        startedAt: job.started_at || null,
-      });
     } catch (error) {
-      await recordSchedulerFailure(stats, 'job_recovery', error, job.user_id);
+      await recordSchedulerFailure(stats, 'job_recovery', error, expired.user_id);
     }
   }
 }
@@ -4940,6 +4754,7 @@ export async function runSupabaseAutomationScheduler(): Promise<SchedulerStats> 
     skipped: {},
     errors: {},
   };
+  await assertAgentJobsContract();
   const now = new Date();
   const stages: Array<[string, () => Promise<unknown>]> = [
     ['publication_recovery', () => recoverStalePublications(now.getTime(), rolloutAllowedUserIds())],
@@ -4961,6 +4776,7 @@ export async function runSupabaseAutomationScheduler(): Promise<SchedulerStats> 
 }
 
 async function handleClaimedJob(job: AgentJobRow): Promise<JsonMap> {
+  await assertActiveAgentJob();
   assertSupportedJobKind(job.kind);
   assertRolloutAllowsJob(job.user_id, job.kind);
   await assertTenantEntitlement(job);
@@ -4994,31 +4810,24 @@ async function handleClaimedJob(job: AgentJobRow): Promise<JsonMap> {
 
 export async function processPendingSupabaseJobs(): Promise<WorkerStats> {
   const stats: WorkerStats = { claimed: 0, completed: 0, failed: 0 };
+  await assertAgentJobsContract();
   const jobs = await listPendingJobs();
-
   for (const pendingJob of jobs) {
-    const job = await claimJob(pendingJob);
-    if (!job) continue;
-
-    stats.claimed++;
+    let job: AgentJobRow | null = null;
     try {
-      const result = await handleClaimedJob(job);
-      const terminalStatus = await completeJob(job, result);
-      if (terminalStatus === 'failed') stats.failed++;
-      else stats.completed++;
-      await writeWorkerLog(job.user_id, 'info', 'job_completed', {
-        jobId: job.id,
-        kind: job.kind,
-        status: terminalStatus,
-        origin: jobOrigin(job),
-        result,
-      });
+      job = await claimJob(pendingJob);
+      if (!job) continue;
+      stats.claimed++;
+      const result = await withAgentJobLease(job, () => handleClaimedJob(job!));
+      const status = await completeJob(job, result);
+      if (status === 'failed') stats.failed++; else stats.completed++;
     } catch (error) {
-      await failJob(job, error);
-      stats.failed++;
+      if (job && !(error instanceof AgentJobOwnershipLostError)) {
+        try { await failJob(job, error); stats.failed++; }
+        catch { logger.warn('Job finalisation unconfirmed; fenced reconciliation required.'); }
+      } else logger.warn('Job ownership unconfirmed; no handler retry or unfenced completion.');
     }
   }
-
   return stats;
 }
 

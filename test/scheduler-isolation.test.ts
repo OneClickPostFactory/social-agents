@@ -36,6 +36,13 @@ test('the real scheduler isolates tenant, stage and logging failures', async t =
           const table = url.pathname.split('/').pop();
           const method = init?.method || 'GET';
           const user = url.searchParams.get('user_id');
+          if (table === 'get_agent_jobs_contract') return json({ contract: 'agent-jobs-v1', capabilities: ['durable-enqueue-v1', 'fenced-terminal-v1', 'reconciliation-only-recovery-v1', 'rpc-only-job-writes-v1'] });
+          if (table === 'enqueue_worker_agent_job') {
+            const args = JSON.parse(String(init?.body));
+            const job = { user_id: args.p_user_id, kind: args.p_kind, payload: args.p_payload, id: `job-${enqueued.length + 1}` };
+            enqueued.push(job);
+            return json({ created: true, job });
+          }
           if (url.pathname.includes('/rpc/')) return json({ message: 'schema unavailable' }, 503);
           if (table === 'worker_logs' && method === 'POST') return failure === 'logging'
             ? json({ message: 'log unavailable' }, 503) : json([]);
@@ -53,13 +60,8 @@ test('the real scheduler isolates tenant, stage and logging failures', async t =
             ? json({ message: 'tenant data unavailable' }, 503) : json([{ subscription_status: 'active' }]);
           if (table === 'internal_access_overrides') return json([]);
           if (table === 'user_sources') return json([{ id: 'source' }]);
-          if (table === 'agent_jobs' && method === 'GET') return failure === 'recovery_query' && url.searchParams.has('started_at')
+          if (table === 'agent_jobs' && method === 'GET') return failure === 'recovery_query' && url.searchParams.has('claim_expires_at')
             ? json({ message: 'recovery unavailable' }, 503) : json([]);
-          if (table === 'agent_jobs' && method === 'POST') {
-            const job = JSON.parse(String(init?.body));
-            enqueued.push(job);
-            return json([{ ...job, id: `job-${enqueued.length}` }]);
-          }
           if (table === 'queue_items' && method === 'GET') return json(['broken', 'healthy', 'healthy'].map((user_id, i) => ({
             id: `queue-${i}`, user_id, platform: 'x', status: 'ready',
             scheduled_for: '2026-01-01T00:00:00Z',
