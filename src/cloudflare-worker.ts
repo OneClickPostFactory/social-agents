@@ -1,3 +1,4 @@
+import { handleReadinessRequest } from './cloudflare-readiness';
 import { createExclusiveRunGate } from './exclusive-run-gate';
 import { installScopedConfig, runWithRuntimeScope } from './runtime-scope';
 
@@ -193,6 +194,9 @@ export default {
 
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === '/readyz') {
+      return handleReadinessRequest(request, env);
+    }
     if (url.pathname === '/healthz') {
       applyCloudflareEnv(env);
       return Response.json(healthPayload(env));
