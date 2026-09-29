@@ -1,0 +1,36 @@
+name: Authenticated readiness contract
+
+on:
+  pull_request:
+    paths: ['src/**', 'test/**', '.github/workflows/readiness-contract.yml']
+  push:
+    branches: [main, codex/cloud-readiness-20260929]
+    paths: ['src/**', 'test/**', '.github/workflows/readiness-contract.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readiness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts --no-audit
+      - run: npm run typecheck
+      - name: Effect-free authenticated readiness and existing liveness contracts
+        run: |
+          node --import tsx --test test/cloudflare-readiness.test.ts
+          node --import tsx test/cloudflare-health.test.ts
+      - name: No generated or fixture files changed the source
+        run: git diff --exit-code
