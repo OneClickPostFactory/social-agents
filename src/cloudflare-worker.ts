@@ -1,4 +1,5 @@
 import { handleWorkerReadiness } from './worker-readiness';
+import { withOperatorControls } from './worker-operator-controls';
 import { createExclusiveRunGate } from './exclusive-run-gate';
 import { installScopedConfig, runWithRuntimeScope } from './runtime-scope';
 
@@ -187,7 +188,7 @@ function runScheduledTick(env: Env): Promise<Response> {
   return scheduledTickGate.run(() => executeScheduledTick(env));
 }
 
-export default {
+export default withOperatorControls({
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(runScheduledTick(env));
   },
@@ -225,4 +226,4 @@ export default {
 
     return new Response('Not found', { status: 404 });
   },
-};
+});

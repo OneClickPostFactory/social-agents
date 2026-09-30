@@ -30,7 +30,7 @@ jobs:
       - run: npm run typecheck
       - name: Effect-free authenticated readiness and existing liveness contracts
         run: |
-          node --import tsx --test test/cloudflare-readiness.test.ts
+          node --import tsx --test test/cloudflare-readiness.test.ts test/cloudflare-operator-controls.test.ts
           node --import tsx test/cloudflare-health.test.ts
       - name: Actual workerd transport and redirect-security regressions
         run: node --test test/cloudflare-readiness.workerd.mjs
