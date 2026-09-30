@@ -1,13 +1,13 @@
 import { timingSafeEqual } from 'node:crypto';
 
-export interface OperatorEnv {
+export type OperatorEnv = {
   WORKER_MAINTENANCE_MODE?: string;
   WORKER_READINESS_TOKEN?: string;
   WORKER_READINESS_TOKEN_ISSUED_AT?: string;
   WORKER_READINESS_TOKEN_EXPIRES_AT?: string;
   WORKER_TICK_TOKEN?: string;
   SUPABASE_URL?: string;
-}
+};
 
 const PRIVATE_HEADERS = { 'Cache-Control': 'no-store, private, max-age=0' };
 const LEASE_FIELDS = [
