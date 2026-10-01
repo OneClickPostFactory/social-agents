@@ -1,0 +1,66 @@
+name: Prepare and prove M3 connection consumer
+on:
+  push:
+    branches: [codex/m3-connections-20261001]
+    paths: ['.github/workflows/prepare-m3-connections.yml']
+permissions:
+  contents: read
+jobs:
+  prepare:
+    if: github.repository == 'OneClickPostFactory/social-agents'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: '66b17ef976f842c254769a58efc60c17d5e6ab65'
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Verify exact source transport and permitted patch paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import {createHash} from 'node:crypto';
+          import {inflateSync} from 'node:zlib';
+          import {execFileSync} from 'node:child_process';
+          import {writeFileSync} from 'node:fs';
+          assert.equal(execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),'66b17ef976f842c254769a58efc60c17d5e6ab65');
+          let encoded='';
+          for(const sha of ['59f48a7f5576c6daa1c7e084ba8bec00d911e7b6','07c0bf67587fa675b5621872b79c800a3160acbe']){
+            const r=await fetch(`https://api.github.com/repos/OneClickPostFactory/social-agents/git/blobs/${sha}`,{headers:{Authorization:`Bearer ${process.env.GH_TOKEN}`,Accept:'application/vnd.github+json'},redirect:'error',signal:AbortSignal.timeout(15000)});
+            assert.equal(r.status,200);const v=await r.json();assert.equal(v.sha,sha);assert.equal(v.encoding,'base64');
+            const b=Buffer.from(v.content,'base64');assert.equal(createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex'),sha);encoded+=b.toString('utf8');
+          }
+          assert.equal(encoded.length,18272);assert.match(encoded,/^[A-Za-z0-9+/]+={0,2}$/);
+          const patch=inflateSync(Buffer.from(encoded,'base64'),{maxOutputLength:131072});
+          assert.equal(patch.length,49786);assert.equal(createHash('sha256').update(patch).digest('hex'),'e0bbd1a2d1f02220f94bc32623ce471f07838e384bd4929c5e3658c3a6ab8b8d');
+          const allowed=['AGENTS.md','config.ts','docs/CONNECTION_GENERATIONS_V1.md','package.json','src/connection-http.ts','src/connection-lifecycle.ts','src/connection-runtime.ts','src/supabase-worker.ts','src/worker-readiness.ts','test/connection-runtime.test.ts','test/security-hardening.test.ts','wrangler.toml'];
+          const paths=[...patch.toString('utf8').matchAll(/^diff --git a\/(\S+) b\/(\S+)$/gm)].map(m=>{assert.equal(m[1],m[2]);return m[1]});assert.deepEqual(paths.sort(),allowed.sort());
+          writeFileSync('/tmp/m3-worker.patch',patch,{mode:0o600});writeFileSync('/tmp/m3-worker-paths.json',JSON.stringify(allowed));
+          execFileSync('git',['apply','--check','/tmp/m3-worker.patch'],{stdio:'pipe'});execFileSync('git',['apply','/tmp/m3-worker.patch'],{stdio:'pipe'});
+          console.log('Exact connection consumer source applied; runtime credentials and production requests=0.');
+          JS
+      - run: npm ci --ignore-scripts --no-audit
+      - name: Full Worker typing, regressions and executable smoke
+        run: |
+          npm run ci
+          git diff --check
+      - name: Persist exact tested source blobs without branch mutation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {createHash} from 'node:crypto';
+          for(const path of JSON.parse(readFileSync('/tmp/m3-worker-paths.json','utf8'))){
+            const b=readFileSync(path);assert.ok(b.length<600000);
+            const sha=createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex');
+            const r=await fetch('https://api.github.com/repos/OneClickPostFactory/social-agents/git/blobs',{method:'POST',headers:{Authorization:`Bearer ${process.env.GH_TOKEN}`,Accept:'application/vnd.github+json','Content-Type':'application/json'},redirect:'error',signal:AbortSignal.timeout(15000),body:JSON.stringify({content:b.toString('utf8'),encoding:'utf-8'})});
+            assert.equal(r.status,201);const v=await r.json();assert.equal(v.sha,sha);console.log(JSON.stringify({path,sha,source_base:'66b17ef976f842c254769a58efc60c17d5e6ab65'}));
+          }
+          JS
