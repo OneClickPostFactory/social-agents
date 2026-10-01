@@ -112,6 +112,7 @@ export interface AppConfig {
   SUPABASE_WORKER_CANARY_REQUIRED: boolean;
   SUPABASE_WORKER_CANARY_USER_IDS: Set<string>;
   SUPABASE_WORKER_GENERATION_ENABLED: boolean;
+  CONNECTION_LIFECYCLE_ENABLED: boolean;
   SUPABASE_PROVIDER_DISPATCH_ENABLED: boolean;
   DAILY_INVENTORY_PLANNER_ENABLED: boolean;
   DAILY_INVENTORY_PLANNER_START_LOCAL_DATE: string;
@@ -249,6 +250,7 @@ function buildBaseConfig(): AppConfig {
       (process.env.NODE_ENV || 'development') === 'production'
       || parseBooleanEnv(process.env.SUPABASE_WORKER_CANARY_REQUIRED, false),
     SUPABASE_WORKER_CANARY_USER_IDS: toSubSet(process.env.SUPABASE_WORKER_CANARY_USER_IDS, ''),
+    CONNECTION_LIFECYCLE_ENABLED: process.env.CONNECTION_LIFECYCLE_ENABLED === 'true',
     SUPABASE_WORKER_GENERATION_ENABLED: parseBooleanEnv(
       process.env.SUPABASE_WORKER_GENERATION_ENABLED,
       (process.env.NODE_ENV || 'development') !== 'production'
