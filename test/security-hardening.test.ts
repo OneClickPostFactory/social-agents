@@ -445,6 +445,7 @@ async function main(): Promise<void> {
         SUPABASE_WORKER_CANARY_USER_IDS: new Set(),
         SUPABASE_WORKER_GENERATION_ENABLED: false,
         SUPABASE_PROVIDER_DISPATCH_ENABLED: false,
+    CONNECTION_LIFECYCLE_ENABLED: false,
       });
 
       assert.ok(issues.some(issue => issue.includes('COOKIE_SECURE')));
@@ -522,6 +523,7 @@ async function main(): Promise<void> {
         SUPABASE_WORKER_CANARY_USER_IDS: new Set(),
         SUPABASE_WORKER_GENERATION_ENABLED: false,
         SUPABASE_PROVIDER_DISPATCH_ENABLED: false,
+    CONNECTION_LIFECYCLE_ENABLED: false,
       });
 
       assert.ok(issues.some(issue => issue.includes('SUPABASE_SERVICE_ROLE_KEY')));

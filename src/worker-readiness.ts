@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 // provider clients or loggers here: liveness must never initialise execution.
 export interface ReadinessEnv {
   WORKER_TICK_TOKEN?: string;
+  CONNECTION_LIFECYCLE_ENABLED?: string;
   SUPABASE_URL?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
   SUPABASE_SECRET_KEY?: string;
@@ -34,6 +35,11 @@ export const READINESS_CONTRACTS = [
   },
 ] as const;
 
+export const CONNECTION_READINESS_CONTRACT = {
+ name:'connections',rpc:'get_connection_generation_contract',contract:'connection-generations-v1',
+ capabilities:['connection-atomic-snapshot-v1','connection-owner-generation-v1','connection-refresh-cas-v1',
+ 'connection-legacy-write-denial-v1','connection-callback-generation-v1','connection-publication-binding-v1'],
+} as const;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 const HEADERS = { 'Cache-Control': 'no-store, private, max-age=0', Vary: 'Authorization, X-OCPF-Readiness-Nonce' };
@@ -125,7 +131,7 @@ export async function handleWorkerReadiness(
   request.signal.addEventListener('abort', abort, { once: true });
   const timeout = setTimeout(abort, TIMEOUT_MS);
   try {
-    const dependencies = await Promise.all(READINESS_CONTRACTS.map(async expected => {
+    const dependencies = await Promise.all([...READINESS_CONTRACTS,...(env.CONNECTION_LIFECYCLE_ENABLED === 'true'?[CONNECTION_READINESS_CONTRACT]:[])].map(async expected => {
       let response: Response | undefined;
       try {
         // workerd rejects redirect:error before transport. manual plus the exact
@@ -142,6 +148,7 @@ export async function handleWorkerReadiness(
         const capabilities = body.capabilities;
         let compatible = body.contract === expected.contract && Array.isArray(capabilities)
           && expected.capabilities.every(c => capabilities.includes(c));
+        if (expected.name === 'connections') compatible = compatible && body.migration === '20261001154000';
         if (expected.name === 'publication') compatible = compatible
           && body.migration === '20260907054000' && body.lock_order_migration === '20260913061000';
         return { name: expected.name, state: compatible ? 'verified' : 'contract_mismatch' };

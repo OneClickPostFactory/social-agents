@@ -1,3 +1,6 @@
+import { connectionCredentialUpdate, loadConnectionSnapshot, withConnectionSnapshot, assertProviderAvailable, assertQueueConnectionReady } from './connection-runtime';
+import type { ConnectionSnapshot } from './connection-lifecycle';
+import { connectionJson } from './connection-http';
 import { AgentJobOwnershipLostError, assertAgentJobsContract, assertActiveAgentJob, claimAgentJob, enqueueScheduledAgentJob, finishAgentJob, scheduledOperationKey, withAgentJobLease, type AgentJobRow } from './agent-jobs';
 import * as crypto from 'node:crypto';
 
@@ -298,6 +301,7 @@ interface AngleRecordRow {
 }
 
 interface TenantContext {
+  connectionSnapshot?: ConnectionSnapshot;
   userId: string;
   settings: UserSettingsRow;
   credentials: TenantCredentials;
@@ -1661,10 +1665,9 @@ async function loadTenantContext(userId: string): Promise<TenantContext> {
     limit: 1,
   }))[0] || {};
 
-  const credentialRow = (await supabaseSelect<TenantCredentialRow>('user_credentials', {
-    select: '*',
-    filters: [{ column: 'user_id', operator: 'eq', value: userId }],
-    limit: 1,
+  const connectionSnapshot = config.CONNECTION_LIFECYCLE_ENABLED ? await loadConnectionSnapshot(userId) : undefined;
+  const credentialRow = connectionSnapshot ? connectionSnapshot.credentials as TenantCredentialRow : (await supabaseSelect<TenantCredentialRow>('user_credentials', {
+    select: '*', filters: [{ column: 'user_id', operator: 'eq', value: userId }], limit: 1,
   }))[0];
 
   const credentials = decryptTenantCredentials(credentialRow);
@@ -1674,6 +1677,7 @@ async function loadTenantContext(userId: string): Promise<TenantContext> {
     userId,
     settings,
     credentials,
+    connectionSnapshot,
     activePlatforms,
   };
 }
@@ -1759,7 +1763,7 @@ async function markXCredentialVerified(
   userId: string,
   verification: Awaited<ReturnType<typeof x.verifyCredentials>>
 ): Promise<void> {
-  await supabaseUpdate('user_credentials', {
+  await connectionCredentialUpdate('user_credentials', {
     x_verified_at: nowIso(),
     x_last_verification_failed_at: null,
     x_verification_status: 'verified',
@@ -1784,7 +1788,7 @@ async function markXCredentialFailure(userId: string, error: unknown): Promise<v
     ? context.normalized_error_code
     : 'verification_failed';
   const status = code === 'not_connected' ? 'not_connected' : 'needs_reconnect';
-  await supabaseUpdate('user_credentials', {
+  await connectionCredentialUpdate('user_credentials', {
     x_last_verification_failed_at: nowIso(),
     x_verification_status: status,
     x_verification_error: publicError(error),
@@ -1799,6 +1803,7 @@ async function markXCredentialFailure(userId: string, error: unknown): Promise<v
 
 async function verifyXCredentialForPublish(userId: string): Promise<x.XSafeAuthMode> {
   try {
+    assertProviderAvailable('x');
     const verification = await x.verifyCredentials();
     await markXCredentialVerified(userId, verification);
     return verification.authMode;
@@ -1810,8 +1815,9 @@ async function verifyXCredentialForPublish(userId: string): Promise<x.XSafeAuthM
 
 async function prepareThreadsCredentialForPublish(userId: string): Promise<void> {
   try {
+    assertProviderAvailable('threads');
     const preparation = await threads.prepareAccessTokenForPublish();
-    await supabaseUpdate('user_credentials', {
+    await connectionCredentialUpdate('user_credentials', {
       threads_verified_at: nowIso(),
       threads_last_verification_failed_at: null,
       threads_verification_status: 'verified',
@@ -1829,7 +1835,7 @@ async function prepareThreadsCredentialForPublish(userId: string): Promise<void>
     const context = isPlatformPublishError(error)
       ? platformErrorContext(error)
       : { normalized_error_code: 'verification_failed', user_message: publicError(error) };
-    await supabaseUpdate('user_credentials', {
+    await connectionCredentialUpdate('user_credentials', {
       threads_last_verification_failed_at: nowIso(),
       threads_verification_status: 'needs_reconnect',
       threads_verification_error: publicError(error),
@@ -1845,6 +1851,7 @@ async function prepareThreadsCredentialForPublish(userId: string): Promise<void>
 }
 
 async function refreshLinkedInCredentialForPublish(userId: string): Promise<void> {
+  assertProviderAvailable('linkedin');
   if (!linkedin.shouldRefreshAccessToken()) return;
 
   try {
@@ -1853,7 +1860,7 @@ async function refreshLinkedInCredentialForPublish(userId: string): Promise<void
     const context = isPlatformPublishError(error)
       ? platformErrorContext(error)
       : { normalized_error_code: 'refresh_failed', user_message: publicError(error) };
-    await supabaseUpdate('user_credentials', {
+    await connectionCredentialUpdate('user_credentials', {
       linkedin_last_verification_failed_at: nowIso(),
       linkedin_verification_status: 'needs_reconnect',
       linkedin_verification_error: publicError(error),
@@ -1869,7 +1876,7 @@ async function refreshLinkedInCredentialForPublish(userId: string): Promise<void
 }
 
 async function markLinkedInCredentialVerified(userId: string): Promise<void> {
-  await supabaseUpdate('user_credentials', {
+  await connectionCredentialUpdate('user_credentials', {
     linkedin_verified_at: nowIso(),
     linkedin_last_verification_failed_at: null,
     linkedin_verification_status: 'verified',
@@ -2019,10 +2026,17 @@ function tenantCloudinaryFolder(baseFolder: string, userId: string): string {
 }
 
 async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>): Promise<T> {
+  if (config.CONNECTION_LIFECYCLE_ENABLED) {
+    if (!tenant.connectionSnapshot) throw Error('connection_snapshot_required');
+    return withConnectionSnapshot(tenant.connectionSnapshot, () => withTenantRuntimeImpl(tenant, fn));
+  }
+  return withTenantRuntimeImpl(tenant, fn);
+}
+async function withTenantRuntimeImpl<T>(tenant: TenantContext, fn: () => Promise<T>): Promise<T> {
   const previous = snapshotConfig();
   const restoreThreadsTokenPersistence = threads.setTokenPersistence(async tokens => {
     const expiresAt = secondsFromNowIso(tokens.expiresIn);
-    await supabaseUpdate('user_credentials', {
+    await connectionCredentialUpdate('user_credentials', {
       threads_token_enc: encryptCredential(tokens.accessToken),
       ...(expiresAt ? { threads_expires_at: expiresAt } : {}),
     }, {
@@ -2055,7 +2069,7 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
     if (refreshTokenExpiresAt) {
       patch.linkedin_refresh_token_expires_at = refreshTokenExpiresAt;
     }
-    await supabaseUpdate('user_credentials', patch, {
+    await connectionCredentialUpdate('user_credentials', patch, {
       filters: [{ column: 'user_id', operator: 'eq', value: tenant.userId }],
     });
     await writeWorkerLog(tenant.userId, 'info', 'linkedin_oauth2_tokens_refreshed', {
@@ -2081,7 +2095,7 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
       patch.x_expires_at = expiresAt;
     }
 
-    await supabaseUpdate('user_credentials', patch, {
+    await connectionCredentialUpdate('user_credentials', patch, {
       filters: [{ column: 'user_id', operator: 'eq', value: tenant.userId }],
     });
     await writeWorkerLog(tenant.userId, 'info', 'x_oauth2_tokens_refreshed', {
@@ -2091,7 +2105,7 @@ async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>)
       expiresAtUpdated: Boolean(expiresAt),
     });
   });
-  config.OPENAI_API_KEY = tenant.credentials.openaiApiKey || previous.OPENAI_API_KEY || '';
+  config.OPENAI_API_KEY = tenant.credentials.openaiApiKey || (config.CONNECTION_LIFECYCLE_ENABLED ? '' : previous.OPENAI_API_KEY) || '';
   config.OPENAI_MODEL = tenant.settings.ai_model || 'gpt-4o-mini';
   config.OPENAI_IMAGE_MODEL = previous.OPENAI_IMAGE_MODEL || config.OPENAI_IMAGE_MODEL || 'gpt-image-2';
   config.CLOUDINARY_FOLDER = tenantCloudinaryFolder(previous.CLOUDINARY_FOLDER || config.CLOUDINARY_FOLDER, tenant.userId);
@@ -3594,6 +3608,7 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
   // Reload per item. publish_all must not retain the first item's stale credentials/settings.
   const tenant = await loadTenantContext(job.user_id);
   return withTenantRuntime(tenant, async () => {
+    await assertQueueConnectionReady(job.user_id,row.id);
     const execution = await executePublication({
       userId: job.user_id, queueItemId: row.id, platform: row.platform,
     }, {
@@ -3609,13 +3624,21 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
         let providerAccountRef: string;
         if (payload.platform === 'x') {
           if (payload.text.trim().length > 280) throw new PublicationPreflightError('x_text_too_long');
-          const verification = await x.verifyCredentials();
+          assertProviderAvailable('x');
+    const verification = await x.verifyCredentials();
+          if (config.CONNECTION_LIFECYCLE_ENABLED) await markXCredentialVerified(job.user_id, verification);
           providerAccountRef = verification.accountId;
         } else {
           if (!config.LINKEDIN_TOKEN || !config.LINKEDIN_PERSON_URN) {
             throw new PublicationPreflightError('linkedin_not_connected');
           }
           await refreshLinkedInCredentialForPublish(job.user_id);
+          if (config.CONNECTION_LIFECYCLE_ENABLED) {
+            const me = await connectionJson('https://api.linkedin.com/v2/userinfo', { headers:{Authorization:`Bearer ${config.LINKEDIN_TOKEN}`} });
+            if (typeof me.sub !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(me.sub)
+              || `urn:li:person:${me.sub}` !== config.LINKEDIN_PERSON_URN) throw new PublicationPreflightError('linkedin_account_mismatch');
+            await markLinkedInCredentialVerified(job.user_id);
+          }
           providerAccountRef = config.LINKEDIN_PERSON_URN;
         }
         // Recheck entitlement/pause/enablement immediately before the dispatch boundary.
@@ -4871,6 +4894,7 @@ export function startSupabaseWorkerLoop(log = logger): { stop: () => void } | un
 }
 
 export const __test__ = {
+  loadTenantContext, withTenantRuntime, markXCredentialVerified, refreshLinkedInCredentialForPublish,
   extractSourceBankWithJobTimeout,
   assertQueueRevisionNotHeld,
   publishQueueRow,

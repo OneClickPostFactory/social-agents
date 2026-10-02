@@ -301,3 +301,12 @@ For Threads-specific work:
 For X-specific work:
 
 - `src/x.ts`
+
+## M3.4 paired connection lifecycle
+
+Read `docs/CONNECTION_GENERATIONS_V1.md` before changing SaaS credential writes,
+refresh/callback logic or publication account selection. The new guard is default
+off and requires the matching application/schema release. Captured generations
+are not optional when enabled; never fall back to ordinary writes after a guarded
+failure. UI source, schema, customer accounts and original local post-once are
+not owned by this repository.
