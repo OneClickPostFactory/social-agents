@@ -3626,7 +3626,7 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
         }
         if (payload.platform === 'facebook') throw new PublicationPreflightError('facebook_paused');
         if (target) {
-          if (payload.platform !== 'x' || !managesConnection(job.user_id) || Date.now() >= target.expiresAt) {
+          if (payload.platform !== (target.platform ?? 'x') || !managesConnection(job.user_id) || Date.now() >= target.expiresAt) {
             throw new PublicationPreflightError('controlled_publish_scope_mismatch');
           }
           // The intent now locks this revision. A later edit cannot replace its payload.
@@ -3659,6 +3659,7 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
             await markLinkedInCredentialVerified(job.user_id);
           }
           providerAccountRef = config.LINKEDIN_PERSON_URN;
+          if (target && providerAccountRef !== target.accountId) throw new PublicationPreflightError('controlled_publish_account_changed');
         }
         // Recheck entitlement/pause/enablement immediately before the dispatch boundary.
         const entitlement = await loadEntitlement(job.user_id);

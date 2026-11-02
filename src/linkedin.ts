@@ -167,30 +167,26 @@ export function publish(text: string): Promise<string> {
   const payload = JSON.stringify({
     author: config.LINKEDIN_PERSON_URN,
     lifecycleState: 'PUBLISHED',
-    specificContent: {
-      'com.linkedin.ugc.ShareContent': {
-        shareCommentary: { text },
-        shareMediaCategory: 'NONE',
-      },
-    },
-    visibility: {
-      'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC',
-    },
+    commentary: text,
+    visibility: 'PUBLIC',
+    distribution: { feedDistribution: 'MAIN_FEED', targetEntities: [], thirdPartyDistributionChannels: [] },
+    isReshareDisabledByAuthor: false,
   });
 
-  return requestJson<LinkedInPublishResponse>('https://api.linkedin.com/v2/ugcPosts', {
+  return requestJson<LinkedInPublishResponse>('https://api.linkedin.com/rest/posts', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${config.LINKEDIN_TOKEN}`,
       'Content-Type': 'application/json',
+      'LinkedIn-Version': '202608',
       'X-Restli-Protocol-Version': '2.0.0',
     },
     body: payload,
     timeoutMs: config.HTTP_TIMEOUT_MS,
   }).then(({ status, headers, data, rawText }) => {
     if (status === 201) {
-      const id = data.id || headers.get('x-restli-id');
-      if (typeof id !== 'string' || !id.trim()) throw new Error('LinkedIn acceptance receipt missing');
+      const id = headers.get('x-restli-id');
+      if (typeof id !== 'string' || !/^urn:li:(share|ugcPost):[0-9]+$/.test(id)) throw new Error('LinkedIn acceptance receipt missing');
       return id;
     }
     throw normalizeLinkedInError('post', status, headers.get('content-type'), rawText, data);
