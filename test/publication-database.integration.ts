@@ -65,12 +65,12 @@ globalThis.fetch = (async (input, init) => {
     await new Promise<void>(resolve => setImmediate(resolve));
     return Response.json({ data: { id: `account-${owner}` } });
   }
-  if ((url.hostname === 'api.x.com' && url.pathname === '/2/tweets') || (url.hostname === 'api.linkedin.com' && url.pathname === '/v2/ugcPosts')) {
+  if ((url.hostname === 'api.x.com' && url.pathname === '/2/tweets') || (url.hostname === 'api.linkedin.com' && url.pathname === '/rest/posts')) {
     assert.equal(init?.method, 'POST'); totalWrites++;
     const providerId = String(900000 + totalWrites);
     posts.set(owner, (posts.get(owner) || 0) + 1);
     const body = JSON.parse(String(init?.body));
-    const text = body.text || body.specificContent?.['com.linkedin.ugc.ShareContent']?.shareCommentary?.text;
+    const text = body.text || body.commentary;
     texts.set(owner, [...(texts.get(owner) || []), text]);
     assert.ok(Number(sql(`SELECT count(*) FROM public.publication_attempts WHERE user_id = ${literal(owner)}::uuid AND state = 'dispatching';`)) > 0);
     if (modes.get(owner) === 'timeout') throw new TypeError('injected lost provider response');

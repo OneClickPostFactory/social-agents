@@ -44,7 +44,16 @@ async function main() {
     assert.equal(lookups, 2); assert.equal(refreshes, 1);
     console.log('ok - read-only X identity verification can still refresh after explicit 401');
 
-    globalThis.fetch = (async () => new Response('', { status: 201, headers: { 'x-restli-id': 'urn:li:share:123456' } })) as typeof fetch;
+    globalThis.fetch = (async (input, init) => {
+      assert.equal(String(input), 'https://api.linkedin.com/rest/posts');
+      assert.equal(init?.method, 'POST');
+      assert.equal(new Headers(init?.headers).get('LinkedIn-Version'), '202608');
+      const post = JSON.parse(String(init?.body));
+      assert.equal(post.author, config.LINKEDIN_PERSON_URN);
+      assert.equal(post.commentary, 'fixture content');
+      assert.equal(post.visibility, 'PUBLIC');
+      return new Response('', { status: 201, headers: { 'x-restli-id': 'urn:li:share:123456' } });
+    }) as typeof fetch;
     assert.equal(await linkedin.publish('fixture content'), 'urn:li:share:123456');
     globalThis.fetch = (async () => new Response('', { status: 201 })) as typeof fetch;
     await assert.rejects(() => linkedin.publish('fixture content'));
