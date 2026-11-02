@@ -137,7 +137,7 @@ interface UserSourceRow {
 }
 
 type SourceProvider = 'reddit' | 'generic_rss' | 'manual';
-type AcquisitionMode = 'public_json' | 'oauth' | 'rss' | 'devvit' | 'manual';
+type AcquisitionMode = 'authenticated_browser' | 'public_json' | 'oauth' | 'rss' | 'devvit' | 'manual';
 type SourceScope = 'reddit_user' | 'subreddit' | 'reddit_search' | 'generic_rss';
 
 interface SourceIntent {
@@ -649,7 +649,7 @@ function validSourceProvider(value: string | null | undefined): SourceProvider |
 }
 
 function validAcquisitionMode(value: string | null | undefined): AcquisitionMode | '' {
-  return value === 'public_json' || value === 'oauth' || value === 'rss' || value === 'devvit' || value === 'manual'
+  return value === 'authenticated_browser' || value === 'public_json' || value === 'oauth' || value === 'rss' || value === 'devvit' || value === 'manual'
     ? value
     : '';
 }
