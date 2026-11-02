@@ -1,3 +1,4 @@
+import type { ControlledPublish } from './controlled-publish';
 import { managesConnection, connectionCredentialUpdate, loadConnectionSnapshot, withConnectionSnapshot, assertProviderAvailable, assertQueueConnectionReady } from './connection-runtime';
 import type { ConnectionSnapshot } from './connection-lifecycle';
 import { connectionJson } from './connection-http';
@@ -2147,7 +2148,7 @@ function assertSupportedJobKind(kind: string): asserts kind is JobKind {
   }
 }
 
-async function listPendingJobs(): Promise<AgentJobRow[]> {
+async function listPendingJobs(target?: ControlledPublish): Promise<AgentJobRow[]> {
   const policy = rolloutPolicy();
   const allowedUserIds = allowedCanaryUserIds(policy);
   if (allowedUserIds?.length === 0) return [];
@@ -2157,6 +2158,9 @@ async function listPendingJobs(): Promise<AgentJobRow[]> {
   return supabaseSelect<AgentJobRow>('agent_jobs', {
     select: '*',
     filters: [
+      ...(target ? [{ column: 'id', operator: 'eq' as const, value: target.jobId },
+        { column: 'user_id', operator: 'eq' as const, value: target.userId },
+        { column: 'kind', operator: 'eq' as const, value: 'publish_now' }] : []),
       { column: 'status', operator: 'eq', value: 'pending' },
       { column: 'kind', operator: 'in', value: kinds },
       ...(allowedUserIds
@@ -3602,7 +3606,7 @@ async function assertOpenAIRepairAllowedForPublish(
   });
 }
 
-async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: UserSettingsRow): Promise<JsonMap> {
+async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: UserSettingsRow, target?: ControlledPublish): Promise<JsonMap> {
   if (row.user_id !== job.user_id) throw new WorkerJobError('publication_tenant_mismatch');
   assertQueueRevisionNotHeld(row);
   // Reload per item. publish_all must not retain the first item's stale credentials/settings.
@@ -3621,11 +3625,26 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
           throw new PublicationPreflightError('legacy_meta_publication_disabled');
         }
         if (payload.platform === 'facebook') throw new PublicationPreflightError('facebook_paused');
+        if (target) {
+          if (payload.platform !== 'x' || !managesConnection(job.user_id) || Date.now() >= target.expiresAt) {
+            throw new PublicationPreflightError('controlled_publish_scope_mismatch');
+          }
+          // The intent now locks this revision. A later edit cannot replace its payload.
+          const exact = await supabaseSelect<QueueItemRow>('queue_items', { select: 'id', filters: [
+            { column: 'id', operator: 'eq', value: target.queueId },
+            { column: 'user_id', operator: 'eq', value: target.userId },
+            { column: 'connection_generation', operator: 'eq', value: target.generation },
+            { column: 'connection_account_id', operator: 'eq', value: target.accountId },
+            { column: 'connection_approval_hash', operator: 'eq', value: target.approvalHash },
+          ], limit: 1 });
+          if (exact.length !== 1) throw new PublicationPreflightError('controlled_publish_revision_changed');
+        }
         let providerAccountRef: string;
         if (payload.platform === 'x') {
           if (payload.text.trim().length > 280) throw new PublicationPreflightError('x_text_too_long');
           assertProviderAvailable('x', job.user_id);
-    const verification = await x.verifyCredentials();
+          const verification = await x.verifyCredentials();
+          if (target && verification.accountId !== target.accountId) throw new PublicationPreflightError('controlled_publish_account_changed');
           if (managesConnection(job.user_id)) await markXCredentialVerified(job.user_id, verification);
           providerAccountRef = verification.accountId;
         } else {
@@ -3692,7 +3711,7 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
   });
 }
 
-async function handlePublishNow(job: AgentJobRow, tenant: TenantContext): Promise<JsonMap> {
+async function handlePublishNow(job: AgentJobRow, tenant: TenantContext, target?: ControlledPublish): Promise<JsonMap> {
   const queueItemId = requirePayloadId(job.payload, 'queue_item_id');
   const row = (await supabaseSelect<QueueItemRow>('queue_items', {
     select: '*',
@@ -3705,7 +3724,7 @@ async function handlePublishNow(job: AgentJobRow, tenant: TenantContext): Promis
   if (!row) {
     throw new WorkerJobError('queue_item_not_found', 'queue_item_not_found', { queueItemId });
   }
-  return publishQueueRow(job, row, tenant.settings);
+  return publishQueueRow(job, row, tenant.settings, target);
 }
 
 async function handlePublishAll(job: AgentJobRow, tenant: TenantContext): Promise<JsonMap> {
@@ -4798,8 +4817,12 @@ export async function runSupabaseAutomationScheduler(): Promise<SchedulerStats> 
   return stats;
 }
 
-async function handleClaimedJob(job: AgentJobRow): Promise<JsonMap> {
+async function handleClaimedJob(job: AgentJobRow, target?: ControlledPublish): Promise<JsonMap> {
   await assertActiveAgentJob();
+  if (target && (job.id !== target.jobId || job.user_id !== target.userId || job.kind !== 'publish_now'
+    || job.payload?.queue_item_id !== target.queueId || jobOrigin(job) === 'scheduled' || Date.now() >= target.expiresAt)) {
+    throw new WorkerJobError('controlled_publish_job_mismatch');
+  }
   assertSupportedJobKind(job.kind);
   assertRolloutAllowsJob(job.user_id, job.kind);
   await assertTenantEntitlement(job);
@@ -4818,7 +4841,7 @@ async function handleClaimedJob(job: AgentJobRow): Promise<JsonMap> {
       case 'refresh_queue':
         return handleRefreshQueue(job, tenant);
       case 'publish_now':
-        return handlePublishNow(job, tenant);
+        return handlePublishNow(job, tenant, target);
       case 'publish_all':
         return handlePublishAll(job, tenant);
       case 'skip_slot':
@@ -4831,17 +4854,17 @@ async function handleClaimedJob(job: AgentJobRow): Promise<JsonMap> {
   });
 }
 
-export async function processPendingSupabaseJobs(): Promise<WorkerStats> {
+export async function processPendingSupabaseJobs(target?: ControlledPublish): Promise<WorkerStats> {
   const stats: WorkerStats = { claimed: 0, completed: 0, failed: 0 };
   await assertAgentJobsContract();
-  const jobs = await listPendingJobs();
+  const jobs = await listPendingJobs(target);
   for (const pendingJob of jobs) {
     let job: AgentJobRow | null = null;
     try {
       job = await claimJob(pendingJob);
       if (!job) continue;
       stats.claimed++;
-      const result = await withAgentJobLease(job, () => handleClaimedJob(job!));
+      const result = await withAgentJobLease(job, () => handleClaimedJob(job!, target));
       const status = await completeJob(job, result);
       if (status === 'failed') stats.failed++; else stats.completed++;
     } catch (error) {
