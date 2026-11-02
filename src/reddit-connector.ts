@@ -1,5 +1,6 @@
 import * as nodeCrypto from 'node:crypto';
 import config from '../config';
+import { canaryAllowsUser } from './canary-policy';
 import {
   isSupabaseWorkerConfigured,
   supabaseInsert,
@@ -11,6 +12,8 @@ import { processTrustedConnectorSourceRecords } from './browser-collector-ingest
 type JsonRecord = Record<string, unknown>;
 
 export interface RedditConnectorEnv {
+  NODE_ENV?: string;
+  REDDIT_CONNECTOR_CANARY_USER_IDS?: string;
   REDDIT_CONNECTOR_ENABLED?: string;
   REDDIT_CONNECTOR_MAX_POSTS_PER_RUN?: string;
   REDDIT_CONNECTOR_PAIRING_TTL_SECONDS?: string;
@@ -89,6 +92,7 @@ export async function handleRedditConnectorRequest(
   try {
     if (request.method === 'POST' && url.pathname === '/api/connectors/reddit/pairing-code') {
       const userId = await requireSupabaseUserId(request);
+      requireConnectorTenant(userId, env);
       return withCors(request, env, json(await createPairingCode(userId, env)));
     }
 
@@ -100,10 +104,12 @@ export async function handleRedditConnectorRequest(
     if (request.method === 'GET' && url.pathname === '/api/connectors/reddit/status') {
       const connector = await connectorFromRequest(request, env).catch(() => null);
       if (connector) {
+        requireConnectorTenant(connector.user_id, env);
         await touchDevice(connector.id);
         return withCors(request, env, json(safeDeviceStatus(connector)));
       }
       const userId = await requireSupabaseUserId(request);
+      requireConnectorTenant(userId, env);
       return withCors(request, env, json(await userConnectorStatus(userId)));
     }
 
@@ -184,6 +190,7 @@ async function pairConnector(body: JsonRecord, env: RedditConnectorEnv): Promise
   const pairing = rows[0];
   if (!pairing) throw httpError(401, 'invalid_or_expired_pairing_code', 'Pairing code is invalid or expired.');
 
+  requireConnectorTenant(pairing.user_id, env);
   const claimed = await supabaseUpdate<PairingCodeRow>('reddit_connector_pairing_codes', {
     used_at: new Date().toISOString(),
   }, {
@@ -236,6 +243,7 @@ async function userConnectorStatus(userId: string): Promise<JsonRecord> {
 async function requireConnector(request: Request, env: RedditConnectorEnv): Promise<ConnectorDeviceRow> {
   const connector = await connectorFromRequest(request, env);
   if (!connector) throw httpError(401, 'connector_token_invalid', 'Connector token is invalid or revoked.');
+  requireConnectorTenant(connector.user_id, env);
   return connector;
 }
 
@@ -463,8 +471,18 @@ async function readJson(request: Request): Promise<JsonRecord> {
   return parsed as JsonRecord;
 }
 
+export function requireConnectorTenant(userId: string, env: RedditConnectorEnv): void {
+  const ids = env.REDDIT_CONNECTOR_CANARY_USER_IDS;
+  const allowed = canaryAllowsUser({
+    canaryRequired: env.NODE_ENV === 'production' || ids !== undefined,
+    canaryUserIds: new Set((ids ?? '').split(',').map(id => id.trim()).filter(Boolean)),
+  }, userId);
+  if (!allowed) throw httpError(403, 'reddit_connector_tenant_not_enabled',
+    'The Reddit Connector is not enabled for this account.');
+}
+
 function isConnectorEnabled(env: RedditConnectorEnv): boolean {
-  return /^(1|true|yes|on)$/i.test(String(env.REDDIT_CONNECTOR_ENABLED || 'true').trim());
+  return /^(1|true|yes|on)$/i.test(String(env.REDDIT_CONNECTOR_ENABLED || 'false').trim());
 }
 
 function connectorMaxPosts(env: RedditConnectorEnv): number {
