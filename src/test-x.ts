@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   console.log(`X_OAUTH2_REFRESH_TOKEN configured: ${config.X_OAUTH2_REFRESH_TOKEN ? 'yes' : 'no'}`);
   console.log(`X_CLIENT_ID configured: ${config.X_CLIENT_ID ? 'yes' : 'no'}`);
 
-  if (config.X_CLIENT_ID && config.X_CLIENT_SECRET && !config.X_OAUTH2_REFRESH_TOKEN) {
+  if (config.X_CLIENT_ID && !config.X_OAUTH2_REFRESH_TOKEN) {
     console.log(`\nOAuth 2.0 user connect URL: ${new URL('/auth/x/start', config.X_REDIRECT_URI).toString()}`);
   }
 
