@@ -36,7 +36,7 @@ export function allowedCanaryUserIds(policy: RolloutPolicy): string[] | undefine
     .sort();
 }
 
-export function canaryAllowsUser(policy: RolloutPolicy, userId: string): boolean {
+export function canaryAllowsUser(policy: Pick<RolloutPolicy, 'canaryRequired' | 'canaryUserIds'>, userId: string): boolean {
   if (!policy.canaryRequired) return true;
   const normalized = userId.trim().toLowerCase();
   return [...policy.canaryUserIds].some(

@@ -90,3 +90,10 @@ function main(): void {
 }
 
 main();
+
+// Connector rollout is independent of generation and provider dispatch.
+import { requireConnectorTenant } from '../src/reddit-connector';
+const enabledConnector = { NODE_ENV: 'production', REDDIT_CONNECTOR_CANARY_USER_IDS: 'tenant-a' };
+assert.doesNotThrow(() => requireConnectorTenant('tenant-a', enabledConnector));
+assert.throws(() => requireConnectorTenant('tenant-b', enabledConnector), /not enabled for this account/);
+assert.throws(() => requireConnectorTenant('tenant-a', { NODE_ENV: 'production' }), /not enabled for this account/);
