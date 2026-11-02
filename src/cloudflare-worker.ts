@@ -1,3 +1,4 @@
+import { parseControlledPublish } from './controlled-publish';
 import { handleWorkerReadiness } from './worker-readiness';
 import { withOperatorControls } from './worker-operator-controls';
 import { createExclusiveRunGate } from './exclusive-run-gate';
@@ -173,6 +174,18 @@ async function executeScheduledTick(env: Env): Promise<Response> {
       import('./logger'),
     ]);
 
+    if (env.CONTROLLED_PUBLISH !== undefined) {
+      if (typeof env.CONTROLLED_PUBLISH !== 'string') throw Error('controlled_publish_invalid');
+      const target = parseControlledPublish(env.CONTROLLED_PUBLISH);
+      if (env.SUPABASE_WORKER_CANARY_REQUIRED !== 'true' || env.CONNECTION_LIFECYCLE_CANARY_USER_IDS !== target.userId
+        || env.SUPABASE_WORKER_GENERATION_ENABLED !== 'false' || env.SUPABASE_PROVIDER_DISPATCH_ENABLED !== 'false') {
+        throw Error('controlled_publish_rollout_mismatch');
+      }
+      // This overlay lasts only for this authenticated call. Normal traffic and Cron stay paused.
+      config.SUPABASE_WORKER_CANARY_USER_IDS = new Set([target.userId]);
+      config.SUPABASE_PROVIDER_DISPATCH_ENABLED = true;
+      return Response.json({ ok: true, stats: await processPendingSupabaseJobs(target) });
+    }
     const schedulerStats = await runSupabaseAutomationScheduler();
     const stats = await processPendingSupabaseJobs();
     logger.info(
@@ -191,6 +204,7 @@ function runScheduledTick(env: Env): Promise<Response> {
 
 export default withOperatorControls({
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (env.CONTROLLED_PUBLISH !== undefined) return;
     ctx.waitUntil(runScheduledTick(env));
   },
 
@@ -218,7 +232,7 @@ export default withOperatorControls({
     }
 
     if (url.pathname === '/tick' && request.method === 'POST') {
-      const token = env.WORKER_TICK_TOKEN;
+      const token = env.CONTROLLED_PUBLISH === undefined ? env.WORKER_TICK_TOKEN : env.CONTROLLED_PUBLISH_TOKEN;
       if (!token || request.headers.get('Authorization') !== `Bearer ${token}`) {
         return new Response('Not found', { status: 404 });
       }

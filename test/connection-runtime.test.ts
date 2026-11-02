@@ -1,3 +1,4 @@
+import { parseControlledPublish } from '../src/controlled-publish';
 import { refreshOAuth2AccessToken } from "../src/x";
 import assert from 'node:assert/strict';
 import { test, afterEach } from 'node:test';
@@ -136,5 +137,15 @@ test('owner-only rollout checks the owner binding and leaves other tenants on th
     assert.equal(calls.length, 1);
   } finally {
     config.CONNECTION_LIFECYCLE_CANARY_USER_IDS = previous;
+  }
+});
+
+test('controlled publish requires a precise, short-lived grant', () => {
+  const target = { jobId: user, userId: other, queueId: user, approvalHash: 'a'.repeat(64),
+    accountId: '12345', generation: 1, expiresAt: Date.now() + 30_000 };
+  assert.deepEqual(parseControlledPublish(JSON.stringify(target)), target);
+  for (const patch of [{expiresAt: Date.now()-1}, {expiresAt: Date.now()+3_600_000}, {queueId: '*'},
+    {approvalHash: ''}, {accountId: ''}, {generation: 0}]) {
+    assert.throws(() => parseControlledPublish(JSON.stringify({...target, ...patch})));
   }
 });
