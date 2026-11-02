@@ -1743,7 +1743,7 @@ function platformWarnings(tenant: TenantContext): string[] {
   if (
     tenant.activePlatforms.includes('x')
     && tenant.credentials.xOAuth2AccessToken
-    && (!tenant.credentials.xOAuth2RefreshToken || !tenant.credentials.xClientId || !tenant.credentials.xClientSecret)
+    && (!tenant.credentials.xOAuth2RefreshToken || !tenant.credentials.xClientId)
   ) {
     warnings.push('X OAuth2 credentials are stored but not refreshable. Reconnect X with client credentials and a refresh token.');
   }

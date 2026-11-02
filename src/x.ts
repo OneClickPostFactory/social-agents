@@ -84,7 +84,7 @@ function hasOAuth2Config(): boolean {
 }
 
 function hasOAuth2RefreshConfig(): boolean {
-  return Boolean(config.X_CLIENT_ID && config.X_CLIENT_SECRET && config.X_OAUTH2_REFRESH_TOKEN);
+  return Boolean(config.X_CLIENT_ID && config.X_OAUTH2_REFRESH_TOKEN);
 }
 
 function validateOAuth2ClientId(): void {
@@ -157,17 +157,6 @@ function getOAuth2AccessToken(): string {
     throw new Error('X_OAUTH2_ACCESS_TOKEN not set');
   }
   return config.X_OAUTH2_ACCESS_TOKEN;
-}
-
-function getOAuth2ClientBasicAuth(): string {
-  if (!config.X_CLIENT_ID || !config.X_CLIENT_SECRET) {
-    throw new Error('X_CLIENT_ID and X_CLIENT_SECRET are required for X OAuth 2.0 token exchange');
-  }
-  validateOAuth2ClientId();
-
-  return 'Basic ' + Buffer
-    .from(`${config.X_CLIENT_ID}:${config.X_CLIENT_SECRET}`)
-    .toString('base64');
 }
 
 function getOAuth1Header(method: 'GET' | 'POST', path: string): string {
@@ -533,12 +522,16 @@ async function requestOAuth2Token(body: URLSearchParams): Promise<XOAuth2TokenSe
 function requestOAuth2TokenRequest(
   body: URLSearchParams
 ): Promise<{ status: number; data: XOAuth2TokenResponse }> {
+  validateOAuth2ClientId();
+  const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  if (config.X_CLIENT_SECRET) {
+    headers.Authorization = 'Basic ' + Buffer.from(`${config.X_CLIENT_ID}:${config.X_CLIENT_SECRET}`).toString('base64');
+  } else {
+    body.set('client_id', config.X_CLIENT_ID);
+  }
   return requestJson<XOAuth2TokenResponse>('https://api.x.com/2/oauth2/token', {
     method: 'POST',
-    headers: {
-      'Authorization': getOAuth2ClientBasicAuth(),
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
+    headers,
     body: body.toString(),
     timeoutMs: config.HTTP_TIMEOUT_MS,
   });

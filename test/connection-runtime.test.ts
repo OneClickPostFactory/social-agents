@@ -1,3 +1,4 @@
+import { refreshOAuth2AccessToken } from "../src/x";
 import assert from 'node:assert/strict';
 import { test, afterEach } from 'node:test';
 import config from '../config';
@@ -94,3 +95,28 @@ test('authenticated readiness conditionally proves the complete connection schem
  };
  assert.equal((await handleWorkerReadiness(req,env,f)).status,200);assert.equal(names.length,4);assert.ok(!names.includes('capture_connection_snapshot'));
 });
+
+for (const secret of ['', 'fixture-secret']) {
+  test(`X refresh uses ${secret ? 'confidential' : 'public'} client authentication`, async () => {
+    const previous = { X_CLIENT_ID: config.X_CLIENT_ID, X_CLIENT_SECRET: config.X_CLIENT_SECRET };
+    try {
+      Object.assign(config, { X_CLIENT_ID: 'fixture-id', X_CLIENT_SECRET: secret });
+      let calls = 0;
+      globalThis.fetch = async (url, options) => {
+        calls++;
+        assert.equal(String(url), 'https://api.x.com/2/oauth2/token');
+        const body = new URLSearchParams(String(options?.body));
+        assert.equal(body.get('client_id'), secret ? null : 'fixture-id');
+        assert.equal(body.get('grant_type'), 'refresh_token');
+        assert.equal(body.get('refresh_token'), 'fixture-refresh');
+        assert.equal(new Headers(options?.headers).get('Authorization'),
+          secret ? 'Basic ' + Buffer.from('fixture-id:' + secret).toString('base64') : null);
+        return Response.json({ access_token: 'renewed' });
+      };
+      assert.equal((await refreshOAuth2AccessToken('fixture-refresh')).accessToken, 'renewed');
+      assert.equal(calls, 1);
+    } finally {
+      Object.assign(config, previous);
+    }
+  });
+}
