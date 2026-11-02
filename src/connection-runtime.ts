@@ -60,8 +60,11 @@ export const connectionRpc: ConnectionRpc = async (name, params, retrySafe) => {
     throw Error('connection_changed_or_unverified');
   }
 };
+export function managesConnection(userId: string): boolean {
+  return config.CONNECTION_LIFECYCLE_ENABLED || config.CONNECTION_LIFECYCLE_CANARY_USER_IDS.has(userId);
+}
 export async function loadConnectionSnapshot(userId: string): Promise<ConnectionSnapshot> {
-  if (!config.CONNECTION_LIFECYCLE_ENABLED) throw Error('connection_lifecycle_disabled');
+  if (!managesConnection(userId)) throw Error('connection_lifecycle_disabled');
   const c = await connectionRpc('get_connection_generation_contract', {}, false) as Record<string,unknown>;
   if (!c || c.contract !== 'connection-generations-v1' || c.migration !== '20261001154000'
     || !Array.isArray(c.capabilities) || !CONNECTION_CAPABILITIES.every(x => (c.capabilities as unknown[]).includes(x)))
@@ -76,14 +79,15 @@ export function currentConnectionSession(userId?: string): ConnectionSession {
   if (!session || (userId !== undefined && session.snapshot.user_id !== userId)) throw Error('connection_scope_missing_or_wrong_owner');
   return session;
 }
-export function assertProviderAvailable(provider: ConnectionProvider): void {
-  if (config.CONNECTION_LIFECYCLE_ENABLED) currentConnectionSession().assertAvailable(provider);
+export function assertProviderAvailable(provider: ConnectionProvider, userId?: string): void {
+  if (config.CONNECTION_LIFECYCLE_ENABLED || scope.getStore() || (userId && managesConnection(userId))) currentConnectionSession(userId).assertAvailable(provider);
 }
 export async function connectionCredentialUpdate<T>(table: string, patch: Record<string, unknown>, options: SupabaseMutationOptions): Promise<T[]> {
   if (table !== 'user_credentials') throw Error('connection_table_invalid');
-  if (!config.CONNECTION_LIFECYCLE_ENABLED) return supabaseUpdate<T>(table,patch,options);
+  if (!config.CONNECTION_LIFECYCLE_ENABLED && !config.CONNECTION_LIFECYCLE_CANARY_USER_IDS.size && !scope.getStore()) return supabaseUpdate<T>(table,patch,options);
   const f=options.filters;
   if (!f || f.length!==1 || f[0].column!=='user_id' || f[0].operator!=='eq' || typeof f[0].value!=='string') throw Error('connection_owner_required');
+  if (!managesConnection(f[0].value) && !scope.getStore()) return supabaseUpdate<T>(table,patch,options);
   const session=currentConnectionSession(f[0].value);
   const prefixes=new Set(Object.keys(patch).map(k=>k.split('_')[0]));
   if (prefixes.size!==1) throw Error('connection_mixed_provider_patch');
@@ -101,7 +105,7 @@ export async function connectionCredentialUpdate<T>(table: string, patch: Record
 }
 
 export async function assertQueueConnectionReady(userId:string,queueId:string):Promise<void> {
-  if(!config.CONNECTION_LIFECYCLE_ENABLED)return;
+  if(!managesConnection(userId))return;
   const r=await connectionRpc('check_queue_connection_binding',{p_user_id:userId,p_queue_id:queueId},true) as Record<string,unknown>;
   if(!r || r.schema!=='ocpf.queue-connection-binding.v1'||r.user_id!==userId||r.queue_id!==queueId
     || !['bound','existing_intent'].includes(String(r.state))) throw Error('connection_changed_review_destination_before_publish');

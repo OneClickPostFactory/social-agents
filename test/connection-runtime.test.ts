@@ -120,3 +120,21 @@ for (const secret of ['', 'fixture-secret']) {
     }
   });
 }
+
+test('owner-only rollout checks the owner binding and leaves other tenants on their existing path', async () => {
+  const previous = config.CONNECTION_LIFECYCLE_CANARY_USER_IDS;
+  try {
+    config.CONNECTION_LIFECYCLE_ENABLED = false;
+    config.CONNECTION_LIFECYCLE_CANARY_USER_IDS = new Set([user]);
+    const calls = mock((_name, params) => Response.json({
+      schema: 'ocpf.queue-connection-binding.v1', user_id: params.p_user_id,
+      queue_id: params.p_queue_id, state: 'review_required',
+    }));
+    await assertQueueConnectionReady(other, user);
+    assert.equal(calls.length, 0);
+    await assert.rejects(assertQueueConnectionReady(user, other), /review_destination/);
+    assert.equal(calls.length, 1);
+  } finally {
+    config.CONNECTION_LIFECYCLE_CANARY_USER_IDS = previous;
+  }
+});

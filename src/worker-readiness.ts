@@ -5,6 +5,7 @@ import { timingSafeEqual } from 'node:crypto';
 export interface ReadinessEnv {
   WORKER_TICK_TOKEN?: string;
   CONNECTION_LIFECYCLE_ENABLED?: string;
+  CONNECTION_LIFECYCLE_CANARY_USER_IDS?: string;
   SUPABASE_URL?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
   SUPABASE_SECRET_KEY?: string;
@@ -131,7 +132,7 @@ export async function handleWorkerReadiness(
   request.signal.addEventListener('abort', abort, { once: true });
   const timeout = setTimeout(abort, TIMEOUT_MS);
   try {
-    const dependencies = await Promise.all([...READINESS_CONTRACTS,...(env.CONNECTION_LIFECYCLE_ENABLED === 'true'?[CONNECTION_READINESS_CONTRACT]:[])].map(async expected => {
+    const dependencies = await Promise.all([...READINESS_CONTRACTS,...((env.CONNECTION_LIFECYCLE_ENABLED === 'true' || env.CONNECTION_LIFECYCLE_CANARY_USER_IDS?.trim())?[CONNECTION_READINESS_CONTRACT]:[])].map(async expected => {
       let response: Response | undefined;
       try {
         // workerd rejects redirect:error before transport. manual plus the exact

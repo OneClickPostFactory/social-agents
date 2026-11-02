@@ -1,4 +1,4 @@
-import { connectionCredentialUpdate, loadConnectionSnapshot, withConnectionSnapshot, assertProviderAvailable, assertQueueConnectionReady } from './connection-runtime';
+import { managesConnection, connectionCredentialUpdate, loadConnectionSnapshot, withConnectionSnapshot, assertProviderAvailable, assertQueueConnectionReady } from './connection-runtime';
 import type { ConnectionSnapshot } from './connection-lifecycle';
 import { connectionJson } from './connection-http';
 import { AgentJobOwnershipLostError, assertAgentJobsContract, assertActiveAgentJob, claimAgentJob, enqueueScheduledAgentJob, finishAgentJob, scheduledOperationKey, withAgentJobLease, type AgentJobRow } from './agent-jobs';
@@ -1665,7 +1665,7 @@ async function loadTenantContext(userId: string): Promise<TenantContext> {
     limit: 1,
   }))[0] || {};
 
-  const connectionSnapshot = config.CONNECTION_LIFECYCLE_ENABLED ? await loadConnectionSnapshot(userId) : undefined;
+  const connectionSnapshot = managesConnection(userId) ? await loadConnectionSnapshot(userId) : undefined;
   const credentialRow = connectionSnapshot ? connectionSnapshot.credentials as TenantCredentialRow : (await supabaseSelect<TenantCredentialRow>('user_credentials', {
     select: '*', filters: [{ column: 'user_id', operator: 'eq', value: userId }], limit: 1,
   }))[0];
@@ -1803,7 +1803,7 @@ async function markXCredentialFailure(userId: string, error: unknown): Promise<v
 
 async function verifyXCredentialForPublish(userId: string): Promise<x.XSafeAuthMode> {
   try {
-    assertProviderAvailable('x');
+    assertProviderAvailable('x', userId);
     const verification = await x.verifyCredentials();
     await markXCredentialVerified(userId, verification);
     return verification.authMode;
@@ -1815,7 +1815,7 @@ async function verifyXCredentialForPublish(userId: string): Promise<x.XSafeAuthM
 
 async function prepareThreadsCredentialForPublish(userId: string): Promise<void> {
   try {
-    assertProviderAvailable('threads');
+    assertProviderAvailable('threads', userId);
     const preparation = await threads.prepareAccessTokenForPublish();
     await connectionCredentialUpdate('user_credentials', {
       threads_verified_at: nowIso(),
@@ -1851,7 +1851,7 @@ async function prepareThreadsCredentialForPublish(userId: string): Promise<void>
 }
 
 async function refreshLinkedInCredentialForPublish(userId: string): Promise<void> {
-  assertProviderAvailable('linkedin');
+  assertProviderAvailable('linkedin', userId);
   if (!linkedin.shouldRefreshAccessToken()) return;
 
   try {
@@ -2026,7 +2026,7 @@ function tenantCloudinaryFolder(baseFolder: string, userId: string): string {
 }
 
 async function withTenantRuntime<T>(tenant: TenantContext, fn: () => Promise<T>): Promise<T> {
-  if (config.CONNECTION_LIFECYCLE_ENABLED) {
+  if (managesConnection(tenant.userId)) {
     if (!tenant.connectionSnapshot) throw Error('connection_snapshot_required');
     return withConnectionSnapshot(tenant.connectionSnapshot, () => withTenantRuntimeImpl(tenant, fn));
   }
@@ -2105,7 +2105,7 @@ async function withTenantRuntimeImpl<T>(tenant: TenantContext, fn: () => Promise
       expiresAtUpdated: Boolean(expiresAt),
     });
   });
-  config.OPENAI_API_KEY = tenant.credentials.openaiApiKey || (config.CONNECTION_LIFECYCLE_ENABLED ? '' : previous.OPENAI_API_KEY) || '';
+  config.OPENAI_API_KEY = tenant.credentials.openaiApiKey || (managesConnection(tenant.userId) ? '' : previous.OPENAI_API_KEY) || '';
   config.OPENAI_MODEL = tenant.settings.ai_model || 'gpt-4o-mini';
   config.OPENAI_IMAGE_MODEL = previous.OPENAI_IMAGE_MODEL || config.OPENAI_IMAGE_MODEL || 'gpt-image-2';
   config.CLOUDINARY_FOLDER = tenantCloudinaryFolder(previous.CLOUDINARY_FOLDER || config.CLOUDINARY_FOLDER, tenant.userId);
@@ -3624,16 +3624,16 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
         let providerAccountRef: string;
         if (payload.platform === 'x') {
           if (payload.text.trim().length > 280) throw new PublicationPreflightError('x_text_too_long');
-          assertProviderAvailable('x');
+          assertProviderAvailable('x', job.user_id);
     const verification = await x.verifyCredentials();
-          if (config.CONNECTION_LIFECYCLE_ENABLED) await markXCredentialVerified(job.user_id, verification);
+          if (managesConnection(job.user_id)) await markXCredentialVerified(job.user_id, verification);
           providerAccountRef = verification.accountId;
         } else {
           if (!config.LINKEDIN_TOKEN || !config.LINKEDIN_PERSON_URN) {
             throw new PublicationPreflightError('linkedin_not_connected');
           }
           await refreshLinkedInCredentialForPublish(job.user_id);
-          if (config.CONNECTION_LIFECYCLE_ENABLED) {
+          if (managesConnection(job.user_id)) {
             const me = await connectionJson('https://api.linkedin.com/v2/userinfo', { headers:{Authorization:`Bearer ${config.LINKEDIN_TOKEN}`} });
             if (typeof me.sub !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(me.sub)
               || `urn:li:person:${me.sub}` !== config.LINKEDIN_PERSON_URN) throw new PublicationPreflightError('linkedin_account_mismatch');
