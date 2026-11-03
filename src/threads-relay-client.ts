@@ -6,13 +6,17 @@ export async function connectThreadsRelay(target: ControlledPublish, endpoint: s
       url.pathname !== '/threads' || bearer.length < 32 || target.platform !== 'threads') throw Error('invalid_threads_relay');
   async function call(action: 'ready' | 'publish', text?: string) {
     if (Date.now() >= target.expiresAt) throw Error('controlled_publish_expired');
-    const response = await fetch(url, { method: 'POST', redirect: 'error', cache: 'no-store',
-      headers: { Authorization: 'Bearer ' + bearer, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, target, text }), signal: AbortSignal.timeout(action === 'ready' ? 15000 : 135000) });
-    if (!response.ok) throw Error('threads_relay_http_' + response.status);
-    const result = await response.json() as { accountId?: string; jobId?: string; externalPostId?: string };
-    if (result.accountId !== target.accountId || result.jobId !== target.jobId) throw Error('threads_relay_scope_mismatch');
-    return result;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), action === 'ready' ? 15000 : 135000);
+    try {
+      const response = await fetch(url.toString(), { method: 'POST', redirect: 'manual',
+        headers: { Authorization: 'Bearer ' + bearer, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, target, text }), signal: controller.signal });
+      if (!response.ok) throw Error('threads_relay_http_' + response.status);
+      const result = await response.json() as { accountId?: string; jobId?: string; externalPostId?: string };
+      if (result.accountId !== target.accountId || result.jobId !== target.jobId) throw Error('threads_relay_scope_mismatch');
+      return result;
+    } finally { clearTimeout(timer); }
   }
   await call('ready');
   return async (text: string) => {
