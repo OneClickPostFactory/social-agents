@@ -29,3 +29,33 @@ test('lost publication response stays unconfirmed, never retries', async () => {
   }), /connection_lost/);
   assert.equal(calls, 3);
 });
+
+test('account verification failure never creates a container', async () => {
+  let calls = 0;
+  await assert.rejects(publishThreadsCloud(input, async () => { calls++; return new Response('{}', { status: 401 }); }), /account_unverified/);
+  assert.equal(calls, 1);
+});
+test('failed container creation never calls publish', async () => {
+  let calls = 0;
+  await assert.rejects(publishThreadsCloud(input, async () => {
+    calls++;
+    return calls === 1 ? new Response('{"id":"123"}') : new Response('{}', { status: 400 });
+  }), /container_unconfirmed/);
+  assert.equal(calls, 2);
+});
+test('provider receipt mismatch never confirms success', async () => {
+  let calls = 0;
+  await assert.rejects(publishThreadsCloud(input, async () => {
+    calls++;
+    return new Response(JSON.stringify({ id: ['123', '456', '789', '790'][calls - 1] }));
+  }), /readback_unconfirmed/);
+  assert.equal(calls, 4);
+});
+test('failed publish is fenced without retry', async () => {
+  let calls = 0;
+  await assert.rejects(publishThreadsCloud(input, async () => {
+    calls++;
+    return calls === 3 ? new Response('{}', { status: 503 }) : new Response(JSON.stringify({ id: calls === 1 ? '123' : '456' }));
+  }), /publication_unconfirmed/);
+  assert.equal(calls, 3);
+});
