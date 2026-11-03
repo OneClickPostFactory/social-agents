@@ -251,6 +251,11 @@ export default withOperatorControls({
       if (env.CONTROLLED_PUBLISH !== undefined && new URL(request.url).searchParams.get('check') === 'relay') {
         try {
           const target = parseControlledPublish(String(env.CONTROLLED_PUBLISH));
+          if (env.THREADS_CLOUD_NATIVE_ENABLED === 'true') {
+            // Read-only probe: proves the cloud credential binding exists without
+            // executing a job, decrypting a tenant token, or contacting Threads.
+            return Response.json({ ready: Boolean(env.CREDENTIAL_ENCRYPTION_KEY), mode: 'cloud', credentialBindingPresent: Boolean(env.CREDENTIAL_ENCRYPTION_KEY), providerAuthentication: 'not_checked' });
+          }
           const { connectThreadsRelay } = await import('./threads-relay-client');
           await connectThreadsRelay(target, String(env.THREADS_RELAY_ENDPOINT || ''), String(env.THREADS_RELAY_TOKEN || ''));
           return Response.json({ ready: true });
