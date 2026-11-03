@@ -184,6 +184,14 @@ async function executeScheduledTick(env: Env): Promise<Response> {
       // This overlay lasts only for this authenticated call. Normal traffic and Cron stay paused.
       config.SUPABASE_WORKER_CANARY_USER_IDS = new Set([target.userId]);
       config.SUPABASE_PROVIDER_DISPATCH_ENABLED = true;
+      if (target.platform === 'threads') {
+        if (typeof env.THREADS_RELAY_ENDPOINT !== 'string' || typeof env.THREADS_RELAY_TOKEN !== 'string') {
+          throw Error('controlled_threads_transport_missing');
+        }
+        const { connectThreadsRelay } = await import('./threads-relay-client');
+        const sendThreads = await connectThreadsRelay(target, env.THREADS_RELAY_ENDPOINT, env.THREADS_RELAY_TOKEN);
+        return Response.json({ ok: true, stats: await processPendingSupabaseJobs({ ...target, sendThreads }) });
+      }
       return Response.json({ ok: true, stats: await processPendingSupabaseJobs(target) });
     }
     const schedulerStats = await runSupabaseAutomationScheduler();
@@ -235,6 +243,19 @@ export default withOperatorControls({
       const token = env.CONTROLLED_PUBLISH === undefined ? env.WORKER_TICK_TOKEN : env.CONTROLLED_PUBLISH_TOKEN;
       if (!token || request.headers.get('Authorization') !== `Bearer ${token}`) {
         return new Response('Not found', { status: 404 });
+      }
+      if (env.CONTROLLED_PUBLISH !== undefined && new URL(request.url).searchParams.get('check') === 'relay') {
+        try {
+          const target = parseControlledPublish(String(env.CONTROLLED_PUBLISH));
+          const { connectThreadsRelay } = await import('./threads-relay-client');
+          await connectThreadsRelay(target, String(env.THREADS_RELAY_ENDPOINT || ''), String(env.THREADS_RELAY_TOKEN || ''));
+          return Response.json({ ready: true });
+        } catch (error) {
+          const e = error as Error;
+          const code = /^(controlled_publish_invalid_or_expired|invalid_threads_relay|threads_relay_(http_[0-9]{3}|scope_mismatch))$/.test(e.message)
+            ? e.message : e.name;
+          return Response.json({ ready: false, code }, { status: 503 });
+        }
       }
       return runScheduledTick(env);
     }

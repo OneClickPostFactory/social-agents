@@ -17,10 +17,11 @@ export interface ProviderAcceptance {
 export interface PreparedPublication {
   providerAccountRef: string;
   // Exactly one provider write. Refresh/identity checks belong in prepare(), not send().
-  send(): Promise<ProviderAcceptance>;
+  send(attempt: Readonly<ledger.PublicationAttempt>): Promise<ProviderAcceptance>;
 }
 
 export interface PublicationHooks {
+  controlledThreadsRelay?: boolean;
   prepare(payload: Readonly<ledger.PublicationPayload>): Promise<PreparedPublication>;
   afterAccepted?(attempt: ledger.PublicationAttempt, payload: Readonly<ledger.PublicationPayload>): Promise<void>;
 }
@@ -200,7 +201,7 @@ export async function executePublication(
   if (existing) return existing;
   // This executor is hosted-only. Do not claim/freeze unavailable provider media,
   // refresh credentials, or spend on generation merely to rediscover retirement.
-  if (target.platform === 'threads' || target.platform === 'instagram') {
+  if ((target.platform === 'threads' && !hooks.controlledThreadsRelay) || target.platform === 'instagram') {
     return result(target, 'blocked', 'legacy_meta_publication_disabled', state);
   }
   if (target.platform === 'facebook') return result(target, 'blocked', 'facebook_paused', state);
@@ -263,7 +264,7 @@ export async function executePublication(
 
   let acceptance: ProviderAcceptance;
   try {
-    acceptance = await prepared.send();
+    acceptance = await prepared.send(Object.freeze({ ...attempt }));
     if (typeof acceptance.externalPostId !== 'string' || !acceptance.externalPostId.trim()
       || acceptance.externalPostId === 'posted') throw new Error('provider receipt missing');
   } catch (error) {
