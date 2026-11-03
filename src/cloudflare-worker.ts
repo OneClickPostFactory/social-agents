@@ -74,8 +74,8 @@ function canonicalGitSha(versionTag: string | undefined): string | null {
 function publicationCapabilities(): Record<string, { state: string; code: string }> {
   return {
     threads: {
-      state: 'unavailable',
-      code: 'legacy_meta_publication_disabled',
+      state: 'controlled_only',
+      code: 'owner_approved_job_required',
     },
     instagram: {
       state: 'unavailable',
