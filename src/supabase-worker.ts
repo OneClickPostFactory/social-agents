@@ -517,6 +517,7 @@ interface SourceRecordRow {
   content_hash?: string | null;
   status?: string | null;
   source_text?: string | null;
+  current_revision_id?: string | null;
 }
 
 const PROCESSABLE_SOURCE_RECORD_ORIGINS = [
@@ -529,14 +530,13 @@ function isProcessableSourceRecordOrigin(origin: string | null | undefined): boo
 }
 
 function isProcessableSourceRecordForAngleExtraction(
-  record: Pick<SourceRecordRow, 'origin' | 'status' | 'used' | 'source_text' | 'url'>,
-  sourceUrlsWithAngles: Set<string>
+  record: Pick<SourceRecordRow, 'origin' | 'status' | 'used' | 'source_text' | 'url'>
 ): boolean {
   return isProcessableSourceRecordOrigin(record.origin)
     && record.status === 'banked'
     && record.used === false
     && String(record.source_text || '').trim().length > 0
-    && !sourceUrlsWithAngles.has(record.url);
+    && Boolean(record.url);
 }
 
 const SUPPORTED_JOB_KINDS = new Set<JobKind>([
@@ -1903,7 +1903,7 @@ async function createPipelineSummary(
 ): Promise<PipelineSummary> {
   const entitlement = await loadEntitlement(job.user_id);
   const enabledSources = sources.filter(source => source.enabled);
-  const activeAngles = await supabaseSelect<AngleRecordRow>('angle_records', {
+  const activeAngles = await supabaseSelect<AngleRecordRow>('current_source_angle_records', {
     select: 'id,status,intended_platform,source_reddit_post_id,source_url,subreddit,reddit_author',
     filters: [
       { column: 'user_id', operator: 'eq', value: job.user_id },
@@ -2417,13 +2417,20 @@ async function loadActiveSlotOccupancy(userId: string, timeZone: string): Promis
   return buildPlatformSlotOccupancy(await loadActiveQueueRows(userId), timeZone);
 }
 
-async function loadSourceUrlsWithAngles(userId: string): Promise<Set<string>> {
-  const rows = await supabaseSelect<{ source_url?: string | null }>('angle_records', {
-    select: 'source_url',
-    filters: [{ column: 'user_id', operator: 'eq', value: userId }],
-    limit: 5000,
+async function loadProcessableSourceRecords(userId: string, limit = 10): Promise<SourceRecordRow[]> {
+  // The database filters completed current snapshots before LIMIT. Historical
+  // angles for the same URL must not hide an edited source or starve later rows.
+  return supabaseSelect<SourceRecordRow>('processable_source_records', {
+    select: 'id,user_id,url,title,origin,score,used,fetched_at,created_at,updated_at,reddit_post_id,subreddit,reddit_author,content_hash,status,source_text,current_revision_id',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'origin', operator: 'in', value: [...PROCESSABLE_SOURCE_RECORD_ORIGINS] },
+      { column: 'status', operator: 'eq', value: 'banked' },
+      { column: 'used', operator: 'eq', value: false },
+    ],
+    order: 'created_at.asc',
+    limit,
   });
-  return new Set(rows.map(row => row.source_url || '').filter(Boolean));
 }
 
 async function loadExistingSourceRecordsByUrl(
@@ -2449,26 +2456,15 @@ async function processBankedSourceRecords(
   occupiedSlots: PlatformSlotOccupancy,
   timeZone: string,
   summary: PipelineSummary,
-  openAIActivityLogsToday: WorkerLogRow[],
-  sourceUrlsWithAngles: Set<string>
+  openAIActivityLogsToday: WorkerLogRow[]
 ): Promise<{ banked: number; queued: number }> {
-  const records = await supabaseSelect<SourceRecordRow>('source_records', {
-    select: 'id,user_id,url,title,origin,score,used,fetched_at,created_at,updated_at,reddit_post_id,subreddit,reddit_author,content_hash,status,source_text',
-    filters: [
-      { column: 'user_id', operator: 'eq', value: job.user_id },
-      { column: 'origin', operator: 'in', value: [...PROCESSABLE_SOURCE_RECORD_ORIGINS] },
-      { column: 'status', operator: 'eq', value: 'banked' },
-      { column: 'used', operator: 'eq', value: false },
-    ],
-    order: 'created_at.asc',
-    limit: 10,
-  });
+  const records = await loadProcessableSourceRecords(job.user_id);
 
   let banked = 0;
   let queued = 0;
 
   for (const candidate of records) {
-    if (!isProcessableSourceRecordForAngleExtraction(candidate, sourceUrlsWithAngles)) continue;
+    if (!isProcessableSourceRecordForAngleExtraction(candidate)) continue;
 
     let record: workerClaims.SourceRecordClaim | undefined;
     try {
@@ -2515,6 +2511,7 @@ async function processBankedSourceRecords(
     await writeWorkerLog(job.user_id, 'info', 'source_record_selected_for_angle_extraction', {
       jobId: job.id,
       sourceRecordId: record.id,
+      sourceRevisionId: record.current_revision_id,
       origin: record.origin || null,
       source_url_host: safeUrlHost(record.url),
       claimVersion: record.claim_version,
@@ -2615,17 +2612,19 @@ async function processBankedSourceRecords(
     }
 
     const committedCount = Math.max(0, Number(committed.total_count || 0));
+    const insertedCount = Math.min(committedCount, Math.max(0, Number(committed.inserted_count || 0)));
     banked += committedCount;
-    summary.angles.created += committedCount;
-    summary.angles.alreadyExisting += Math.max(0, angleRows.length - committedCount);
+    summary.angles.created += insertedCount;
+    summary.angles.alreadyExisting += committedCount - insertedCount;
     if (!committedCount) summary.sources.withoutAngles++;
-    sourceUrlsWithAngles.add(record.url);
 
     await writeWorkerLog(job.user_id, 'info', 'source_record_banked_angles', {
       jobId: job.id,
       sourceRecordId: record.id,
+      sourceRevisionId: record.current_revision_id,
       origin: record.origin || null,
       angleCount: committedCount,
+      insertedAngleCount: insertedCount,
       claimVersion: record.claim_version,
     });
 
@@ -2640,7 +2639,7 @@ async function processBankedSourceRecords(
 }
 
 async function hasActiveBankedAngles(userId: string): Promise<boolean> {
-  const rows = await supabaseSelect<{ id: string }>('angle_records', {
+  const rows = await supabaseSelect<{ id: string }>('current_source_angle_records', {
     select: 'id',
     filters: [
       { column: 'user_id', operator: 'eq', value: userId },
@@ -2671,7 +2670,7 @@ async function loadQueuedAnglePlatformKeys(userId: string, angleIds: string[]): 
 
 async function refreshPipelineInventory(job: AgentJobRow, summary: PipelineSummary): Promise<void> {
   const [angles, queue] = await Promise.all([
-    supabaseSelect<{ status?: string | null }>('angle_records', {
+    supabaseSelect<{ status?: string | null }>('current_source_angle_records', {
       select: 'status',
       filters: [{ column: 'user_id', operator: 'eq', value: job.user_id }],
       limit: 1000,
@@ -3084,7 +3083,7 @@ async function queueFromBankedAngles(
     : tenant.activePlatforms;
   if (plannedLocalDate && !plannedPlatforms.length) return result;
 
-  const angles = await supabaseSelect<AngleRecordRow>('angle_records', {
+  const angles = await supabaseSelect<AngleRecordRow>('current_source_angle_records', {
     select: '*',
     filters: [
       { column: 'user_id', operator: 'eq', value: job.user_id },
@@ -3497,15 +3496,13 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     });
   }
 
-  const sourceUrlsWithAngles = await loadSourceUrlsWithAngles(job.user_id);
   const sourceRecordResult = await processBankedSourceRecords(
     job,
     tenant,
     occupiedSlots,
     timeZone,
     summary,
-    openAIActivityLogsToday,
-    sourceUrlsWithAngles
+    openAIActivityLogsToday
   );
   queued += sourceRecordResult.queued;
   if (sourceRecordResult.banked > 0 || queued > 0) {
@@ -3915,7 +3912,7 @@ async function hasPendingOrRunningFetch(userId: string): Promise<boolean> {
 
 async function hasDraftableActiveAngle(userId: string, platforms: PlatformKey[]): Promise<boolean> {
   if (!platforms.length) return false;
-  const rows = await supabaseSelect<AngleRecordRow>('angle_records', {
+  const rows = await supabaseSelect<AngleRecordRow>('current_source_angle_records', {
     select: 'id,intended_platform,source_reddit_post_id,source_url,subreddit,reddit_author',
     filters: [
       { column: 'user_id', operator: 'eq', value: userId },
@@ -4098,22 +4095,8 @@ async function enqueueDueFetchJobs(stats: SchedulerStats, now: Date): Promise<vo
 }
 
 async function hasProcessableSourceRecord(userId: string): Promise<boolean> {
-  const rows = await supabaseSelect<SourceRecordRow>('source_records', {
-    select: 'id,origin,status,used,source_text,url',
-    filters: [
-      { column: 'user_id', operator: 'eq', value: userId },
-      { column: 'origin', operator: 'in', value: [...PROCESSABLE_SOURCE_RECORD_ORIGINS] },
-      { column: 'status', operator: 'eq', value: 'banked' },
-      { column: 'used', operator: 'eq', value: false },
-    ],
-    order: 'created_at.asc',
-    limit: 10,
-  });
-  const sourceUrlsWithAngles = await loadSourceUrlsWithAngles(userId);
-  return rows.some(row => Boolean(row.url) && isProcessableSourceRecordForAngleExtraction(
-    row,
-    sourceUrlsWithAngles
-  ));
+  const rows = await loadProcessableSourceRecords(userId, 1);
+  return rows.some(isProcessableSourceRecordForAngleExtraction);
 }
 
 async function hasDailyInventoryAlert(userId: string, targetLocalDate: string): Promise<boolean> {
@@ -4962,6 +4945,8 @@ export function startSupabaseWorkerLoop(log = logger): { stop: () => void } | un
 }
 
 export const __test__ = {
+  loadProcessableSourceRecords, hasProcessableSourceRecord, hasActiveBankedAngles,
+  hasDraftableActiveAngle, createPipelineSummary, processBankedSourceRecords,
   loadTenantContext, withTenantRuntime, markXCredentialVerified, refreshLinkedInCredentialForPublish,
   extractSourceBankWithJobTimeout,
   assertQueueRevisionNotHeld,
