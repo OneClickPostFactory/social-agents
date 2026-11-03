@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import config from '../config';
+import { createServer } from 'node:http';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { parseControlledPublish } from '../src/controlled-publish';
-import { runWithRuntimeScope, installScopedConfig } from '../src/runtime-scope';
-import { processPendingSupabaseJobs } from '../src/supabase-worker';
 
 const exec = promisify(execFile);
 
@@ -22,24 +22,31 @@ async function invoke(tool: string, args: Record<string, unknown>, key: string) 
 
 async function main() {
   const target = parseControlledPublish(process.env.CONTROLLED_PUBLISH || '');
-  if (target.platform !== 'threads' || !config.SUPABASE_WORKER_CANARY_REQUIRED ||
-      config.CONNECTION_LIFECYCLE_CANARY_USER_IDS.size !== 1 ||
-      !config.CONNECTION_LIFECYCLE_CANARY_USER_IDS.has(target.userId) ||
-      config.SUPABASE_WORKER_GENERATION_ENABLED || config.SUPABASE_PROVIDER_DISPATCH_ENABLED) {
-    throw Error('controlled_publish_rollout_mismatch');
-  }
+  const token = process.env.THREADS_RELAY_TOKEN || '';
+  const textHash = process.env.THREADS_APPROVED_TEXT_SHA256 || '';
+  if (target.platform !== 'threads' || token.length < 32 || !/^[0-9a-f]{64}$/.test(textHash)) throw Error('invalid_relay_scope');
   const sessionId = 'rlbe_ocpf_' + target.jobId + '_' + target.approvalHash;
   const accounts = await invoke('accounts', { relayAvailable: false, verifyAuth: true }, sessionId + ':account');
   const account = accounts.accounts?.find((a: {key: string}) => a.key === 'threads:owner');
   if (account?.authentication !== 'authenticated' || account.representedAccount?.id !== target.accountId) {
     throw Error('relay_destination_mismatch');
   }
-  installScopedConfig(config);
-  return runWithRuntimeScope(async () => {
-    config.SUPABASE_WORKER_CANARY_USER_IDS = new Set([target.userId]);
-    config.SUPABASE_PROVIDER_DISPATCH_ENABLED = true;
-    return processPendingSupabaseJobs({ ...target, sendThreads: async text => {
-      if (Date.now() >= target.expiresAt) throw Error('controlled_publish_expired');
+  const hash = (s: string) => createHash('sha256').update(s).digest();
+  let dispatched = false;
+  const server = createServer(async (req, res) => {
+    res.setHeader('cache-control', 'no-store');
+    try {
+      if (req.method !== 'POST' || req.url !== '/threads' || Date.now() >= target.expiresAt ||
+          !timingSafeEqual(hash(req.headers.authorization || ''), hash('Bearer ' + token))) throw Error();
+      let body = '';
+      req.setEncoding('utf8');
+      for await (const chunk of req) { body += chunk; if (body.length > 8192) throw Error(); }
+      const { action, target: requested, text } = JSON.parse(body);
+      if (!isDeepStrictEqual(requested, target) || Date.now() >= target.expiresAt || dispatched) throw Error();
+      const scope = { jobId: target.jobId, accountId: target.accountId };
+      if (action === 'ready') { res.end(JSON.stringify(scope)); return; }
+      if (action !== 'publish' || typeof text !== 'string' || hash(text).toString('hex') !== textHash) throw Error();
+      dispatched = true;
       const receipt = await invoke('execute', { platform: 'threads', accountKey: 'threads:owner',
         action: 'publish', campaignLaneId: 'oneclickpostfactory', opportunityId: target.jobId,
         runtimeOwner: 'oneclickpostfactory', sessionId: sessionId + '_live', text, dryRun: false, explicitWriteApproval: true },
@@ -49,9 +56,11 @@ async function main() {
           receipt.evidence?.verified !== true || typeof id !== 'string' || !/^\d{1,32}$/.test(id)) {
         throw Error('relay_publication_unconfirmed');
       }
-      return id;
-    }});
+      res.end(JSON.stringify({ ...scope, externalPostId: id }));
+    } catch { res.writeHead(409); res.end(); }
   });
+  server.listen(Number(process.env.THREADS_RELAY_PORT || 8789), '127.0.0.1');
+  setTimeout(() => server.close(), Math.max(1, target.expiresAt - Date.now())).unref();
 }
 
-main().then(stats => console.log(stats)).catch(() => { console.error('Controlled Threads execution did not confirm completion'); process.exitCode = 1; });
+main().catch(() => { console.error('Controlled Threads relay unavailable'); process.exitCode = 1; });
