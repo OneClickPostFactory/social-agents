@@ -157,3 +157,28 @@ test('a hosted Threads grant without a relay sender cannot claim a job', async (
   const { processPendingSupabaseJobs } = await import('../src/supabase-worker');
   await assert.rejects(processPendingSupabaseJobs(target), /controlled_threads_transport_missing/);
 });
+
+test('Threads relay performs a read-only identity check before sending frozen text exactly once', async () => {
+  const { connectThreadsRelay } = await import('../src/threads-relay-client');
+  const target = parseControlledPublish(JSON.stringify({ platform: 'threads', jobId: user,
+    userId: other, queueId: user, approvalHash: 'b'.repeat(64), accountId: '12345',
+    generation: 1, expiresAt: Date.now() + 30_000 }));
+  const original = globalThis.fetch;
+  const actions: string[] = [];
+  let account = 'wrong';
+  globalThis.fetch = async (_url, init) => {
+    const input = JSON.parse(String(init?.body));
+    actions.push(input.action);
+    assert.deepEqual(input.target, target);
+    if (input.action === 'publish') assert.equal(input.text, 'exact text');
+    return Response.json({ accountId: account, jobId: user, externalPostId: '9876' });
+  };
+  try {
+    const connect = () => connectThreadsRelay(target, 'https://relay.example/threads', 'a'.repeat(64));
+    await assert.rejects(connect(), /scope_mismatch/);
+    account = target.accountId;
+    const send = await connect();
+    assert.equal(await send('exact text'), '9876');
+    assert.deepEqual(actions, ['ready', 'ready', 'publish']);
+  } finally { globalThis.fetch = original; }
+});
