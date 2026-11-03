@@ -17,7 +17,7 @@ export interface ProviderAcceptance {
 export interface PreparedPublication {
   providerAccountRef: string;
   // Exactly one provider write. Refresh/identity checks belong in prepare(), not send().
-  send(): Promise<ProviderAcceptance>;
+  send(attempt: Readonly<ledger.PublicationAttempt>): Promise<ProviderAcceptance>;
 }
 
 export interface PublicationHooks {
@@ -264,7 +264,7 @@ export async function executePublication(
 
   let acceptance: ProviderAcceptance;
   try {
-    acceptance = await prepared.send();
+    acceptance = await prepared.send(Object.freeze({ ...attempt }));
     if (typeof acceptance.externalPostId !== 'string' || !acceptance.externalPostId.trim()
       || acceptance.externalPostId === 'posted') throw new Error('provider receipt missing');
   } catch (error) {

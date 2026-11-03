@@ -88,7 +88,9 @@ function fixture(id = 'one') {
     prepare: async payload => {
       assert.ok(Object.isFrozen(payload));
       assert.equal(payload.text, `authorised-${id}`);
-      return { providerAccountRef: `account-${id}`, send: async () => {
+      return { providerAccountRef: `account-${id}`, send: async attempt => {
+        assert.ok(Object.isFrozen(attempt));
+        assert.deepEqual(attempt, state.attempt);
         assert.equal(state.attempt?.state, 'dispatching');
         calls++;
         return { externalPostId: `post-${id}` };
@@ -152,7 +154,7 @@ async function main() {
     const f = fixture(); const prepare = f.hooks.prepare;
     f.hooks.prepare = async payload => {
       const ready = await prepare(payload);
-      return { ...ready, send: async () => { await ready.send(); throw new Error('lost provider response'); } };
+      return { ...ready, send: async attempt => { await ready.send(attempt); throw new Error('lost provider response'); } };
     };
     assert.equal((await executePublication(f.target, f.hooks, f.db)).outcome, 'unknown');
     assert.equal((await reconcilePublication(f.target, Date.now() + 300_000, f.db)).outcome, 'unknown');
@@ -193,8 +195,8 @@ async function main() {
     const f = fixture(); const prepare = f.hooks.prepare;
     f.hooks.prepare = async payload => {
       const ready = await prepare(payload);
-      return { ...ready, send: async () => {
-        const accepted = await ready.send();
+      return { ...ready, send: async attempt => {
+        const accepted = await ready.send(attempt);
         await reconcilePublication(f.target, Date.now() + 300_000, f.db);
         return accepted;
       } };

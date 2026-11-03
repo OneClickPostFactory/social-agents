@@ -43,5 +43,5 @@ test('all real worker job mutations use RPCs and recovery never executes a lost 
   const recovery = source.slice(source.indexOf('async function cleanupStaleRunningJobs'), source.indexOf('export async function runSupabaseAutomationScheduler'));
   assert.match(recovery, /claimAgentJob\(expired, true\)/);
   assert.doesNotMatch(recovery, /handleClaimedJob\(|releaseStaleRefreshAngleLocks\(|enqueueScheduledAgentJob\(/);
-  assert.match(source, /send: async \(\) => \{\s+await assertActiveAgentJob\(\)/);
+  assert.match(source, /send: async attempt => \{\s+await assertActiveAgentJob\(\)/);
 });

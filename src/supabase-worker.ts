@@ -1,5 +1,9 @@
 import type { ControlledPublish } from './controlled-publish';
-type ControlledPublishTarget = ControlledPublish & { sendThreads?: (text: string) => Promise<string> };
+import type { PublicationAttempt } from './publication-ledger';
+type ControlledThreadsAttempt = { attemptId: string; dispatchOperationId: string };
+type ControlledPublishTarget = ControlledPublish & {
+  sendThreads?: (text: string, attempt: ControlledThreadsAttempt) => Promise<string>;
+};
 import { managesConnection, connectionCredentialUpdate, loadConnectionSnapshot, withConnectionSnapshot, assertProviderAvailable, assertQueueConnectionReady } from './connection-runtime';
 import type { ConnectionSnapshot } from './connection-lifecycle';
 import { connectionJson } from './connection-http';
@@ -3607,6 +3611,21 @@ async function assertOpenAIRepairAllowedForPublish(
   });
 }
 
+async function sendControlledThreads(
+  text: string, target: ControlledPublishTarget, attempt: Readonly<PublicationAttempt>
+): Promise<string> {
+  const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+  if (!attempt || !uuid.test(attempt.id) || !uuid.test(attempt.dispatch_operation_id)
+    || target.platform !== 'threads' || attempt.state !== 'dispatching' || attempt.platform !== 'threads'
+    || attempt.user_id !== target.userId || attempt.queue_item_id !== target.queueId
+    || attempt.provider_account_ref !== target.accountId || typeof target.sendThreads !== 'function') {
+    throw Error('threads_attempt_invalid');
+  }
+  return target.sendThreads(text, {
+    attemptId: attempt.id, dispatchOperationId: attempt.dispatch_operation_id,
+  });
+}
+
 async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: UserSettingsRow, target?: ControlledPublishTarget): Promise<JsonMap> {
   if (row.user_id !== job.user_id) throw new WorkerJobError('publication_tenant_mismatch');
   assertQueueRevisionNotHeld(row);
@@ -3698,11 +3717,11 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
         };
         return {
           providerAccountRef,
-          send: async () => {
+          send: async attempt => {
             await assertActiveAgentJob();
             if (target && Date.now() >= target.expiresAt) throw Error('controlled_publish_expired');
             if (payload.platform === 'threads' && target?.sendThreads) {
-              const id = await target.sendThreads(payload.text);
+              const id = await sendControlledThreads(payload.text, target, attempt);
               if (!/^[0-9]{1,32}$/.test(id)) throw Error('threads_receipt_invalid');
               return { externalPostId: id };
             }
@@ -4940,6 +4959,7 @@ export const __test__ = {
   extractSourceBankWithJobTimeout,
   assertQueueRevisionNotHeld,
   publishQueueRow,
+  sendControlledThreads,
   stalePublishJobResult,
   handlePublishAll,
   buildOpenAIUsageDailySummary,

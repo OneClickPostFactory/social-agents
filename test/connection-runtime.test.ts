@@ -1,4 +1,5 @@
 import { parseControlledPublish } from '../src/controlled-publish';
+import type { PublicationAttempt } from '../src/publication-ledger';
 import { refreshOAuth2AccessToken } from "../src/x";
 import assert from 'node:assert/strict';
 import { test, afterEach } from 'node:test';
@@ -171,14 +172,47 @@ test('Threads relay performs a read-only identity check before sending frozen te
     actions.push(input.action);
     assert.deepEqual(input.target, target);
     if (input.action === 'publish') assert.equal(input.text, 'exact text');
-    return Response.json({ accountId: account, jobId: user, externalPostId: '9876' });
+    return Response.json({ ...target, accountId: account, jobId: user, externalPostId: '9876',
+      attemptId: user, dispatchOperationId: other });
   };
   try {
     const connect = () => connectThreadsRelay(target, 'https://relay.example/threads', 'a'.repeat(64));
     await assert.rejects(connect(), /scope_mismatch/);
     account = target.accountId;
     const send = await connect();
-    assert.equal(await send('exact text'), '9876');
+    assert.equal(await send('exact text', { attemptId: user, dispatchOperationId: other }), '9876');
     assert.deepEqual(actions, ['ready', 'ready', 'publish']);
   } finally { globalThis.fetch = original; }
+});
+
+
+test('controlled Threads sender receives the confirmed durable attempt and rejects invalid identities', async () => {
+  const target = parseControlledPublish(JSON.stringify({ platform: 'threads', jobId: user,
+    userId: other, queueId: user, approvalHash: 'b'.repeat(64), accountId: '12345',
+    generation: 1, expiresAt: Date.now() + 30_000 }));
+  const attempt: PublicationAttempt = {
+    id: '33333333-3333-4333-8333-333333333333', intent_id: user, user_id: other,
+    queue_item_id: user, platform: 'threads', attempt_no: 1,
+    dispatch_operation_id: '44444444-4444-4444-8444-444444444444',
+    state: 'dispatching', provider_account_ref: '12345', provider_idempotency_supported: false,
+    dispatch_started_at: new Date().toISOString(), created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+  };
+  const calls: Array<{ text: string; attempt: { attemptId: string; dispatchOperationId: string } }> = [];
+  const sender = { ...target, sendThreads: async (text: string, context: { attemptId: string; dispatchOperationId: string }) => {
+    calls.push({ text, attempt: context });
+    return '9876';
+  } };
+  assert.equal(await worker.sendControlledThreads('approved text', sender, attempt), '9876');
+  assert.deepEqual(calls, [{ text: 'approved text', attempt: {
+    attemptId: attempt.id, dispatchOperationId: attempt.dispatch_operation_id,
+  } }]);
+  for (const patch of [
+    { id: '' }, { id: 'not-a-uuid' }, { dispatch_operation_id: '' }, { dispatch_operation_id: 'not-a-uuid' },
+    { user_id: user }, { queue_item_id: other }, { platform: 'x' as const },
+    { provider_account_ref: '999' }, { state: 'unknown' as const },
+  ]) {
+    await assert.rejects(worker.sendControlledThreads('approved text', sender, { ...attempt, ...patch }), /threads_attempt_invalid/);
+  }
+  await assert.rejects(worker.sendControlledThreads('approved text', sender, undefined as unknown as PublicationAttempt), /threads_attempt_invalid/);
+  assert.equal(calls.length, 1);
 });
