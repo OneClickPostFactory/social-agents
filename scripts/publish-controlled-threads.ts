@@ -1,32 +1,29 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { createServer } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { parseControlledPublish } from '../src/controlled-publish';
 
-const exec = promisify(execFile);
-
 async function invoke(tool: string, args: Record<string, unknown>, key: string) {
-  const params = { name: 'relay_live_business_engagement_' + tool, args, agentId: 'social-publication-worker',
-    sessionKey: 'agent:social-publication-worker:main', idempotencyKey: key };
-  let output;
-  try {
-    output = await exec('openclaw', ['gateway','call','tools.invoke','--json','--timeout','120000',
-      '--params', JSON.stringify(params)], { timeout: 130000, maxBuffer: 1024 * 1024 });
-  } catch { throw Error('relay_transport_unconfirmed'); }
-  const response = JSON.parse(output.stdout);
-  if (response.ok !== true || !response.output?.details) throw Error('relay_response_unconfirmed');
-  return response.output.details;
+  const token = process.env.OPENCLAW_GATEWAY_TOKEN;
+  if (!token) throw Error('gateway_auth_missing');
+  const response = await fetch('http://127.0.0.1:18789/tools/invoke', {
+    method: 'POST', redirect: 'error', signal: AbortSignal.timeout(120000),
+    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tool: 'relay_live_business_engagement_' + tool, args,
+      sessionKey: 'agent:social-publication-worker:main', idempotencyKey: key }),
+  });
+  if (!response.ok) throw Error('relay_response_unconfirmed');
+  const body = await response.json() as { ok?: boolean; result?: { details?: any } };
+  if (!body.ok || !body.result?.details) throw Error('relay_response_unconfirmed');
+  return body.result.details;
 }
-
 async function main() {
   const target = parseControlledPublish(process.env.CONTROLLED_PUBLISH || '');
   const token = process.env.THREADS_RELAY_TOKEN || '';
   const textHash = process.env.THREADS_APPROVED_TEXT_SHA256 || '';
   if (target.platform !== 'threads' || token.length < 32 || !/^[0-9a-f]{64}$/.test(textHash)) throw Error('invalid_relay_scope');
   const sessionId = 'rlbe_ocpf_' + target.jobId + '_' + target.approvalHash;
-  const accounts = await invoke('accounts', { relayAvailable: false, verifyAuth: true }, sessionId + ':account');
+  const accounts = await invoke('accounts', { platform: 'threads', relayAvailable: false, verifyAuth: true }, sessionId + ':account');
   const account = accounts.accounts?.find((a: {key: string}) => a.key === 'threads:owner');
   if (account?.authentication !== 'authenticated' || account.representedAccount?.id !== target.accountId) {
     throw Error('relay_destination_mismatch');
