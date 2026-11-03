@@ -73,9 +73,11 @@ async function main(): Promise<void> {
     const worker = fs.readFileSync(path.join(process.cwd(), 'src', 'supabase-worker.ts'), 'utf8');
     const sourceRecordBody = worker.match(/async function processBankedSourceRecords[\s\S]*?\n}\n\nasync function hasActiveBankedAngles/)?.[0] || '';
     assert.match(worker, /const PROCESSABLE_SOURCE_RECORD_ORIGINS = \[\s*'manual',\s*'authenticated_browser',\s*\] as const/);
-    assert.match(sourceRecordBody, /operator: 'in', value: \[\.\.\.PROCESSABLE_SOURCE_RECORD_ORIGINS\]/);
+    const sourceCandidateBody = worker.match(/async function loadProcessableSourceRecords[\s\S]*?\n}\n/)?.[0] || '';
+    assert.match(sourceCandidateBody, /operator: 'in', value: \[\.\.\.PROCESSABLE_SOURCE_RECORD_ORIGINS\]/);
+    assert.match(sourceCandidateBody, /processable_source_records/);
     assert.match(sourceRecordBody, /source_text/);
-    assert.match(sourceRecordBody, /isProcessableSourceRecordForAngleExtraction\((?:record|candidate), sourceUrlsWithAngles\)/);
+    assert.match(sourceRecordBody, /isProcessableSourceRecordForAngleExtraction\((?:record|candidate)\)/);
     assert.match(sourceRecordBody, /extractSourceBankWithJobTimeout/);
     assert.match(sourceRecordBody, /queueFromBankedAngles/);
     assert.match(sourceRecordBody, /source_record_selected_for_angle_extraction/);
@@ -90,34 +92,32 @@ async function main(): Promise<void> {
       source_text: 'Visible body text.',
       url: 'https://www.reddit.com/r/openclawbot/comments/abc/example/',
     };
-    const sourceUrlsWithAngles = new Set<string>();
 
-    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction(baseRecord, sourceUrlsWithAngles), true);
+    assert.equal(__test__.isProcessableSourceRecordForAngleExtraction(baseRecord), true);
     assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
       ...baseRecord,
       origin: 'authenticated_browser',
-    }, sourceUrlsWithAngles), true);
+    }), true);
     for (const origin of ['public_json', 'rss', 'oauth', 'devvit']) {
       assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
         ...baseRecord,
         origin,
-      }, sourceUrlsWithAngles), false);
+      }), false);
     }
     assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
       ...baseRecord,
       source_text: '',
-    }, sourceUrlsWithAngles), false);
+    }), false);
     assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
       ...baseRecord,
       used: true,
-    }, sourceUrlsWithAngles), false);
+    }), false);
     assert.equal(__test__.isProcessableSourceRecordForAngleExtraction({
       ...baseRecord,
       status: 'exhausted',
-    }, sourceUrlsWithAngles), false);
+    }), false);
     assert.equal(__test__.isProcessableSourceRecordForAngleExtraction(
-      baseRecord,
-      new Set([baseRecord.url])
+      { ...baseRecord, url: '' }
     ), false);
   });
 

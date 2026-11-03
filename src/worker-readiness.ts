@@ -19,7 +19,7 @@ export interface ReadinessEnv {
 export const READINESS_CONTRACTS = [
   {
     name: 'worker_claims', rpc: 'get_worker_schema_contract', contract: 'worker-claims-v1',
-    capabilities: ['source-targeted-claim-v1', 'angle-targeted-claim-v1', 'angle-exhaust-fenced-v1',
+    capabilities: ['source-targeted-claim-v1', 'source-revisions-v1', 'angle-targeted-claim-v1', 'angle-exhaust-fenced-v1',
       'source-angle-atomic-commit-v1', 'angle-queue-atomic-commit-v1', 'queue-angle-identity-v1',
       'legacy-queue-revision-hold-v1'],
   },

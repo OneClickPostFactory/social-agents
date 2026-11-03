@@ -77,6 +77,7 @@ async function main(): Promise<void> {
         if (url.endsWith('/rpc/claim_source_record_by_id')) {
           return new Response(JSON.stringify([{
             id: 'source-1',
+            current_revision_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
             user_id: 'user-1',
             url: 'https://example.com/source',
             used: false,

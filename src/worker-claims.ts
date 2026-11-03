@@ -6,6 +6,7 @@ import type { PlatformKey } from './types';
 export const WORKER_SCHEMA_CONTRACT = 'worker-claims-v1';
 export const REQUIRED_WORKER_CLAIM_CAPABILITIES = [
   'source-targeted-claim-v1',
+  'source-revisions-v1',
   'angle-targeted-claim-v1',
   'angle-exhaust-fenced-v1',
   'source-angle-atomic-commit-v1',
@@ -37,6 +38,7 @@ export interface SourceRecordClaim {
   content_hash?: string | null;
   status?: string | null;
   source_text?: string | null;
+  current_revision_id: string;
   claim_token: string;
   claim_version: number;
   claim_expires_at: string;
@@ -161,6 +163,18 @@ export async function assertWorkerClaimsContract(): Promise<WorkerSchemaContract
   }
 }
 
+function assertSourceRevisionClaim(
+  record: SourceRecordClaim | undefined, userId: string, claimToken: string, sourceRecordId?: string
+): void {
+  if (!record) return;
+  const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+  if (record.user_id !== userId || record.claim_token !== claimToken
+      || (sourceRecordId !== undefined && record.id !== sourceRecordId)
+      || typeof record.current_revision_id !== 'string' || !uuid.test(record.current_revision_id)) {
+    throw new WorkerClaimsContractError('Claimed source is missing its exact immutable revision or scope');
+  }
+}
+
 export async function claimSourceRecordForExtraction(
   userId: string,
   claimToken = createClaimToken(),
@@ -171,6 +185,7 @@ export async function claimSourceRecordForExtraction(
     p_claim_token: claimToken,
     p_lease_seconds: leaseSeconds,
   }, { retrySafe: true });
+  assertSourceRevisionClaim(rows[0], userId, claimToken);
   return { claimToken, record: rows[0] };
 }
 
@@ -186,6 +201,7 @@ export async function claimSourceRecordById(
     p_claim_token: claimToken,
     p_lease_seconds: leaseSeconds,
   }, { retrySafe: true });
+  assertSourceRevisionClaim(rows[0], userId, claimToken, sourceRecordId);
   return { claimToken, record: rows[0] };
 }
 
@@ -217,9 +233,13 @@ export async function releaseSourceRecordClaim(
 
 export async function commitSourceAngleExtraction(
   userId: string,
-  record: Pick<SourceRecordClaim, 'id' | 'claim_token' | 'claim_version'>,
+  record: Pick<SourceRecordClaim, 'id' | 'claim_token' | 'claim_version' | 'current_revision_id'>,
   angles: SourceAngleCommitInput[]
 ): Promise<SourceAngleCommitResult> {
+  if (typeof record.current_revision_id !== 'string'
+      || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(record.current_revision_id)) {
+    throw new WorkerClaimsContractError('Source extraction commit requires the claimed immutable revision');
+  }
   const rows = await supabaseRpc<SourceAngleCommitResult[]>('commit_source_angle_extraction', {
     p_user_id: userId,
     p_source_record_id: record.id,

@@ -113,7 +113,8 @@ test('planner wiring is future-dated and fail-closed', () => {
   assert.match(workerSource, /mode: 'next_day_inventory'/);
   assert.match(workerSource, /target_local_date: targetLocalDate/);
   assert.match(workerSource, /intended_platform', operator: 'in' as const, value: plannedPlatforms/);
-  assert.match(workerSource, /const sourceUrlsWithAngles = await loadSourceUrlsWithAngles\(userId\)/);
+  assert.match(workerSource, /'processable_source_records'/);
+  assert.doesNotMatch(workerSource, /loadSourceUrlsWithAngles/);
   assert.match(workerSource, /daily_inventory_insufficient/);
   assert.match(workerSource, /No post was fabricated/);
   assert.doesNotMatch(workerSource, /mode: 'next_day_inventory'[\s\S]{0,400}backfill/i);
