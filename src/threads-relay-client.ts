@@ -9,7 +9,7 @@ export async function connectThreadsRelay(target: ControlledPublish, endpoint: s
     const response = await fetch(url, { method: 'POST', redirect: 'error', cache: 'no-store',
       headers: { Authorization: 'Bearer ' + bearer, 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, target, text }), signal: AbortSignal.timeout(action === 'ready' ? 15000 : 135000) });
-    if (!response.ok) throw Error('threads_relay_unconfirmed');
+    if (!response.ok) throw Error('threads_relay_http_' + response.status);
     const result = await response.json() as { accountId?: string; jobId?: string; externalPostId?: string };
     if (result.accountId !== target.accountId || result.jobId !== target.jobId) throw Error('threads_relay_scope_mismatch');
     return result;

@@ -244,6 +244,19 @@ export default withOperatorControls({
       if (!token || request.headers.get('Authorization') !== `Bearer ${token}`) {
         return new Response('Not found', { status: 404 });
       }
+      if (env.CONTROLLED_PUBLISH !== undefined && new URL(request.url).searchParams.get('check') === 'relay') {
+        try {
+          const target = parseControlledPublish(String(env.CONTROLLED_PUBLISH));
+          const { connectThreadsRelay } = await import('./threads-relay-client');
+          await connectThreadsRelay(target, String(env.THREADS_RELAY_ENDPOINT || ''), String(env.THREADS_RELAY_TOKEN || ''));
+          return Response.json({ ready: true });
+        } catch (error) {
+          const e = error as Error;
+          const code = /^(controlled_publish_invalid_or_expired|invalid_threads_relay|threads_relay_(http_[0-9]{3}|scope_mismatch))$/.test(e.message)
+            ? e.message : e.name;
+          return Response.json({ ready: false, code }, { status: 503 });
+        }
+      }
       return runScheduledTick(env);
     }
 
