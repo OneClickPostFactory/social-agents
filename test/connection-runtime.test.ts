@@ -149,3 +149,11 @@ test('controlled publish requires a precise, short-lived grant', () => {
     assert.throws(() => parseControlledPublish(JSON.stringify({...target, ...patch})));
   }
 });
+
+test('a hosted Threads grant without a relay sender cannot claim a job', async () => {
+  const target = parseControlledPublish(JSON.stringify({ platform: 'threads', jobId: user,
+    userId: other, queueId: user, approvalHash: 'b'.repeat(64), accountId: '12345',
+    generation: 1, expiresAt: Date.now() + 30_000 }));
+  const { processPendingSupabaseJobs } = await import('../src/supabase-worker');
+  await assert.rejects(processPendingSupabaseJobs(target), /controlled_threads_transport_missing/);
+});

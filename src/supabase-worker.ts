@@ -1,4 +1,5 @@
 import type { ControlledPublish } from './controlled-publish';
+type ControlledPublishTarget = ControlledPublish & { sendThreads?: (text: string) => Promise<string> };
 import { managesConnection, connectionCredentialUpdate, loadConnectionSnapshot, withConnectionSnapshot, assertProviderAvailable, assertQueueConnectionReady } from './connection-runtime';
 import type { ConnectionSnapshot } from './connection-lifecycle';
 import { connectionJson } from './connection-http';
@@ -2148,7 +2149,7 @@ function assertSupportedJobKind(kind: string): asserts kind is JobKind {
   }
 }
 
-async function listPendingJobs(target?: ControlledPublish): Promise<AgentJobRow[]> {
+async function listPendingJobs(target?: ControlledPublishTarget): Promise<AgentJobRow[]> {
   const policy = rolloutPolicy();
   const allowedUserIds = allowedCanaryUserIds(policy);
   if (allowedUserIds?.length === 0) return [];
@@ -3606,7 +3607,7 @@ async function assertOpenAIRepairAllowedForPublish(
   });
 }
 
-async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: UserSettingsRow, target?: ControlledPublish): Promise<JsonMap> {
+async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: UserSettingsRow, target?: ControlledPublishTarget): Promise<JsonMap> {
   if (row.user_id !== job.user_id) throw new WorkerJobError('publication_tenant_mismatch');
   assertQueueRevisionNotHeld(row);
   // Reload per item. publish_all must not retain the first item's stale credentials/settings.
@@ -3621,7 +3622,7 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
           throw new PublicationPreflightError('rollout_provider_dispatch_disabled');
         }
         // Disabled hosted publishers are rejected before token refresh or paid media work.
-        if (payload.platform === 'threads' || payload.platform === 'instagram') {
+        if ((payload.platform === 'threads' && !(target?.platform === 'threads' && typeof target.sendThreads === 'function')) || payload.platform === 'instagram') {
           throw new PublicationPreflightError('legacy_meta_publication_disabled');
         }
         if (payload.platform === 'facebook') throw new PublicationPreflightError('facebook_paused');
@@ -3647,6 +3648,10 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
           if (target && verification.accountId !== target.accountId) throw new PublicationPreflightError('controlled_publish_account_changed');
           if (managesConnection(job.user_id)) await markXCredentialVerified(job.user_id, verification);
           providerAccountRef = verification.accountId;
+        } else if (payload.platform === 'threads') {
+          const me = await threads.verifyCredentials();
+          if (me.accountId !== target?.accountId) throw new PublicationPreflightError('controlled_publish_account_changed');
+          providerAccountRef = me.accountId;
         } else {
           if (!config.LINKEDIN_TOKEN || !config.LINKEDIN_PERSON_URN) {
             throw new PublicationPreflightError('linkedin_not_connected');
@@ -3692,7 +3697,16 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
         };
         return {
           providerAccountRef,
-          send: async () => { await assertActiveAgentJob(); return { externalPostId: await publishPlatform(frozenRow) }; },
+          send: async () => {
+            await assertActiveAgentJob();
+            if (target && Date.now() >= target.expiresAt) throw Error('controlled_publish_expired');
+            if (payload.platform === 'threads' && target?.sendThreads) {
+              const id = await target.sendThreads(payload.text);
+              if (!/^[0-9]{1,32}$/.test(id)) throw Error('threads_receipt_invalid');
+              return { externalPostId: id };
+            }
+            return { externalPostId: await publishPlatform(frozenRow) };
+          },
         };
       },
       afterAccepted: async (_attempt, payload) => {
@@ -3712,7 +3726,7 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
   });
 }
 
-async function handlePublishNow(job: AgentJobRow, tenant: TenantContext, target?: ControlledPublish): Promise<JsonMap> {
+async function handlePublishNow(job: AgentJobRow, tenant: TenantContext, target?: ControlledPublishTarget): Promise<JsonMap> {
   const queueItemId = requirePayloadId(job.payload, 'queue_item_id');
   const row = (await supabaseSelect<QueueItemRow>('queue_items', {
     select: '*',
@@ -4818,7 +4832,7 @@ export async function runSupabaseAutomationScheduler(): Promise<SchedulerStats> 
   return stats;
 }
 
-async function handleClaimedJob(job: AgentJobRow, target?: ControlledPublish): Promise<JsonMap> {
+async function handleClaimedJob(job: AgentJobRow, target?: ControlledPublishTarget): Promise<JsonMap> {
   await assertActiveAgentJob();
   if (target && (job.id !== target.jobId || job.user_id !== target.userId || job.kind !== 'publish_now'
     || job.payload?.queue_item_id !== target.queueId || jobOrigin(job) === 'scheduled' || Date.now() >= target.expiresAt)) {
@@ -4855,7 +4869,10 @@ async function handleClaimedJob(job: AgentJobRow, target?: ControlledPublish): P
   });
 }
 
-export async function processPendingSupabaseJobs(target?: ControlledPublish): Promise<WorkerStats> {
+export async function processPendingSupabaseJobs(target?: ControlledPublishTarget): Promise<WorkerStats> {
+  if (target?.platform === 'threads' && typeof target.sendThreads !== 'function') {
+    throw Error('controlled_threads_transport_missing');
+  }
   const stats: WorkerStats = { claimed: 0, completed: 0, failed: 0 };
   await assertAgentJobsContract();
   const jobs = await listPendingJobs(target);
