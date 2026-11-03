@@ -20,11 +20,11 @@ const env = {WORKER_TICK_TOKEN:'synthetic-tick-key',SUPABASE_URL:'https://databa
 const headers = {Authorization:'Bearer '+env.WORKER_TICK_TOKEN,'X-OCPF-Readiness-Nonce':nonce,'X-OCPF-Expected-Version':version,'X-OCPF-Expected-Sha':sha};
 const source = readFileSync(sourcePath,'utf8');
 const specs = {
- get_worker_schema_contract:{contract:'worker-claims-v1',capabilities:['source-targeted-claim-v1','angle-targeted-claim-v1','angle-exhaust-fenced-v1','source-angle-atomic-commit-v1','angle-queue-atomic-commit-v1','queue-angle-identity-v1','legacy-queue-revision-hold-v1']},
+ get_worker_schema_contract:{contract:'worker-claims-v1',capabilities:['source-targeted-claim-v1','source-revisions-v1','angle-targeted-claim-v1','angle-exhaust-fenced-v1','source-angle-atomic-commit-v1','angle-queue-atomic-commit-v1','queue-angle-identity-v1','legacy-queue-revision-hold-v1']},
  get_publication_schema_contract:{contract:'publication-ledger-v1',migration:'20260907054000',lock_order_migration:'20260913061000',capabilities:['publication-intent-claim-v1','publication-dispatch-boundary-v1','publication-attempt-outcome-v1','publication-unknown-reconciliation-v1','publication-exact-history-receipt-v1','publication-queue-compatibility-fence-v1','publication-provenance-snapshot-v1','publication-legacy-queue-hold-v1','publication-queue-lock-order-v1']},
  get_agent_jobs_contract:{contract:'agent-jobs-v1',capabilities:['durable-enqueue-v1','fenced-terminal-v1','reconciliation-only-recovery-v1','rpc-only-job-writes-v1']},
 };
-async function runtime({code=script,status=200,auth=headers,invalidBody=false}={}) {
+async function runtime({code=script,status=200,auth=headers,invalidBody=false,withoutSourceRevisions=false}={}) {
  const calls=[];
  const mf = new Miniflare({modules:true,script:code,compatibilityDate:'2026-05-07',compatibilityFlags:['nodejs_compat'],bindings:env,outboundService:async request=>{
   const u=new URL(request.url); calls.push({origin:u.origin,path:u.pathname,method:request.method,authorisation:request.headers.get('authorization'),body:await request.text()});
@@ -32,7 +32,9 @@ async function runtime({code=script,status=200,auth=headers,invalidBody=false}={
   assert.equal(request.method,'POST');
   const spec=specs[u.pathname.split('/').at(-1)]; assert.ok(spec,'only schema RPCs allowed');
   if(status!==200)return new Response('not accepted',{status,headers:status>=300&&status<400?{Location:'https://forbidden.invalid/steal'}:{}});
-  return Response.json(invalidBody?{}:spec);
+  const body=withoutSourceRevisions&&spec.contract==='worker-claims-v1'
+   ?{...spec,capabilities:spec.capabilities.filter(c=>c!=='source-revisions-v1')}:spec;
+  return Response.json(invalidBody?{}:body);
  }});
  try{const r=await mf.dispatchFetch('https://probe.invalid/readyz',{headers:auth});return {status:r.status,body:await r.text(),calls};}
  finally{await mf.dispose();}
@@ -64,4 +66,11 @@ test('workerd exact-version mismatch sends no database request',async()=>{
 test('workerd rejects a 200 response with an incompatible schema',async()=>{
  const r=await runtime({invalidBody:true});assert.equal(r.status,503);assert.equal(r.calls.length,3);
  assert.ok(JSON.parse(r.body).dependencies.every(d=>d.state==='contract_mismatch'));
+});
+
+test('workerd rejects the old worker schema until source revisions are available',async()=>{
+ const r=await runtime({withoutSourceRevisions:true});assert.equal(r.status,503);assert.equal(r.calls.length,3);
+ const b=JSON.parse(r.body);assert.equal(b.executionAuthorised,false);
+ assert.equal(b.dependencies.find(d=>d.name==='worker_claims').state,'contract_mismatch');
+ assert.ok(b.dependencies.filter(d=>d.name!=='worker_claims').every(d=>d.state==='verified'));
 });
