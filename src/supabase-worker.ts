@@ -3,6 +3,7 @@ import type { PublicationAttempt } from './publication-ledger';
 type ControlledThreadsAttempt = { attemptId: string; dispatchOperationId: string };
 type ControlledPublishTarget = ControlledPublish & {
   sendThreads?: (text: string, attempt: ControlledThreadsAttempt) => Promise<string>;
+  cloudThreads?: boolean;
 };
 import { managesConnection, connectionCredentialUpdate, loadConnectionSnapshot, withConnectionSnapshot, assertProviderAvailable, assertQueueConnectionReady } from './connection-runtime';
 import type { ConnectionSnapshot } from './connection-lifecycle';
@@ -27,6 +28,7 @@ import {
 import * as workerClaims from './worker-claims';
 import { executePublication, reconcilePublication, recoverStalePublications, PublicationPreflightError } from './publication-executor';
 import * as threads from './threads';
+import { publishThreadsCloud } from './threads-cloud-publisher';
 import * as x from './x';
 import { buildDailyInventoryPlan, type DailyInventoryQueueRow } from './daily-inventory-planner';
 import {
@@ -3615,12 +3617,11 @@ async function sendControlledThreads(
   if (!attempt || !uuid.test(attempt.id) || !uuid.test(attempt.dispatch_operation_id)
     || target.platform !== 'threads' || attempt.state !== 'dispatching' || attempt.platform !== 'threads'
     || attempt.user_id !== target.userId || attempt.queue_item_id !== target.queueId
-    || attempt.provider_account_ref !== target.accountId || typeof target.sendThreads !== 'function') {
+    || attempt.provider_account_ref !== target.accountId || (!target.cloudThreads && typeof target.sendThreads !== 'function')) {
     throw Error('threads_attempt_invalid');
   }
-  return target.sendThreads(text, {
-    attemptId: attempt.id, dispatchOperationId: attempt.dispatch_operation_id,
-  });
+  if (target.cloudThreads) return publishThreadsCloud({ accountId: target.accountId, accessToken: config.THREADS_ACCESS_TOKEN, text });
+  return target.sendThreads!(text, { attemptId: attempt.id, dispatchOperationId: attempt.dispatch_operation_id });
 }
 
 async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: UserSettingsRow, target?: ControlledPublishTarget): Promise<JsonMap> {
@@ -3633,13 +3634,13 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
     const execution = await executePublication({
       userId: job.user_id, queueItemId: row.id, platform: row.platform,
     }, {
-      controlledThreadsRelay: target?.platform === 'threads' && typeof target.sendThreads === 'function',
+      controlledThreadsRelay: target?.platform === 'threads' && (target.cloudThreads === true || typeof target.sendThreads === 'function'),
       prepare: async payload => {
         if (!config.SUPABASE_PROVIDER_DISPATCH_ENABLED) {
           throw new PublicationPreflightError('rollout_provider_dispatch_disabled');
         }
         // Disabled hosted publishers are rejected before token refresh or paid media work.
-        if ((payload.platform === 'threads' && !(target?.platform === 'threads' && typeof target.sendThreads === 'function')) || payload.platform === 'instagram') {
+        if ((payload.platform === 'threads' && !(target?.platform === 'threads' && (target.cloudThreads === true || typeof target.sendThreads === 'function'))) || payload.platform === 'instagram') {
           throw new PublicationPreflightError('legacy_meta_publication_disabled');
         }
         if (payload.platform === 'facebook') throw new PublicationPreflightError('facebook_paused');
@@ -3666,6 +3667,12 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
           if (managesConnection(job.user_id)) await markXCredentialVerified(job.user_id, verification);
           providerAccountRef = verification.accountId;
         } else if (payload.platform === 'threads') {
+          // Only the explicit cloud path refreshes tenant credentials. Refresh
+          // persists the rotated token in the existing encrypted tenant row.
+          if (target?.cloudThreads) {
+            try { await threads.verifyCredentials(); }
+            catch { await threads.prepareAccessTokenForPublish(); }
+          }
           const me = await threads.verifyCredentials();
           if (me.accountId !== target?.accountId) throw new PublicationPreflightError('controlled_publish_account_changed');
           providerAccountRef = me.accountId;
@@ -3717,7 +3724,7 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
           send: async attempt => {
             await assertActiveAgentJob();
             if (target && Date.now() >= target.expiresAt) throw Error('controlled_publish_expired');
-            if (payload.platform === 'threads' && target?.sendThreads) {
+            if (payload.platform === 'threads' && target && (target.cloudThreads || target.sendThreads)) {
               const id = await sendControlledThreads(payload.text, target, attempt);
               if (!/^[0-9]{1,32}$/.test(id)) throw Error('threads_receipt_invalid');
               return { externalPostId: id };

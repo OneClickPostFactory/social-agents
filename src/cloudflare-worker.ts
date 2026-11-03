@@ -185,6 +185,10 @@ async function executeScheduledTick(env: Env): Promise<Response> {
       config.SUPABASE_WORKER_CANARY_USER_IDS = new Set([target.userId]);
       config.SUPABASE_PROVIDER_DISPATCH_ENABLED = true;
       if (target.platform === 'threads') {
+        if (env.THREADS_CLOUD_NATIVE_ENABLED === 'true') {
+          if (!env.CREDENTIAL_ENCRYPTION_KEY) throw Error('threads_cloud_encryption_missing');
+          return Response.json({ ok: true, stats: await processPendingSupabaseJobs({ ...target, cloudThreads: true }) });
+        }
         if (typeof env.THREADS_RELAY_ENDPOINT !== 'string' || typeof env.THREADS_RELAY_TOKEN !== 'string') {
           throw Error('controlled_threads_transport_missing');
         }
