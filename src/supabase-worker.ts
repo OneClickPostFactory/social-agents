@@ -3,6 +3,7 @@ import type { PublicationAttempt } from './publication-ledger';
 type ControlledThreadsAttempt = { attemptId: string; dispatchOperationId: string };
 type ControlledPublishTarget = ControlledPublish & {
   sendThreads?: (text: string, attempt: ControlledThreadsAttempt) => Promise<string>;
+  cloudThreads?: boolean;
 };
 import { managesConnection, connectionCredentialUpdate, loadConnectionSnapshot, withConnectionSnapshot, assertProviderAvailable, assertQueueConnectionReady } from './connection-runtime';
 import type { ConnectionSnapshot } from './connection-lifecycle';
@@ -27,6 +28,7 @@ import {
 import * as workerClaims from './worker-claims';
 import { executePublication, reconcilePublication, recoverStalePublications, PublicationPreflightError } from './publication-executor';
 import * as threads from './threads';
+import { publishThreadsCloud } from './threads-cloud-publisher';
 import * as x from './x';
 import { buildDailyInventoryPlan, type DailyInventoryQueueRow } from './daily-inventory-planner';
 import {
@@ -515,7 +517,6 @@ interface SourceRecordRow {
   content_hash?: string | null;
   status?: string | null;
   source_text?: string | null;
-  current_revision_id?: string | null;
 }
 
 const PROCESSABLE_SOURCE_RECORD_ORIGINS = [
@@ -528,13 +529,14 @@ function isProcessableSourceRecordOrigin(origin: string | null | undefined): boo
 }
 
 function isProcessableSourceRecordForAngleExtraction(
-  record: Pick<SourceRecordRow, 'origin' | 'status' | 'used' | 'source_text' | 'url'>
+  record: Pick<SourceRecordRow, 'origin' | 'status' | 'used' | 'source_text' | 'url'>,
+  sourceUrlsWithAngles: Set<string>
 ): boolean {
   return isProcessableSourceRecordOrigin(record.origin)
     && record.status === 'banked'
     && record.used === false
     && String(record.source_text || '').trim().length > 0
-    && Boolean(record.url);
+    && !sourceUrlsWithAngles.has(record.url);
 }
 
 const SUPPORTED_JOB_KINDS = new Set<JobKind>([
@@ -1901,7 +1903,7 @@ async function createPipelineSummary(
 ): Promise<PipelineSummary> {
   const entitlement = await loadEntitlement(job.user_id);
   const enabledSources = sources.filter(source => source.enabled);
-  const activeAngles = await supabaseSelect<AngleRecordRow>('current_source_angle_records', {
+  const activeAngles = await supabaseSelect<AngleRecordRow>('angle_records', {
     select: 'id,status,intended_platform,source_reddit_post_id,source_url,subreddit,reddit_author',
     filters: [
       { column: 'user_id', operator: 'eq', value: job.user_id },
@@ -2415,20 +2417,13 @@ async function loadActiveSlotOccupancy(userId: string, timeZone: string): Promis
   return buildPlatformSlotOccupancy(await loadActiveQueueRows(userId), timeZone);
 }
 
-async function loadProcessableSourceRecords(userId: string, limit = 10): Promise<SourceRecordRow[]> {
-  // The database filters completed current snapshots before LIMIT. Historical
-  // angles for the same URL must not hide an edited source or starve later rows.
-  return supabaseSelect<SourceRecordRow>('processable_source_records', {
-    select: 'id,user_id,url,title,origin,score,used,fetched_at,created_at,updated_at,reddit_post_id,subreddit,reddit_author,content_hash,status,source_text,current_revision_id',
-    filters: [
-      { column: 'user_id', operator: 'eq', value: userId },
-      { column: 'origin', operator: 'in', value: [...PROCESSABLE_SOURCE_RECORD_ORIGINS] },
-      { column: 'status', operator: 'eq', value: 'banked' },
-      { column: 'used', operator: 'eq', value: false },
-    ],
-    order: 'created_at.asc',
-    limit,
+async function loadSourceUrlsWithAngles(userId: string): Promise<Set<string>> {
+  const rows = await supabaseSelect<{ source_url?: string | null }>('angle_records', {
+    select: 'source_url',
+    filters: [{ column: 'user_id', operator: 'eq', value: userId }],
+    limit: 5000,
   });
+  return new Set(rows.map(row => row.source_url || '').filter(Boolean));
 }
 
 async function loadExistingSourceRecordsByUrl(
@@ -2454,15 +2449,26 @@ async function processBankedSourceRecords(
   occupiedSlots: PlatformSlotOccupancy,
   timeZone: string,
   summary: PipelineSummary,
-  openAIActivityLogsToday: WorkerLogRow[]
+  openAIActivityLogsToday: WorkerLogRow[],
+  sourceUrlsWithAngles: Set<string>
 ): Promise<{ banked: number; queued: number }> {
-  const records = await loadProcessableSourceRecords(job.user_id);
+  const records = await supabaseSelect<SourceRecordRow>('source_records', {
+    select: 'id,user_id,url,title,origin,score,used,fetched_at,created_at,updated_at,reddit_post_id,subreddit,reddit_author,content_hash,status,source_text',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: job.user_id },
+      { column: 'origin', operator: 'in', value: [...PROCESSABLE_SOURCE_RECORD_ORIGINS] },
+      { column: 'status', operator: 'eq', value: 'banked' },
+      { column: 'used', operator: 'eq', value: false },
+    ],
+    order: 'created_at.asc',
+    limit: 10,
+  });
 
   let banked = 0;
   let queued = 0;
 
   for (const candidate of records) {
-    if (!isProcessableSourceRecordForAngleExtraction(candidate)) continue;
+    if (!isProcessableSourceRecordForAngleExtraction(candidate, sourceUrlsWithAngles)) continue;
 
     let record: workerClaims.SourceRecordClaim | undefined;
     try {
@@ -2509,7 +2515,6 @@ async function processBankedSourceRecords(
     await writeWorkerLog(job.user_id, 'info', 'source_record_selected_for_angle_extraction', {
       jobId: job.id,
       sourceRecordId: record.id,
-      sourceRevisionId: record.current_revision_id,
       origin: record.origin || null,
       source_url_host: safeUrlHost(record.url),
       claimVersion: record.claim_version,
@@ -2610,19 +2615,17 @@ async function processBankedSourceRecords(
     }
 
     const committedCount = Math.max(0, Number(committed.total_count || 0));
-    const insertedCount = Math.min(committedCount, Math.max(0, Number(committed.inserted_count || 0)));
     banked += committedCount;
-    summary.angles.created += insertedCount;
-    summary.angles.alreadyExisting += committedCount - insertedCount;
+    summary.angles.created += committedCount;
+    summary.angles.alreadyExisting += Math.max(0, angleRows.length - committedCount);
     if (!committedCount) summary.sources.withoutAngles++;
+    sourceUrlsWithAngles.add(record.url);
 
     await writeWorkerLog(job.user_id, 'info', 'source_record_banked_angles', {
       jobId: job.id,
       sourceRecordId: record.id,
-      sourceRevisionId: record.current_revision_id,
       origin: record.origin || null,
       angleCount: committedCount,
-      insertedAngleCount: insertedCount,
       claimVersion: record.claim_version,
     });
 
@@ -2637,7 +2640,7 @@ async function processBankedSourceRecords(
 }
 
 async function hasActiveBankedAngles(userId: string): Promise<boolean> {
-  const rows = await supabaseSelect<{ id: string }>('current_source_angle_records', {
+  const rows = await supabaseSelect<{ id: string }>('angle_records', {
     select: 'id',
     filters: [
       { column: 'user_id', operator: 'eq', value: userId },
@@ -2668,7 +2671,7 @@ async function loadQueuedAnglePlatformKeys(userId: string, angleIds: string[]): 
 
 async function refreshPipelineInventory(job: AgentJobRow, summary: PipelineSummary): Promise<void> {
   const [angles, queue] = await Promise.all([
-    supabaseSelect<{ status?: string | null }>('current_source_angle_records', {
+    supabaseSelect<{ status?: string | null }>('angle_records', {
       select: 'status',
       filters: [{ column: 'user_id', operator: 'eq', value: job.user_id }],
       limit: 1000,
@@ -3081,7 +3084,7 @@ async function queueFromBankedAngles(
     : tenant.activePlatforms;
   if (plannedLocalDate && !plannedPlatforms.length) return result;
 
-  const angles = await supabaseSelect<AngleRecordRow>('current_source_angle_records', {
+  const angles = await supabaseSelect<AngleRecordRow>('angle_records', {
     select: '*',
     filters: [
       { column: 'user_id', operator: 'eq', value: job.user_id },
@@ -3494,13 +3497,15 @@ async function handleRefreshQueue(job: AgentJobRow, tenant: TenantContext): Prom
     });
   }
 
+  const sourceUrlsWithAngles = await loadSourceUrlsWithAngles(job.user_id);
   const sourceRecordResult = await processBankedSourceRecords(
     job,
     tenant,
     occupiedSlots,
     timeZone,
     summary,
-    openAIActivityLogsToday
+    openAIActivityLogsToday,
+    sourceUrlsWithAngles
   );
   queued += sourceRecordResult.queued;
   if (sourceRecordResult.banked > 0 || queued > 0) {
@@ -3615,12 +3620,11 @@ async function sendControlledThreads(
   if (!attempt || !uuid.test(attempt.id) || !uuid.test(attempt.dispatch_operation_id)
     || target.platform !== 'threads' || attempt.state !== 'dispatching' || attempt.platform !== 'threads'
     || attempt.user_id !== target.userId || attempt.queue_item_id !== target.queueId
-    || attempt.provider_account_ref !== target.accountId || typeof target.sendThreads !== 'function') {
+    || attempt.provider_account_ref !== target.accountId || (!target.cloudThreads && typeof target.sendThreads !== 'function')) {
     throw Error('threads_attempt_invalid');
   }
-  return target.sendThreads(text, {
-    attemptId: attempt.id, dispatchOperationId: attempt.dispatch_operation_id,
-  });
+  if (target.cloudThreads) return publishThreadsCloud({ accountId: target.accountId, accessToken: config.THREADS_ACCESS_TOKEN, text });
+  return target.sendThreads!(text, { attemptId: attempt.id, dispatchOperationId: attempt.dispatch_operation_id });
 }
 
 async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: UserSettingsRow, target?: ControlledPublishTarget): Promise<JsonMap> {
@@ -3633,13 +3637,13 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
     const execution = await executePublication({
       userId: job.user_id, queueItemId: row.id, platform: row.platform,
     }, {
-      controlledThreadsRelay: target?.platform === 'threads' && typeof target.sendThreads === 'function',
+      controlledThreadsRelay: target?.platform === 'threads' && (target.cloudThreads === true || typeof target.sendThreads === 'function'),
       prepare: async payload => {
         if (!config.SUPABASE_PROVIDER_DISPATCH_ENABLED) {
           throw new PublicationPreflightError('rollout_provider_dispatch_disabled');
         }
         // Disabled hosted publishers are rejected before token refresh or paid media work.
-        if ((payload.platform === 'threads' && !(target?.platform === 'threads' && typeof target.sendThreads === 'function')) || payload.platform === 'instagram') {
+        if ((payload.platform === 'threads' && !(target?.platform === 'threads' && (target.cloudThreads === true || typeof target.sendThreads === 'function'))) || payload.platform === 'instagram') {
           throw new PublicationPreflightError('legacy_meta_publication_disabled');
         }
         if (payload.platform === 'facebook') throw new PublicationPreflightError('facebook_paused');
@@ -3666,6 +3670,12 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
           if (managesConnection(job.user_id)) await markXCredentialVerified(job.user_id, verification);
           providerAccountRef = verification.accountId;
         } else if (payload.platform === 'threads') {
+          // Only the explicit cloud path refreshes tenant credentials. Refresh
+          // persists the rotated token in the existing encrypted tenant row.
+          if (target?.cloudThreads) {
+            try { await threads.verifyCredentials(); }
+            catch { await threads.prepareAccessTokenForPublish(); }
+          }
           const me = await threads.verifyCredentials();
           if (me.accountId !== target?.accountId) throw new PublicationPreflightError('controlled_publish_account_changed');
           providerAccountRef = me.accountId;
@@ -3717,7 +3727,7 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
           send: async attempt => {
             await assertActiveAgentJob();
             if (target && Date.now() >= target.expiresAt) throw Error('controlled_publish_expired');
-            if (payload.platform === 'threads' && target?.sendThreads) {
+            if (payload.platform === 'threads' && target && (target.cloudThreads || target.sendThreads)) {
               const id = await sendControlledThreads(payload.text, target, attempt);
               if (!/^[0-9]{1,32}$/.test(id)) throw Error('threads_receipt_invalid');
               return { externalPostId: id };
@@ -3905,7 +3915,7 @@ async function hasPendingOrRunningFetch(userId: string): Promise<boolean> {
 
 async function hasDraftableActiveAngle(userId: string, platforms: PlatformKey[]): Promise<boolean> {
   if (!platforms.length) return false;
-  const rows = await supabaseSelect<AngleRecordRow>('current_source_angle_records', {
+  const rows = await supabaseSelect<AngleRecordRow>('angle_records', {
     select: 'id,intended_platform,source_reddit_post_id,source_url,subreddit,reddit_author',
     filters: [
       { column: 'user_id', operator: 'eq', value: userId },
@@ -4088,8 +4098,22 @@ async function enqueueDueFetchJobs(stats: SchedulerStats, now: Date): Promise<vo
 }
 
 async function hasProcessableSourceRecord(userId: string): Promise<boolean> {
-  const rows = await loadProcessableSourceRecords(userId, 1);
-  return rows.some(isProcessableSourceRecordForAngleExtraction);
+  const rows = await supabaseSelect<SourceRecordRow>('source_records', {
+    select: 'id,origin,status,used,source_text,url',
+    filters: [
+      { column: 'user_id', operator: 'eq', value: userId },
+      { column: 'origin', operator: 'in', value: [...PROCESSABLE_SOURCE_RECORD_ORIGINS] },
+      { column: 'status', operator: 'eq', value: 'banked' },
+      { column: 'used', operator: 'eq', value: false },
+    ],
+    order: 'created_at.asc',
+    limit: 10,
+  });
+  const sourceUrlsWithAngles = await loadSourceUrlsWithAngles(userId);
+  return rows.some(row => Boolean(row.url) && isProcessableSourceRecordForAngleExtraction(
+    row,
+    sourceUrlsWithAngles
+  ));
 }
 
 async function hasDailyInventoryAlert(userId: string, targetLocalDate: string): Promise<boolean> {
@@ -4938,8 +4962,6 @@ export function startSupabaseWorkerLoop(log = logger): { stop: () => void } | un
 }
 
 export const __test__ = {
-  loadProcessableSourceRecords, hasProcessableSourceRecord, hasActiveBankedAngles,
-  hasDraftableActiveAngle, createPipelineSummary, processBankedSourceRecords,
   loadTenantContext, withTenantRuntime, markXCredentialVerified, refreshLinkedInCredentialForPublish,
   extractSourceBankWithJobTimeout,
   assertQueueRevisionNotHeld,
