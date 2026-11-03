@@ -3617,6 +3617,7 @@ async function publishQueueRow(job: AgentJobRow, row: QueueItemRow, _settings: U
     const execution = await executePublication({
       userId: job.user_id, queueItemId: row.id, platform: row.platform,
     }, {
+      controlledThreadsRelay: target?.platform === 'threads' && typeof target.sendThreads === 'function',
       prepare: async payload => {
         if (!config.SUPABASE_PROVIDER_DISPATCH_ENABLED) {
           throw new PublicationPreflightError('rollout_provider_dispatch_disabled');
