@@ -60,6 +60,10 @@ async function fixture(work: (state: {
       assert.equal(journal.state, 'reserved');
       assert.deepEqual(journal.attempt, attempt);
       assert.equal(statSync(join(dir, target.jobId + '.json')).mode & 0o777, 0o600);
+      assert.match(args.sessionId, /^rlbe_[A-Za-z0-9_-]{6,120}$/);
+      assert.equal(args.sessionId.length, 124);
+      assert.equal(args.sessionId, 'rlbe_ocpf_' + target.jobId + '_' + target.approvalHash + '_'
+        + hash(attempt.attemptId + '\u001f' + attempt.dispatchOperationId).slice(0, 12));
       assert.equal(args.text, text);
       assert.equal(args.dryRun, false);
       await options.beforeExecute?.();
@@ -117,6 +121,18 @@ async function main() {
     assert.deepEqual(await state.make().handle({ action: 'ready', target }), scope);
     assert.deepEqual(state.calls, ['accounts']);
     assert.deepEqual(readdirSync(state.dir), []);
+  }));
+
+  await test('gateway session fits the installed schema while retaining both full attempt IDs', () => fixture(async state => {
+    const result = await state.make().handle(publish);
+    const journal = JSON.parse(readFileSync(join(state.dir, target.jobId + '.json'), 'utf8'));
+    assert.match(journal.sessionId, /^rlbe_[A-Za-z0-9_-]{6,120}$/);
+    assert.equal(journal.sessionId.length, 124);
+    assert.ok(journal.sessionId.startsWith('rlbe_ocpf_' + target.jobId + '_' + target.approvalHash));
+    assert.equal(journal.sessionId.slice(-12), hash(attempt.attemptId + '\u001f' + attempt.dispatchOperationId).slice(0, 12));
+    assert.deepEqual(journal.attempt, attempt);
+    assert.equal((result as any).attemptId, attempt.attemptId);
+    assert.equal((result as any).dispatchOperationId, attempt.dispatchOperationId);
   }));
 
   await test('independent concurrent relay instances reserve the operation only once', () => fixture(async state => {

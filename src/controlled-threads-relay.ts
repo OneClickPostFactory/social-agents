@@ -83,7 +83,10 @@ function parseAttempt(input: unknown): RelayAttempt {
   return { attemptId: attempt.attemptId, dispatchOperationId: attempt.dispatchOperationId };
 }
 function sessionFor(target: ControlledPublish, attempt: RelayAttempt): string {
-  return 'rlbe_ocpf_' + target.jobId + '_' + target.approvalHash + '_' + attempt.attemptId + '_live';
+  // Preserve the installed grant prefix and fit the gateway's 125-character limit.
+  // Full attempt identifiers remain bound independently in the journal and receipt.
+  const suffix = sha256(attempt.attemptId + '\u001f' + attempt.dispatchOperationId).slice(0, 12);
+  return 'rlbe_ocpf_' + target.jobId + '_' + target.approvalHash + '_' + suffix;
 }
 function gatewayKey(fingerprint: string): string {
   return sha256(['relay-live-business-engagement', 'threads', 'threads:owner',
